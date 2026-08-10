@@ -91,6 +91,21 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand)}
 .msg.them{background:#EDF2F0;border-bottom-left-radius:5px}
 .msg .t{font-size:10.5px;opacity:.72;margin-top:3px}
 .modal-bg{position:fixed;inset:0;background:rgba(10,35,28,.55);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
+.mobile-only{display:none}
+@media (max-width:900px){
+  .mobile-only{display:flex!important}
+  aside button.mobile-only{order:99}
+  #more-sheet.open{display:block}
+}
+#more-sheet{display:none;position:fixed;inset:0;background:rgba(10,35,28,.5);z-index:60}
+#more-sheet .sheet{position:absolute;left:0;right:0;bottom:0;background:#fff;
+  border-radius:20px 20px 0 0;padding:18px 16px calc(20px + env(safe-area-inset-bottom))}
+#more-sheet .sheet h3{font-size:15px;margin-bottom:12px}
+#more-sheet .sheet button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  background:var(--bg);border:none;border-radius:12px;padding:15px;font-size:15px;
+  font-family:inherit;font-weight:600;margin-bottom:8px;cursor:pointer;color:var(--ink)}
+.wstep{flex:1;height:4px;border-radius:2px;background:var(--line)}
+.wstep.on{background:var(--brand)}
 .modal{background:#fff;border-radius:18px;padding:26px;width:100%;max-width:660px;max-height:92vh;overflow:auto}
 .tabs-inline{display:flex;gap:7px;margin-bottom:16px;flex-wrap:wrap}
 .tabs-inline button{background:#EDF2F0;border:none;border-radius:10px;padding:8px 16px;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer;color:var(--mut)}
@@ -98,14 +113,48 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand)}
 .uploadbox{border:2px dashed #B9D3C8;border-radius:14px;padding:26px;text-align:center;color:var(--mut);font-size:14px;cursor:pointer;margin-bottom:14px;background:var(--brand-pale)}
 .uploadbox:hover{border-color:var(--brand);color:var(--brand)}
 a{color:var(--brand);font-weight:600}
+/* ===== MOBILE ADMIN: a different shape, same brand ===== */
 @media (max-width:900px){
-  .layout{flex-direction:column}
-  aside{width:100%;height:auto;position:relative;display:flex;overflow-x:auto;padding:8px;gap:4px}
-  aside .logo,aside .co{display:none}
-  aside button{white-space:nowrap;padding:10px 14px;border-left:none;border-bottom:3px solid transparent;width:auto}
-  aside button.active{border-left:none;border-bottom-color:var(--accent)}
-  main{padding:16px}
+  body{padding-bottom:calc(76px + env(safe-area-inset-bottom));background:var(--bg)}
+  aside{position:fixed;bottom:0;left:0;right:0;top:auto;height:auto;width:100%;
+    background:#fff;border-top:1px solid var(--line);padding:0 0 env(safe-area-inset-bottom);
+    display:flex;overflow:visible;z-index:40;box-shadow:0 -2px 14px rgba(0,0,0,.06)}
+  aside button{flex:1;flex-direction:column;gap:2px;justify-content:center;text-align:center;
+    padding:9px 2px 7px;font-size:10.5px;color:var(--mut);border:none;min-height:60px}
+  aside button.active{background:none;color:var(--brand);font-weight:700;border:none}
+  aside button.active::before{content:'';position:absolute;top:0;left:26%;right:26%;height:3px;
+    background:var(--brand);border-radius:0 0 4px 4px}
+  aside button{position:relative}
+  /* only the five primary destinations live in the phone tab bar */
+  aside button:nth-child(n+8){display:none}
+  aside .badge{position:absolute;top:5px;right:50%;margin-right:-22px;margin-left:0;padding:0 6px}
+  main{padding:14px 14px 20px;max-width:100%}
+  h1{font-size:21px;margin-bottom:14px}
+  .cards{grid-template-columns:1fr 1fr;gap:10px}
+  .stat{padding:14px}
+  .stat .n{font-size:20px}
+  .stat .l{font-size:10px}
+  .card{padding:16px;border-radius:14px}
   .grid2,.grid3{grid-template-columns:1fr}
+  input,select,textarea{padding:14px;font-size:16px;border-radius:12px}
+  button.primary{width:100%;padding:16px;font-size:16px;border-radius:14px}
+  button.small{padding:9px 14px;font-size:13px}
+  .modal{max-width:100%;border-radius:16px;padding:20px}
+  .modal-bg{padding:10px;align-items:flex-end}
+  /* tables become stacked cards */
+  table thead{display:none}
+  table,table tbody,table tr,table td{display:block;width:100%}
+  table tr{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:12px 14px;margin-bottom:10px}
+  table tr:hover{background:var(--card)}
+  table td{border:none;padding:3px 0;font-size:14px}
+  table td:first-child{font-weight:700;font-size:15.5px}
+  table td.right{text-align:left}
+  table td:empty{display:none}
+}
+@media (max-width:900px) and (min-width:0px){
+  .layout{flex-direction:column}
+  aside .logo,aside .co,aside .me-chip{display:none}
 }
 </style>
 </head>
@@ -131,11 +180,13 @@ a{color:var(--brand);font-weight:600}
     <button id="nv-newdeal" onclick="nav('newdeal')">➕ New Deal</button>
     <button id="nv-pml" onclick="nav('pml')">PML Loans</button>
     <button id="nv-tbs" onclick="nav('tbs')">Tenant Buyers</button>
-    <button id="nv-props" onclick="nav('props')">Properties</button>
+    <button id="nv-props" onclick="nav('props')">🏠 Properties</button>
+    <button id="nv-invites" onclick="nav('invites')">📲 Invitations <span id="inv-badge" class="badge hidden"></span></button>
     <button id="nv-exp" onclick="nav('exp')">Expenses <span id="exp-badge" class="badge hidden"></span></button>
     <button id="nv-msgs" onclick="nav('msgs')">Messages <span id="msg-badge" class="badge hidden"></span></button>
     <button id="nv-slips" onclick="nav('slips')">Cash Codes</button>
     <button id="nv-settings" onclick="nav('settings')">⚙️ Settings</button>
+    <button id="nv-more" class="mobile-only" onclick="toggleMoreSheet()">⋯ More</button>
     <button style="margin-top:14px;color:#7FA3B2" onclick="logout()">Sign out</button>
   </aside>
   <main>
@@ -249,14 +300,39 @@ a{color:var(--brand);font-weight:600}
     <!-- PROPERTIES -->
     <section id="pg-props" class="hidden">
       <h1>Properties</h1>
-      <div class="card"><table>
-        <thead><tr><th>Address</th><th>Trust / Trustee</th><th class="right">Expenses to date</th></tr></thead>
-        <tbody id="prop-rows"></tbody></table></div>
+      <p class="note" style="margin-bottom:12px">Start here. Add the property, log what you spend acquiring and fixing it, attach the paperwork and the private money loan. Sell it to a buyer when it's ready.</p>
+      <button class="primary" style="margin-bottom:14px" onclick="newPropModal()">+ Add property</button>
+      <div class="card"><div style="overflow-x:auto"><table>
+        <thead><tr><th>Address</th><th>Status</th><th class="right">All-in cost</th><th class="right">Owed to PML</th><th class="right">Sale price</th><th class="right">Buyer balance</th></tr></thead>
+        <tbody id="prop-rows"></tbody></table></div></div>
+    </section>
+
+    <!-- PROPERTY DETAIL -->
+    <section id="pg-propd" class="hidden">
+      <button class="small" onclick="nav('props')">← All properties</button>
+      <div id="prop-detail" style="margin-top:12px"></div>
+    </section>
+
+    <!-- INVITATIONS -->
+    <section id="pg-invites" class="hidden">
+      <h1>Buyer Invitations</h1>
+      <p class="note" style="margin-bottom:12px" id="inv-note"></p>
+      <div class="card"><div style="overflow-x:auto"><table>
+        <thead><tr><th>Buyer</th><th>Property</th><th>Phone</th><th>Status</th><th></th></tr></thead>
+        <tbody id="inv-rows"></tbody></table></div></div>
     </section>
 
     <!-- EXPENSES -->
     <section id="pg-exp" class="hidden">
       <h1>Property Expenses</h1>
+      <div class="card">
+        <h2>Linked accounts</h2>
+        <p class="note" style="margin-bottom:12px">Connect your business bank and credit cards once, then pull transactions in whenever you want instead of uploading statements.</p>
+        <div id="linked-list"></div>
+        <button class="primary" style="margin-top:12px" onclick="linkAccount()">🔗 Link a bank or card</button>
+        <div id="link-status" class="note" style="margin-top:10px"></div>
+      </div>
+
       <div class="card">
         <h2>Import a bank / credit card statement</h2>
         <p class="note" style="margin-bottom:10px">Upload a statement (PDF or CSV). Claude extracts every expense; you then assign each one to a property or ignore it.</p>
@@ -308,6 +384,18 @@ a{color:var(--brand);font-weight:600}
         <button class="primary" id="co-save" onclick="saveCompany()">Save company</button>
       </div>
       <div class="card">
+        <h2>Your login</h2>
+        <div id="pwd-err" class="err hidden"></div>
+        <div id="pwd-ok" class="okmsg hidden"></div>
+        <div class="grid2">
+          <div class="field"><label>New password</label><input id="pw-new" type="password" autocomplete="new-password" placeholder="At least 8 characters"></div>
+          <div class="field"><label>Confirm new password</label><input id="pw-new2" type="password" autocomplete="new-password"></div>
+        </div>
+        <button class="primary" onclick="changeMyPassword()">Change my password</button>
+        <p class="note" style="margin-top:10px">Use something long. This login opens every loan, buyer record and document in your company.</p>
+      </div>
+
+      <div class="card">
         <h2>Team <button class="small" id="staff-add-btn" onclick="staffModal()">+ Invite admin</button></h2>
         <p class="note" style="margin-bottom:10px">Owners can invite additional admins (bookkeeper, assistant). Admins have full access to loans and buyers but cannot manage the team or company details.</p>
         <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody id="staff-rows"></tbody></table>
@@ -335,12 +423,86 @@ a{color:var(--brand);font-weight:600}
   </main>
 </div>
 
+<!-- FIRST-RUN SETUP WIZARD -->
+<div id="wizard" class="modal-bg hidden" style="align-items:flex-start;overflow:auto;padding:24px 16px">
+  <div class="modal" style="max-width:620px">
+    <div style="text-align:center;margin-bottom:18px">
+      <img src="/logo-full.png" alt="Porch Pay" style="width:170px;max-width:70%">
+      <p class="note" style="margin-top:8px">Let's get you set up. Takes about a minute.</p>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:20px">
+      <div class="wstep" data-s="1"></div><div class="wstep" data-s="2"></div>
+      <div class="wstep" data-s="3"></div><div class="wstep" data-s="4"></div>
+    </div>
+    <div id="wz-err" class="err hidden"></div>
+
+    <div class="wpane" data-s="1">
+      <h2>Choose your password</h2>
+      <p class="note" style="margin-bottom:14px">You're signed in with a temporary password. Pick your own — at least 8 characters.</p>
+      <div class="field"><label>New password</label><input id="wz-pw" type="password" autocomplete="new-password"></div>
+      <div class="field"><label>Confirm password</label><input id="wz-pw2" type="password" autocomplete="new-password"></div>
+    </div>
+
+    <div class="wpane hidden" data-s="2">
+      <h2>About you</h2>
+      <p class="note" style="margin-bottom:14px">This is the name your tenant buyers see on messages and notices.</p>
+      <div class="grid2">
+        <div class="field"><label>Your name</label><input id="wz-name" placeholder="Jane Smith"></div>
+        <div class="field"><label>Your phone</label><input id="wz-phone" placeholder="(555) 555-5555"></div>
+      </div>
+    </div>
+
+    <div class="wpane hidden" data-s="3">
+      <h2>Your company</h2>
+      <div class="field"><label>Company name</label><input id="wz-co"></div>
+      <div class="grid2">
+        <div class="field"><label>Contact email</label><input id="wz-coemail" type="email"></div>
+        <div class="field"><label>Contact phone</label><input id="wz-cophone"></div>
+      </div>
+      <div class="field"><label>Logo (optional)</label><input id="wz-logo" type="file" accept="image/*">
+        <p class="note" style="margin-top:6px">Replaces the Porch Pay mark in your buyers' app. PNG with a transparent background works best.</p></div>
+    </div>
+
+    <div class="wpane hidden" data-s="4">
+      <h2>Servicing defaults</h2>
+      <p class="note" style="margin-bottom:14px">Starting values for new loans — you can override them per loan.</p>
+      <div class="grid2">
+        <div class="field"><label>Late fee ($)</label><input id="wz-late" type="number" step="0.01" value="50"></div>
+        <div class="field"><label>Grace period (days)</label><input id="wz-grace" type="number" value="5"></div>
+      </div>
+      <div class="field"><label><input id="wz-fees" type="checkbox" checked style="width:auto;margin-right:7px">Pass payment processing fees to the buyer</label>
+        <p class="note" style="margin-top:6px">The buyer is charged the payment plus the processor's fee; their loan is credited the full payment.
+        <b>Check your state law first</b> — a few states restrict card surcharges, and debit card surcharging is barred by card network rules.</p></div>
+      <div class="field"><label>What buyers see this fee called</label><input id="wz-feelabel" value="Processing fee"></div>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:20px">
+      <button class="small" id="wz-back" onclick="wzGo(-1)" style="visibility:hidden">← Back</button>
+      <button class="primary" style="margin-left:auto" id="wz-next" onclick="wzNext()">Continue</button>
+    </div>
+  </div>
+</div>
+
+<div id="more-sheet" onclick="if(event.target===this)toggleMoreSheet()">
+  <div class="sheet">
+    <h3>More</h3>
+    <button onclick="navSheet('newdeal')">➕ New Deal</button>
+    <button onclick="navSheet('pml')">🏦 PML Loans</button>
+    <button onclick="navSheet('props')">🏠 Properties</button>
+    <button onclick="navSheet('exp')">🧾 Expenses</button>
+    <button onclick="navSheet('slips')">💵 Cash Codes</button>
+    <button onclick="navSheet('settings')">⚙️ Settings</button>
+    <button onclick="logout()">Sign out</button>
+  </div>
+</div>
+
 <!-- generic modal -->
 <div id="modal" class="modal-bg hidden" onclick="if(event.target===this)closeModal()">
   <div class="modal" id="modal-content"></div>
 </div>
 
 <script>
+const ADMIN_ROLES = ['owner','admin','super_admin'];
 const $ = id => document.getElementById(id);
 const fmt = c => '$' + ((c||0)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fdate = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
@@ -356,32 +518,310 @@ async function api(path,opts={}){
 async function boot(){
   try{
     const me = await api('/api/me');
-    if(me.role!=='admin'){ location.href='/'; return; }
+    if(!ADMIN_ROLES.includes(me.role)){ location.href='/'; return; }
     $('v-login').classList.add('hidden'); $('v-app').classList.remove('hidden');
     loadDash();
+    maybeWizard().catch(()=>{});
   }catch{ $('v-login').classList.remove('hidden'); }
 }
 async function doLogin(){
   $('login-err').classList.add('hidden');
   try{
     const me = await api('/api/login',{method:'POST',body:JSON.stringify({email:$('li-email').value,password:$('li-pw').value})});
-    if(me.role!=='admin'){ location.href='/'; return; }
+    if(!ADMIN_ROLES.includes(me.role)){ location.href='/'; return; }
     location.reload();
   }catch(e){ $('login-err').textContent=e.message; $('login-err').classList.remove('hidden'); }
 }
 async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
 
 function nav(pg){
-  for(const p of ['dash','loans','loan','newdeal','pml','pmld','tbs','props','exp','msgs','slips','settings']){
+  for(const p of ['dash','loans','loan','newdeal','pml','pmld','tbs','props','propd','invites','exp','msgs','slips','settings']){
     const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
   }
   if(pg==='dash')loadDash(); if(pg==='loans')loadLoans(); if(pg==='tbs')loadTBs();
-  if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();}
+  if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();loadLinked();}
   if(pg==='msgs')openMsgs(); if(pg==='slips')loadSlips();
   if(pg==='newdeal')loadProps();
   if(pg==='pml'){loadProps();loadPML();}
   if(pg==='settings')loadSettings();
+  if(pg==='invites')loadInvites();
+}
+
+// ---------- properties ----------
+const COST_ICONS={purchase:'🏷️',closing:'📑',rehab:'🔨',bog:'👷',insurance:'🛡️',taxes:'🏛️',utilities:'💡',marketing:'📣',legal:'⚖️',other:'•'};
+function newPropModal(){
+  modal(`<h2>Add property</h2>
+    <div class="field"><label>Street address</label><input id="np-addr"></div>
+    <div class="grid3">
+      <div class="field"><label>City</label><input id="np-city"></div>
+      <div class="field"><label>State</label><input id="np-state"></div>
+      <div class="field"><label>ZIP</label><input id="np-zip"></div>
+      <div class="field"><label>Purchase price ($)</label><input id="np-price" type="number" step="0.01"></div>
+      <div class="field"><label>Acquired date</label><input id="np-acq" type="date"></div>
+      <div class="field"><label>Target sale price ($)</label><input id="np-target" type="number" step="0.01"></div>
+      <div class="field"><label>Beds</label><input id="np-beds" type="number"></div>
+      <div class="field"><label>Baths</label><input id="np-baths" type="number" step="0.5"></div>
+      <div class="field"><label>Sq ft</label><input id="np-sqft" type="number"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Land trust name (optional)</label><input id="np-trust"></div>
+      <div class="field"><label>Trustee (optional)</label><input id="np-trustee"></div>
+    </div>
+    <div id="np-err" class="err hidden"></div>
+    <button class="primary" onclick="createProp()">Add property</button>`);
+}
+async function createProp(){
+  try{
+    if(!$('np-addr').value.trim()) throw new Error('Street address is required');
+    const prop=await api('/api/admin/properties',{method:'POST',body:JSON.stringify({
+      address:$('np-addr').value, city:$('np-city').value, state:$('np-state').value,
+      zip:$('np-zip').value, trust_name:$('np-trust').value||null, trustee:$('np-trustee').value||null })});
+    const price=Math.round((parseFloat($('np-price').value)||0)*100);
+    await api(`/api/admin/properties/${prop.id}/details`,{method:'PUT',body:JSON.stringify({
+      acquired_date:$('np-acq').value||null, purchase_price_cents:price,
+      target_sale_price_cents:Math.round((parseFloat($('np-target').value)||0)*100),
+      beds:parseInt($('np-beds').value)||null, baths:parseFloat($('np-baths').value)||null,
+      sqft:parseInt($('np-sqft').value)||null })});
+    if(price) await api(`/api/admin/properties/${prop.id}/costs`,{method:'POST',body:JSON.stringify({
+      category:'purchase', description:'Purchase price', amount_cents:price, cost_date:$('np-acq').value||null })});
+    closeModal(); openProp(prop.id);
+  }catch(e){ $('np-err').textContent=e.message; $('np-err').classList.remove('hidden'); }
+}
+async function loadProps(){
+  PROPS=await api('/api/admin/properties');
+  const el=$('prop-rows'); if(!el) return;
+  el.innerHTML=PROPS.map(p=>
+    `<tr class="click" onclick="openProp(${p.id})"><td>${esc(p.address)}${p.city?', '+esc(p.city):''}</td>
+     <td>${p.status==='sold'?'<span class="pill ok">sold</span>':p.status==='listed'?'<span class="pill amber">listed</span>':'<span class="pill gray">owned</span>'}</td>
+     <td class="right">${fmt(p.all_in_cents||0)}</td>
+     <td class="right">${fmt(0)}</td>
+     <td class="right">${p.loan?fmt(p.loan.sale_price_cents):'—'}</td>
+     <td class="right">${p.loan?fmt(p.loan.principal_balance_cents):'—'}</td></tr>`
+  ).join('')||'<tr><td colspan="6" class="note">No properties yet — add your first one above.</td></tr>';
+}
+let currentPropId=null;
+async function openProp(id){
+  currentPropId=id;
+  const f=await api('/api/admin/properties/'+id);
+  nav('propd');
+  const p=f.property, L=f.cost_labels;
+  const margin = f.loan ? f.loan.sale_price_cents - f.all_in_cents : (p.target_sale_price_cents||0) - f.all_in_cents;
+  $('prop-detail').innerHTML=`
+  <div class="cards">
+    <div class="stat"><div class="n">${fmt(f.all_in_cents)}</div><div class="l">All-in cost</div></div>
+    <div class="stat"><div class="n">${fmt(f.pml_balance_cents)}</div><div class="l">Owed to lenders</div></div>
+    <div class="stat"><div class="n">${f.loan?fmt(f.loan.sale_price_cents):(p.target_sale_price_cents?fmt(p.target_sale_price_cents):'—')}</div><div class="l">${f.loan?'Sale price':'Target sale price'}</div></div>
+    <div class="stat"><div class="n" style="color:${margin>=0?'var(--brand)':'var(--red)'}">${fmt(margin)}</div><div class="l">${f.loan?'Gross margin':'Projected margin'}</div></div>
+  </div>
+  <div class="card">
+    <h2>${esc(p.address)}${p.city?', '+esc(p.city):''} ${p.status==='sold'?'<span class="pill ok">sold</span>':'<span class="pill gray">'+esc(p.status||'owned')+'</span>'}</h2>
+    <p class="note">${[p.beds?p.beds+' bd':'',p.baths?p.baths+' ba':'',p.sqft?p.sqft.toLocaleString()+' sqft':'',p.year_built?'built '+p.year_built:''].filter(Boolean).join(' · ')||'No property details yet'}
+      ${p.acquired_date?' · acquired '+fdate(p.acquired_date):''}
+      ${p.trust_name?' · '+esc(p.trust_name):''}</p>
+    <div style="margin-top:12px">
+      ${f.loan
+        ? `<button class="primary" onclick="openLoan(${f.loan.id})">Open the loan</button>
+           <span class="note" style="margin-left:10px">Sold to ${esc(f.tenant?f.tenant.name:'a buyer')}</span>`
+        : `<button class="primary" onclick="sellModal(${p.id})">💰 Sell to a tenant buyer</button>`}
+      <button class="small" onclick="costModal(${p.id})">+ Add cost</button>
+      <button class="small" onclick="propDocModal(${p.id})">+ Upload document</button>
+      <button class="small" onclick="pmlModal(${p.id})">+ Add PML loan</button>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h2>Cost basis</h2>
+      ${Object.keys(f.basis.by_category).length
+        ? Object.entries(f.basis.by_category).map(([k,v])=>
+            `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:14px">
+              <span>${COST_ICONS[k]||'•'} ${esc(L[k]||k)}</span><span>${fmt(v)}</span></div>`).join('')
+        : '<p class="note">Nothing logged yet.</p>'}
+      ${f.assigned_expenses_cents?`<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:14px"><span>🧾 Assigned expenses</span><span>${fmt(f.assigned_expenses_cents)}</span></div>`:''}
+      <div style="display:flex;justify-content:space-between;padding:10px 0 0;margin-top:6px;border-top:2px solid var(--ink);font-weight:700">
+        <span>All in</span><span>${fmt(f.all_in_cents)}</span></div>
+      ${f.returns?`
+        <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:14px;color:var(--mut)">
+          <span>Less: lender advanced</span><span>-${fmt(f.returns.lender_advanced_cents)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:14px;color:var(--mut)">
+          <span>Less: buyer down payment</span><span>-${fmt(f.returns.down_payment_cents)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:10px 0 0;margin-top:4px;border-top:2px solid var(--brand);font-weight:700;color:var(--brand)">
+          <span>Your cash in the deal</span><span>${f.returns.infinite_return?fmt(0):fmt(f.returns.cash_invested_cents)}</span></div>`:''}
+    </div>
+    <div class="card"><h2>Private money</h2>
+      ${f.pml_loans.length?f.pml_loans.map(pl=>
+        `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:14px">
+          <span><a href="#" onclick="openPML(${pl.id});return false">${esc(pl.lender_name)}</a>
+            <span class="note"> lien ${pl.lien_position} · ${(pl.interest_rate_bps/100).toFixed(2)}%</span></span>
+          <span>${fmt(pl.principal_balance_cents)}</span></div>`).join('')
+        :'<p class="note">No lender loans on this property.</p>'}
+    </div>
+  </div>
+  ${f.returns?`<div class="card"><h2>Returns</h2>
+    <div class="cards" style="margin-bottom:0">
+      <div class="stat"><div class="n" style="color:${(f.returns.cash_on_cash_run_rate_pct||0)>=0?'var(--brand)':'var(--red)'}">${f.returns.infinite_return?'&#8734;':(f.returns.cash_on_cash_run_rate_pct===null?'-':f.returns.cash_on_cash_run_rate_pct.toFixed(1)+'%')}</div><div class="l">Cash-on-cash</div></div>
+      <div class="stat"><div class="n" style="color:${(f.returns.roi_to_date_pct||0)>=0?'var(--brand)':'var(--red)'}">${f.returns.infinite_return?'&#8734;':(f.returns.roi_to_date_pct===null?'-':f.returns.roi_to_date_pct.toFixed(1)+'%')}</div><div class="l">ROI to date</div></div>
+      <div class="stat"><div class="n">${fmt(f.returns.annual_run_rate_cents)}</div><div class="l">Annual cash flow</div></div>
+      <div class="stat"><div class="n" style="color:${f.returns.net_profit_to_date_cents>=0?'var(--brand)':'var(--red)'}">${fmt(f.returns.net_profit_to_date_cents)}</div><div class="l">Net profit to date</div></div>
+    </div></div>`:''}
+  <div class="card"><h2>Costs</h2><div style="overflow-x:auto"><table>
+    <thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Vendor</th><th class="right">Amount</th><th></th></tr></thead>
+    <tbody>${f.costs.map(c=>`<tr><td>${fdate(c.cost_date)}</td>
+      <td>${COST_ICONS[c.category]||'•'} ${esc(L[c.category]||c.category)}</td>
+      <td>${esc(c.description)}</td><td class="note">${esc(c.vendor||'')}</td>
+      <td class="right">${fmt(c.amount_cents)}</td>
+      <td class="right"><button class="small warn" onclick="delCost(${c.id})">✕</button></td></tr>`).join('')
+      ||'<tr><td colspan="6" class="note">No costs logged yet.</td></tr>'}</tbody></table></div></div>
+  <div class="card"><h2>Documents</h2>
+    ${f.documents.length?f.documents.map(d=>`<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:14px">
+      <span>📎 <a href="/api/documents/${d.id}/download">${esc(d.title||d.filename)}</a>
+      ${d.visible_to_tenant?'<span class="pill ok">buyer can see</span>':'<span class="pill gray">private</span>'}</span>
+      <span class="note">${fdate((d.created_at||'').slice(0,10))}</span></div>`).join('')
+      :'<p class="note">No documents yet.</p>'}
+  </div>`;
+}
+function costModal(pid){
+  modal(`<h2>Add a cost</h2>
+    <div class="grid2">
+      <div class="field"><label>Category</label><select id="ct-cat">
+        <option value="purchase">🏷️ Purchase price</option><option value="closing">📑 Closing costs</option>
+        <option value="filing">🗂️ Filing &amp; recording fees</option>
+        <option value="rehab">🔨 Rehab / repairs</option><option value="bog">👷 Boots on the ground</option>
+        <option value="insurance">🛡️ Insurance</option><option value="taxes">🏛️ Property taxes</option>
+        <option value="utilities">💡 Utilities</option><option value="marketing">📣 Marketing</option>
+        <option value="legal">⚖️ Legal / title</option><option value="other">Other</option></select></div>
+      <div class="field"><label>Amount ($)</label><input id="ct-amt" type="number" step="0.01"></div>
+      <div class="field"><label>Date</label><input id="ct-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div class="field"><label>Vendor / paid to</label><input id="ct-vendor"></div>
+    </div>
+    <div class="field"><label>Description</label><input id="ct-desc" placeholder="e.g. Roof repair, weekly check-in, title fee"></div>
+    <div id="ct-err" class="err hidden"></div>
+    <button class="primary" onclick="addCost(${pid})">Add cost</button>`);
+}
+async function addCost(pid){
+  try{
+    await api(`/api/admin/properties/${pid}/costs`,{method:'POST',body:JSON.stringify({
+      category:$('ct-cat').value, description:$('ct-desc').value, vendor:$('ct-vendor').value,
+      amount_cents:Math.round(parseFloat($('ct-amt').value)*100), cost_date:$('ct-date').value })});
+    closeModal(); openProp(pid);
+  }catch(e){ $('ct-err').textContent=e.message; $('ct-err').classList.remove('hidden'); }
+}
+async function delCost(id){
+  if(!confirm('Remove this cost?'))return;
+  await api('/api/admin/costs/'+id,{method:'DELETE'}); openProp(currentPropId);
+}
+function propDocModal(pid){
+  modal(`<h2>Upload document</h2>
+    <div class="field"><label>File</label><input id="pd-file" type="file" accept=".pdf,image/*,.doc,.docx"></div>
+    <div class="grid2">
+      <div class="field"><label>Folder</label><select id="pd-cat">
+        <option value="private">🔒 Private (admin only)</option>
+        <option value="loan_docs">📄 Loan Documents</option><option value="insurance">🛡️ Insurance</option>
+        <option value="taxes">🏛️ Taxes</option><option value="utilities">💡 Utilities</option>
+        <option value="correspondence">✉️ Correspondence</option></select></div>
+      <div class="field"><label>Title (optional)</label><input id="pd-title"></div>
+    </div>
+    <div id="pd-err" class="err hidden"></div>
+    <button class="primary" onclick="uploadPropDoc(${pid})">Upload</button>`);
+}
+async function uploadPropDoc(pid){
+  try{
+    const f=$('pd-file').files[0]; if(!f)throw new Error('Choose a file');
+    const cat=$('pd-cat').value;
+    await api('/api/admin/documents',{method:'POST',body:JSON.stringify({
+      filename:f.name, mime:f.type, data_base64:await fileToB64(f), property_id:pid,
+      category:cat, title:$('pd-title').value||null, visible_to_tenant: cat!=='private' })});
+    closeModal(); openProp(pid);
+  }catch(e){ $('pd-err').textContent=e.message; $('pd-err').classList.remove('hidden'); }
+}
+function sellModal(pid){
+  modal(`<h2>Sell to a tenant buyer</h2>
+    <p class="note" style="margin-bottom:14px">This creates the buyer's login, opens the loan, and prepares a text invitation.</p>
+    <div class="grid2">
+      <div class="field"><label>Buyer name</label><input id="sl-name"></div>
+      <div class="field"><label>Buyer email</label><input id="sl-email" type="email"></div>
+      <div class="field"><label>Buyer cell phone</label><input id="sl-phone" placeholder="(555) 555-5555"></div>
+      <div class="field"><label>Agreement type</label><select id="sl-type">
+        <option value="land_contract">Land contract / contract for deed</option>
+        <option value="land_trust_beneficial_interest">Beneficial interest — land trust</option></select></div>
+    </div>
+    <div class="grid3">
+      <div class="field"><label>Sale price ($)</label><input id="sl-price" type="number" step="0.01" oninput="slCalc()"></div>
+      <div class="field"><label>Down payment ($)</label><input id="sl-down" type="number" step="0.01" oninput="slCalc()"></div>
+      <div class="field"><label>Amount financed ($)</label><input id="sl-fin" type="number" step="0.01"></div>
+      <div class="field"><label>Interest rate (%)</label><input id="sl-rate" type="number" step="0.01"></div>
+      <div class="field"><label>Term (months)</label><input id="sl-term" type="number" value="360"></div>
+      <div class="field"><label>Monthly P&I ($ — blank = auto)</label><input id="sl-pi" type="number" step="0.01"></div>
+      <div class="field"><label>Monthly escrow ($)</label><input id="sl-escrow" type="number" step="0.01" value="0"></div>
+      <div class="field"><label>First payment date</label><input id="sl-first" type="date"></div>
+      <div class="field"><label>Beneficial interest %</label><input id="sl-bi" type="number" step="0.1"></div>
+    </div>
+    <div id="sl-err" class="err hidden"></div>
+    <button class="primary" onclick="doSell(${pid})">Complete sale &amp; create buyer login</button>`);
+}
+function slCalc(){
+  const price=parseFloat($('sl-price').value)||0, down=parseFloat($('sl-down').value)||0;
+  if(price) $('sl-fin').value=(price-down).toFixed(2);
+}
+async function doSell(pid){
+  try{
+    const r=await api(`/api/admin/properties/${pid}/sell`,{method:'POST',body:JSON.stringify({
+      buyer_name:$('sl-name').value.trim(), buyer_email:$('sl-email').value.trim(),
+      buyer_phone:$('sl-phone').value, loan_type:$('sl-type').value,
+      sale_price_cents:Math.round(parseFloat($('sl-price').value)*100),
+      down_payment_cents:Math.round((parseFloat($('sl-down').value)||0)*100),
+      principal_cents:Math.round(parseFloat($('sl-fin').value)*100),
+      interest_rate_bps:Math.round(parseFloat($('sl-rate').value)*100),
+      term_months:parseInt($('sl-term').value),
+      payment_cents:$('sl-pi').value?Math.round(parseFloat($('sl-pi').value)*100):null,
+      escrow_cents:Math.round((parseFloat($('sl-escrow').value)||0)*100),
+      first_payment_date:$('sl-first').value,
+      beneficial_interest_pct:$('sl-bi').value?parseFloat($('sl-bi').value):null })});
+    closeModal(); showInvite(r.invitation_id);
+  }catch(e){ $('sl-err').textContent=e.message; $('sl-err').classList.remove('hidden'); }
+}
+
+// ---------- invitations ----------
+async function showInvite(id){
+  const p=await api(`/api/admin/invitations/${id}/preview`);
+  modal(`<h2>📲 Invite ${esc(p.buyer_name)}</h2>
+    <p class="note" style="margin-bottom:12px">Sale complete. Send this text so they can download the app and sign in.</p>
+    <div class="field"><label>Mobile number</label><input id="iv-phone" value="${esc(p.phone||'')}" placeholder="(555) 555-5555"></div>
+    <div class="field"><label>Message</label><textarea id="iv-text" rows="12" readonly>${esc(p.text)}</textarea></div>
+    <div id="iv-err" class="err hidden"></div>
+    <div id="iv-ok" class="okmsg hidden"></div>
+    ${p.sms_enabled
+      ? `<button class="primary" onclick="sendInvite(${id})">Send text now</button>`
+      : `<button class="primary" onclick="copyInvite()">📋 Copy message</button>
+         <p class="note" style="margin-top:10px">Texting isn't set up yet, so send this from your own phone. Add your Twilio details to send automatically from the app.</p>
+         <button class="small" style="margin-top:8px" onclick="markInviteSent(${id})">I sent it</button>`}`);
+}
+async function sendInvite(id){
+  try{
+    await api(`/api/admin/invitations/${id}/send`,{method:'POST',body:JSON.stringify({phone:$('iv-phone').value})});
+    $('iv-ok').textContent='Text sent.'; $('iv-ok').classList.remove('hidden');
+    $('iv-err').classList.add('hidden'); loadInvites();
+  }catch(e){ $('iv-err').textContent=e.message; $('iv-err').classList.remove('hidden'); }
+}
+function copyInvite(){
+  const t=$('iv-text'); t.removeAttribute('readonly'); t.select();
+  document.execCommand('copy'); t.setAttribute('readonly','');
+  $('iv-ok').textContent='Copied — paste it into your messages app.'; $('iv-ok').classList.remove('hidden');
+}
+async function markInviteSent(id){
+  await api(`/api/admin/invitations/${id}/mark-sent`,{method:'POST',body:'{}'});
+  closeModal(); loadInvites();
+}
+async function loadInvites(){
+  const d=await api('/api/admin/invitations');
+  $('inv-note').innerHTML = d.sms_enabled
+    ? 'Texting is connected — invitations send straight from the app.'
+    : 'Texting isn\'t set up yet. Open an invitation to copy the message and send it from your phone. Add Twilio details to automate it.';
+  $('inv-rows').innerHTML=d.invitations.map(i=>
+    `<tr><td>${esc(i.buyer_name||'')}<br><span class="note">${esc(i.buyer_email||'')}</span></td>
+     <td>${esc(i.address||'')}</td><td>${esc(i.phone||'—')}</td>
+     <td>${i.status==='accepted'?'<span class="pill ok">signed in</span>':i.status==='sent'?'<span class="pill amber">sent</span>':i.status==='failed'?'<span class="pill due">failed</span>':'<span class="pill gray">not sent</span>'}</td>
+     <td class="right"><button class="small" onclick="showInvite(${i.id})">${i.status==='pending'?'Send':'View'}</button></td></tr>`
+  ).join('')||'<tr><td colspan="5" class="note">No invitations yet. Sell a property to create one.</td></tr>';
 }
 
 // ---------- settings ----------
@@ -411,6 +851,19 @@ async function loadSettings(){
     + chip(s.integrations.paynearme,'PayNearMe','Cash at Walmart, 7-Eleven &amp; more — set PNM_API_KEY and PNM_SITE_ID')
     + chip(s.integrations.ai,'AI document reading','Closing docs &amp; bank statements — set ANTHROPIC_API_KEY');
   $('tb-url').href=location.origin+'/'; $('tb-url').textContent=location.origin+'/';
+}
+async function changeMyPassword(){
+  $('pwd-err').classList.add('hidden'); $('pwd-ok').classList.add('hidden');
+  const fail=m=>{ $('pwd-err').textContent=m; $('pwd-err').classList.remove('hidden'); };
+  const pw=$('pw-new').value;
+  if(pw.length<8) return fail('Password must be at least 8 characters.');
+  if(pw!==$('pw-new2').value) return fail('Those passwords do not match.');
+  try{
+    await api('/api/change-password',{method:'POST',body:JSON.stringify({password:pw})});
+    $('pw-new').value=''; $('pw-new2').value='';
+    $('pwd-ok').textContent='Password changed. It takes effect on your next sign-in.';
+    $('pwd-ok').classList.remove('hidden');
+  }catch(e){ fail(e.message); }
 }
 async function saveCompany(){
   $('set-err').classList.add('hidden'); $('set-ok').classList.add('hidden');
@@ -466,7 +919,7 @@ async function loadPML(){
      <td>${r.status==='active'?'<span class="pill ok">active</span>':`<span class="pill gray">${r.status}</span>`}</td></tr>`
   ).join('')||'<tr><td colspan="10" class="note">No PML loans yet.</td></tr>';
 }
-function pmlModal(){
+function pmlModal(presetProp){
   modal(`<h2>Add PML loan</h2>
     <div class="grid2">
       <div class="field"><label>Lender name</label><input id="pm-lender"></div>
@@ -485,6 +938,7 @@ function pmlModal(){
     </div>
     <div id="pm-err" class="err hidden"></div>
     <button class="primary" onclick="createPML()">Add PML loan</button>`);
+  if(presetProp) $('pm-prop').value = presetProp;
 }
 async function createPML(){
   try{
@@ -583,6 +1037,8 @@ async function loadDash(){
      AI document reading ${d.integrations.ai?'<span class="pill ok">enabled</span>':'<span class="pill gray">not set — add ANTHROPIC_API_KEY</span>'}`;
   $('msg-badge').classList.toggle('hidden', !d.unread_messages);
   $('msg-badge').textContent = d.unread_messages;
+  $('inv-badge').classList.toggle('hidden', !d.pending_invitations);
+  $('inv-badge').textContent = d.pending_invitations;
   $('exp-badge').classList.toggle('hidden', !d.unassigned_expenses);
   $('exp-badge').textContent = d.unassigned_expenses;
   $('d-loans').innerHTML = d.loans.map(l=>
@@ -961,6 +1417,54 @@ async function loadProps(){
   ).join('')||'<tr><td colspan="3" class="note">No properties yet.</td></tr>';
 }
 
+// ---------- linked accounts (financial sync) ----------
+async function loadLinked(){
+  const el=$('linked-list'); if(!el) return;
+  const d=await api('/api/admin/linked-accounts');
+  if(!d.stripe){ el.innerHTML='<p class="note">Connect Stripe first (set STRIPE_SECRET_KEY) to link accounts.</p>'; return; }
+  el.innerHTML = d.accounts.length ? d.accounts.map(a=>`
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px">
+      <span><b>${esc(a.institution_name||a.display_name||'Account')}</b>
+        ${a.last4?`<span class="note"> ····${esc(a.last4)}</span>`:''}
+        ${a.category?`<span class="pill gray">${esc(String(a.category).replace('_',' '))}</span>`:''}
+        ${a.status==='disconnected'?'<span class="pill due">disconnected</span>':''}
+        <br><span class="note">${a.last_synced_at?'Last synced '+new Date(a.last_synced_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'Never synced'}</span></span>
+      <span style="white-space:nowrap">
+        <button class="small" onclick="syncAccount(${a.id})">Sync now</button>
+        <button class="small warn" onclick="unlinkAccount(${a.id})">Unlink</button></span>
+    </div>`).join('') : '<p class="note">No accounts linked yet.</p>';
+}
+async function linkAccount(){
+  $('link-status').textContent='Opening your bank...';
+  try{
+    const r=await api('/api/admin/linked-accounts/session',{method:'POST',body:'{}'});
+    window.open('https://connections.stripe.com/link?client_secret='+encodeURIComponent(r.client_secret),'_blank','width=520,height=720');
+    LINK_SESSION = r.session_id;
+    $('link-status').innerHTML='Finish signing in to your bank in the popup, then <a href="#" onclick="finishLink();return false">click here</a>.';
+  }catch(e){ $('link-status').textContent='\u26A0\uFE0F '+e.message; }
+}
+let LINK_SESSION = null;
+async function finishLink(){
+  if(!LINK_SESSION) return;
+  try{
+    const r=await api('/api/admin/linked-accounts/finish',{method:'POST',body:JSON.stringify({session_id:LINK_SESSION})});
+    $('link-status').textContent = r.added ? `Linked ${r.added} account(s).` : 'No new accounts were linked.';
+    loadLinked();
+  }catch(e){ $('link-status').textContent='\u26A0\uFE0F '+e.message; }
+}
+async function syncAccount(id){
+  $('link-status').textContent='Pulling transactions...';
+  try{
+    const r=await api(`/api/admin/linked-accounts/${id}/sync`,{method:'POST',body:'{}'});
+    $('link-status').textContent=`Imported ${r.imported} transaction(s) - review them below.`;
+    loadLinked(); expFilter='unassigned'; loadExpenses(); loadDash();
+  }catch(e){ $('link-status').textContent='\u26A0\uFE0F '+e.message; }
+}
+async function unlinkAccount(id){
+  if(!confirm('Unlink this account? Transactions already imported stay put.'))return;
+  await api('/api/admin/linked-accounts/'+id,{method:'DELETE'}); loadLinked();
+}
+
 // ---------- expenses ----------
 async function importStatement(){
   const f=$('st-file').files[0]; if(!f)return;
@@ -1038,6 +1542,71 @@ async function markSlip(id){
   await api(`/api/admin/cash-slips/${id}/mark-paid`,{method:'POST',body:'{}'});
   loadSlips();
 }
+// ---------- first-run setup wizard ----------
+let wzStep = 1, wzMax = 4;
+async function maybeWizard(){
+  const st = await api('/api/admin/setup-state');
+  if (st.setup_complete && !st.must_change_password) return false;
+  $('wz-name').value = st.user.name && st.user.name !== 'Administrator' ? st.user.name : '';
+  $('wz-phone').value = st.user.phone || '';
+  $('wz-co').value = st.company.name || '';
+  $('wz-coemail').value = st.company.contact_email || st.user.email || '';
+  $('wz-cophone').value = st.company.contact_phone || '';
+  if (st.company.default_late_fee_cents) $('wz-late').value = (st.company.default_late_fee_cents/100).toFixed(2);
+  if (st.company.default_grace_days != null) $('wz-grace').value = st.company.default_grace_days;
+  wzStep = st.must_change_password ? 1 : 2;
+  $('wizard').classList.remove('hidden');
+  wzRender();
+  return true;
+}
+function wzRender(){
+  document.querySelectorAll('.wpane').forEach(el=>el.classList.toggle('hidden', +el.dataset.s !== wzStep));
+  document.querySelectorAll('.wstep').forEach(el=>el.classList.toggle('on', +el.dataset.s <= wzStep));
+  $('wz-back').style.visibility = wzStep > 1 ? 'visible' : 'hidden';
+  $('wz-next').textContent = wzStep === wzMax ? 'Finish setup' : 'Continue';
+}
+function wzGo(d){ wzStep = Math.max(1, Math.min(wzMax, wzStep + d)); $('wz-err').classList.add('hidden'); wzRender(); }
+async function wzNext(){
+  $('wz-err').classList.add('hidden');
+  const fail = m => { $('wz-err').textContent = m; $('wz-err').classList.remove('hidden'); };
+  try {
+    if (wzStep === 1){
+      const pw = $('wz-pw').value;
+      if (pw.length < 8) return fail('Password must be at least 8 characters.');
+      if (pw !== $('wz-pw2').value) return fail('Those passwords do not match.');
+      await api('/api/admin/setup',{method:'POST',body:JSON.stringify({password:pw})});
+    }
+    if (wzStep === 2){
+      if (!$('wz-name').value.trim()) return fail('Please enter your name.');
+      await api('/api/admin/setup',{method:'POST',body:JSON.stringify({
+        name:$('wz-name').value.trim(), phone:$('wz-phone').value })});
+    }
+    if (wzStep === 3){
+      if (!$('wz-co').value.trim()) return fail('Please enter your company name.');
+      const body = { company_name:$('wz-co').value.trim(),
+        contact_email:$('wz-coemail').value, contact_phone:$('wz-cophone').value };
+      const f = $('wz-logo').files[0];
+      if (f){ body.logo_filename = f.name; body.logo_base64 = await fileToB64(f); }
+      await api('/api/admin/setup',{method:'POST',body:JSON.stringify(body)});
+    }
+    if (wzStep === wzMax){
+      await api('/api/admin/setup',{method:'POST',body:JSON.stringify({
+        default_late_fee_cents: Math.round((parseFloat($('wz-late').value)||0)*100),
+        default_grace_days: parseInt($('wz-grace').value||5),
+        pass_fees_to_buyer: $('wz-fees').checked,
+        fee_label: $('wz-feelabel').value || 'Processing fee',
+        finish: true })});
+      $('wizard').classList.add('hidden');
+      loadDash(); nav('newdeal');
+      return;
+    }
+    wzGo(1);
+  } catch(e){ fail(e.message); }
+}
+
+function toggleMoreSheet(){ $('more-sheet').classList.toggle('open'); }
+function navSheet(pg){ $('more-sheet').classList.remove('open'); nav(pg); }
+
 boot();
 </script>
 </body>

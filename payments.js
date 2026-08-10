@@ -39,8 +39,14 @@ async function stripeRequest(pathname, params) {
 }
 
 // Create a Stripe Checkout session for a loan payment.
-async function createCheckoutSession({ loan, amountCents, baseUrl, tenantEmail }) {
+async function createCheckoutSession({ loan, amountCents, baseUrl, tenantEmail, feeCents, feeLabel }) {
   const methods = ['card', 'cashapp', 'us_bank_account'];
+  const feeLines = feeCents ? {
+    'line_items[1][price_data][currency]': 'usd',
+    'line_items[1][price_data][unit_amount]': feeCents,
+    'line_items[1][price_data][product_data][name]': feeLabel || 'Processing fee',
+    'line_items[1][quantity]': 1,
+  } : {};
   return stripeRequest('checkout/sessions', {
     mode: 'payment',
     payment_method_types: methods,
@@ -49,8 +55,10 @@ async function createCheckoutSession({ loan, amountCents, baseUrl, tenantEmail }
     'line_items[0][price_data][unit_amount]': amountCents,
     'line_items[0][price_data][product_data][name]': `Loan payment — ${loan.address}`,
     'line_items[0][quantity]': 1,
+    ...feeLines,
     'metadata[loan_id]': loan.id,
     'metadata[amount_cents]': amountCents,
+    'metadata[fee_cents]': feeCents || 0,
     success_url: `${baseUrl}/?paid=1&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${baseUrl}/?paid=0`,
   });
@@ -142,5 +150,107 @@ function verifyPnmSignature(payload, sigHeader, secret) {
   catch { return false; }
 }
 
+
+// ---- Saved payment methods (tokenized — we never touch card or bank numbers) ----
+// Flow: create/reuse a Stripe Customer -> open Checkout in "setup" mode -> Stripe stores
+// the card or bank account and hands back a payment_method id we can charge later.
+
+async function getOrCreateCustomer(user, saveIdFn) {
+  if (user.stripe_customer_id) return user.stripe_customer_id;
+  const c = await stripeRequest('customers', {
+    email: user.email, name: user.name,
+    'metadata[user_id]': user.id,
+  });
+  if (saveIdFn) saveIdFn(c.id);
+  return c.id;
+}
+
+// Checkout session that saves a payment method instead of charging.
+async function createSetupSession({ customerId, baseUrl, methods }) {
+  return stripeRequest('checkout/sessions', {
+    mode: 'setup',
+    customer: customerId,
+    payment_method_types: methods || ['card', 'us_bank_account'],
+    success_url: `${baseUrl}/?saved=1&setup_session={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${baseUrl}/?saved=0`,
+  });
+}
+
+async function stripeGet(pathname) {
+  const res = await fetch(`https://api.stripe.com/v1/${pathname}`, {
+    headers: { Authorization: `Bearer ${STRIPE_KEY()}` },
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error ? json.error.message : `Stripe error ${res.status}`);
+  return json;
+}
+
+async function retrieveSetupIntent(id) { return stripeGet(`setup_intents/${id}`); }
+async function retrievePaymentMethod(id) { return stripeGet(`payment_methods/${id}`); }
+
+async function listCustomerPaymentMethods(customerId) {
+  const out = [];
+  for (const type of ['card', 'us_bank_account']) {
+    const r = await stripeGet(`payment_methods?customer=${customerId}&type=${type}&limit=20`);
+    out.push(...(r.data || []));
+  }
+  return out;
+}
+
+async function detachPaymentMethod(pmId) {
+  return stripeRequest(`payment_methods/${pmId}/detach`, {});
+}
+
+// Charge a saved method without the buyer present (autopay, or one-tap repeat payment).
+async function chargeSavedMethod({ customerId, paymentMethodId, amountCents, description, idempotencyKey }) {
+  const body = new URLSearchParams({
+    amount: String(amountCents),
+    currency: 'usd',
+    customer: customerId,
+    payment_method: paymentMethodId,
+    off_session: 'true',
+    confirm: 'true',
+    description: description || 'Loan payment',
+  });
+  const headers = {
+    Authorization: `Bearer ${STRIPE_KEY()}`,
+    'Content-Type': 'application/x-www-form-urlencoded',
+  };
+  if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
+  const res = await fetch('https://api.stripe.com/v1/payment_intents', {
+    method: 'POST', headers, body: body.toString(),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error ? json.error.message : `Stripe error ${res.status}`);
+  return json;
+}
+
+// ---- Financial Connections: link business bank / card accounts for expense import ----
+async function createFinancialConnectionsSession({ customerId, baseUrl }) {
+  return stripeRequest('financial_connections/sessions', {
+    'account_holder[type]': 'customer',
+    'account_holder[customer]': customerId,
+    'permissions[0]': 'transactions',
+    'permissions[1]': 'balances',
+    'permissions[2]': 'ownership',
+    return_url: `${baseUrl}/admin?linked=1`,
+  });
+}
+async function listFinancialAccounts(sessionId) {
+  const s = await stripeGet(`financial_connections/sessions/${sessionId}`);
+  return s.accounts && s.accounts.data ? s.accounts.data : [];
+}
+async function refreshAccountTransactions(accountId) {
+  return stripeRequest(`financial_connections/accounts/${accountId}/refresh`, { features: 'transactions' });
+}
+async function listAccountTransactions(accountId, limit = 100) {
+  const r = await stripeGet(`financial_connections/transactions?account=${accountId}&limit=${limit}`);
+  return r.data || [];
+}
+
 module.exports = { stripeEnabled, createCheckoutSession, retrieveSession, verifyStripeSignature,
-  createRetailSlip, pnmEnabled, verifyPnmSignature };
+  createRetailSlip, pnmEnabled, verifyPnmSignature,
+  getOrCreateCustomer, createSetupSession, retrieveSetupIntent, retrievePaymentMethod,
+  listCustomerPaymentMethods, detachPaymentMethod, chargeSavedMethod,
+  createFinancialConnectionsSession, listFinancialAccounts,
+  refreshAccountTransactions, listAccountTransactions };

@@ -8,6 +8,8 @@ const { db, get, all, run, hashPassword, verifyPassword } = require('./db');
 const loanEngine = require('./loan');
 const pay = require('./payments');
 const ai = require('./ai');
+const sms = require('./sms');
+const reports = require('./reports');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -175,7 +177,7 @@ function assessRecurringCharges(loan) {
   return get('SELECT * FROM loans WHERE id=?', loan.id);
 }
 
-function postPayment(loanId, amountCents, method, entryDate, externalId, memo, createdBy) {
+function postPayment(loanId, amountCents, method, entryDate, externalId, memo, createdBy, feeCents) {
   let loan = get('SELECT * FROM loans WHERE id=?', loanId);
   if (!loan) throw new Error('Loan not found');
   loan = assessRecurringCharges(loan);
@@ -193,6 +195,7 @@ function postPayment(loanId, amountCents, method, entryDate, externalId, memo, c
     loanId, entryDate, 'payment', method, amountCents, alloc.to_interest_cents,
     alloc.to_principal_cents, alloc.to_escrow_cents + alloc.unapplied_cents, alloc.to_fees_cents,
     newPrincipal, memo || null, externalId || null, createdBy || null);
+  if (feeCents) run('UPDATE ledger SET fee_cents=? WHERE id=(SELECT MAX(id) FROM ledger WHERE loan_id=?)', feeCents, loanId);
   run(`UPDATE loans SET principal_balance_cents=?, escrow_balance_cents=?, fees_due_cents=?,
         interest_due_cents=?, status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
     newPrincipal, newEscrow, newFees, newInterestDue, newPrincipal, loanId);
@@ -201,10 +204,11 @@ function postPayment(loanId, amountCents, method, entryDate, externalId, memo, c
 
 function postStripePayment(session) {
   const loanId = Number(session.metadata.loan_id);
-  const amount = Number(session.amount_total || session.metadata.amount_cents);
+  const fee = Number((session.metadata && session.metadata.fee_cents) || 0);
+  const amount = Number(session.metadata.amount_cents || ((session.amount_total || 0) - fee));
   const pmType = (session.payment_method_types && session.payment_method_types[0]) || 'card';
   const method = pmType === 'cashapp' ? 'stripe_cashapp' : pmType === 'us_bank_account' ? 'stripe_ach' : 'stripe_card';
-  return postPayment(loanId, amount, method, today(), `stripe:${session.id}`, 'Online payment', null);
+  return postPayment(loanId, amount, method, today(), `stripe:${session.id}`, 'Online payment', null, fee);
 }
 
 // ---------- automated late / legal notices ----------
@@ -279,14 +283,50 @@ function loanFull(loan) {
   return { loan, ledger, status, property, tenant, charges };
 }
 
+// ---------- login throttling ----------
+// Counts failures per email+IP. Short lockout that grows with repeated failures, so a
+// script guessing passwords gets nowhere while a person who fat-fingers theirs waits seconds.
+const loginFails = new Map();
+function throttleKey(req, email) {
+  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  return `${ip}|${String(email || '').toLowerCase()}`;
+}
+function throttleCheck(key) {
+  const rec = loginFails.get(key);
+  if (!rec) return null;
+  if (Date.now() > rec.until) { loginFails.delete(key); return null; }
+  if (rec.count < 5) return null;
+  return Math.ceil((rec.until - Date.now()) / 1000);
+}
+function throttleFail(key) {
+  const rec = loginFails.get(key) || { count: 0, until: 0 };
+  rec.count += 1;
+  // 5 strikes, then 30s, 1m, 2m, 4m… capped at 15 minutes.
+  const backoff = Math.min(30 * Math.pow(2, Math.max(0, rec.count - 5)), 900);
+  rec.until = Date.now() + backoff * 1000;
+  loginFails.set(key, rec);
+}
+function throttleClear(key) { loginFails.delete(key); }
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of loginFails) if (now > v.until + 3600000) loginFails.delete(k);
+}, 600000);
+
 // ---------- auth routes ----------
 app.post('/api/login', (req, res) => {
   const { email, password } = req.body || {};
+  const key = throttleKey(req, email);
+  const wait = throttleCheck(key);
+  if (wait) {
+    return res.status(429).json({ error: `Too many attempts. Try again in ${wait} second${wait === 1 ? '' : 's'}.` });
+  }
   const user = get('SELECT * FROM users WHERE email=? AND deleted_at IS NULL',
     String(email || '').toLowerCase().trim());
   if (!user || !verifyPassword(password || '', user.password_hash)) {
+    throttleFail(key);
     return res.status(401).json({ error: 'Invalid email or password' });
   }
+  throttleClear(key);
   if (user.archived_at) return res.status(403).json({ error: 'This account is archived. Contact your servicer.' });
   const token = sign({ uid: user.id, exp: Date.now() + 30 * 86400000 });
   res.setHeader('Set-Cookie', `session=${token}; HttpOnly; Path=/; Max-Age=${30 * 86400}; SameSite=Lax`);
@@ -301,6 +341,7 @@ app.post('/api/change-password', anyUser, (req, res) => {
   const { password } = req.body || {};
   if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
   run('UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?', hashPassword(password), req.user.id);
+  run("UPDATE invitations SET status='accepted', accepted_at=datetime('now') WHERE user_id=? AND status<>'accepted'", req.user.id);
   res.json({ ok: true });
 });
 
@@ -323,11 +364,13 @@ app.get('/api/admin/summary', adminOnly, (req, res) => {
   const unassigned = get("SELECT COUNT(*) c FROM expenses WHERE status='unassigned' AND company_id=?", req.companyId).c;
   const company = get('SELECT id, name FROM companies WHERE id=?', req.companyId);
   res.json({
-    company, user: { name: req.user.name, role: req.user.role },
+    company: { ...company, setup_complete: !!get('SELECT setup_complete FROM companies WHERE id=?', req.companyId).setup_complete },
+    user: { name: req.user.name, role: req.user.role },
     active_loans: loans.length, total_balance_cents: totalBalance, past_due_count: pastDue,
     owed_now_cents: owedNow, unread_messages: unreadMsgs, unassigned_expenses: unassigned,
     loans: loanCards,
-    integrations: { stripe: pay.stripeEnabled(), ai: ai.aiEnabled(), paynearme: pay.pnmEnabled() },
+    integrations: { stripe: pay.stripeEnabled(), ai: ai.aiEnabled(), paynearme: pay.pnmEnabled(), sms: sms.smsEnabled() },
+    pending_invitations: get("SELECT COUNT(*) c FROM invitations WHERE company_id=? AND status IN ('pending','failed')", req.companyId).c,
   });
 });
 
@@ -360,6 +403,115 @@ app.delete('/api/admin/staff/:id', ownerOnly, (req, res, next) => {
     req.params.id, req.companyId);
   if (!u) return res.status(404).json({ error: 'Staff member not found' });
   try { eraseUser(u.id, 'admin'); res.json({ ok: true }); } catch (e) { next(e); }
+});
+
+// ---------- first-run setup wizard ----------
+app.get('/api/admin/setup-state', adminOnly, (req, res) => {
+  const c = get('SELECT * FROM companies WHERE id=?', req.companyId);
+  res.json({
+    setup_complete: !!c.setup_complete,
+    must_change_password: !!req.user.must_change_password,
+    company: { name: c.name, contact_email: c.contact_email, contact_phone: c.contact_phone,
+      logo_path: c.logo_path, default_late_fee_cents: c.default_late_fee_cents,
+      default_grace_days: c.default_grace_days, pass_fees_to_buyer: c.pass_fees_to_buyer,
+      fee_label: c.fee_label },
+    user: { name: req.user.name, phone: req.user.phone, email: req.user.email },
+  });
+});
+app.post('/api/admin/setup', adminOnly, (req, res, next) => {
+  const b = req.body || {};
+  try {
+    if (b.password) {
+      if (b.password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+      run('UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?', hashPassword(b.password), req.user.id);
+    }
+    if (b.name || b.phone !== undefined) {
+      run('UPDATE users SET name=COALESCE(?,name), phone=? WHERE id=?',
+        b.name || null, b.phone !== undefined ? b.phone : req.user.phone, req.user.id);
+    }
+    if (b.logo_base64 && b.logo_filename) {
+      const stored = 'logo-' + crypto.randomUUID() + path.extname(b.logo_filename);
+      fs.writeFileSync(path.join(UPLOAD_DIR, stored), Buffer.from(b.logo_base64, 'base64'));
+      run('UPDATE companies SET logo_path=? WHERE id=?', stored, req.companyId);
+    }
+    const c = get('SELECT * FROM companies WHERE id=?', req.companyId);
+    run(`UPDATE companies SET name=?, contact_email=?, contact_phone=?,
+          default_late_fee_cents=?, default_grace_days=?, pass_fees_to_buyer=?, fee_label=?
+         WHERE id=?`,
+      b.company_name || c.name, b.contact_email ?? c.contact_email, b.contact_phone ?? c.contact_phone,
+      b.default_late_fee_cents ?? c.default_late_fee_cents, b.default_grace_days ?? c.default_grace_days,
+      b.pass_fees_to_buyer === undefined ? c.pass_fees_to_buyer : (b.pass_fees_to_buyer ? 1 : 0),
+      b.fee_label || c.fee_label, req.companyId);
+    if (b.finish) run('UPDATE companies SET setup_complete=1 WHERE id=?', req.companyId);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+app.get('/api/company-logo/:companyId', (req, res) => {
+  const c = get('SELECT logo_path FROM companies WHERE id=?', req.params.companyId);
+  if (!c || !c.logo_path) return res.status(404).end();
+  const f = path.join(UPLOAD_DIR, c.logo_path);
+  if (!fs.existsSync(f)) return res.status(404).end();
+  res.sendFile(f);
+});
+
+// ---------- admin financial sync: link bank / credit card accounts ----------
+app.get('/api/admin/linked-accounts', adminOnly, (req, res) => {
+  res.json({
+    stripe: pay.stripeEnabled(),
+    accounts: all(`SELECT id, institution_name, display_name, last4, category, status, last_synced_at
+      FROM linked_accounts WHERE company_id=? ORDER BY id`, req.companyId),
+  });
+});
+app.post('/api/admin/linked-accounts/session', adminOnly, async (req, res, next) => {
+  if (!pay.stripeEnabled()) return res.status(400).json({ error: 'Connect Stripe first — set STRIPE_SECRET_KEY.' });
+  try {
+    const customerId = await customerFor(req.user);
+    const session = await pay.createFinancialConnectionsSession({ customerId, baseUrl: baseUrlOf(req) });
+    res.json({ client_secret: session.client_secret, session_id: session.id });
+  } catch (e) { next(e); }
+});
+app.post('/api/admin/linked-accounts/finish', adminOnly, async (req, res, next) => {
+  try {
+    const accounts = await pay.listFinancialAccounts(req.body.session_id);
+    let added = 0;
+    for (const a of accounts) {
+      if (get('SELECT id FROM linked_accounts WHERE stripe_account_id=?', a.id)) continue;
+      run(`INSERT INTO linked_accounts (company_id, stripe_account_id, institution_name,
+            display_name, last4, category) VALUES (?,?,?,?,?,?)`,
+        req.companyId, a.id, a.institution_name || null, a.display_name || null,
+        a.last4 || null, a.category || a.subcategory || null);
+      added++;
+    }
+    res.json({ added });
+  } catch (e) { next(e); }
+});
+app.post('/api/admin/linked-accounts/:id/sync', adminOnly, async (req, res, next) => {
+  const acct = get('SELECT * FROM linked_accounts WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!acct) return res.status(404).json({ error: 'Account not found' });
+  try {
+    try { await pay.refreshAccountTransactions(acct.stripe_account_id); } catch {}
+    const txns = await pay.listAccountTransactions(acct.stripe_account_id, 200);
+    let imported = 0;
+    for (const t of txns) {
+      if (t.amount >= 0) continue;                                   // money in, not an expense
+      const ext = `fc:${t.id}`;
+      if (get('SELECT id FROM expenses WHERE external_id=?', ext)) continue;
+      run(`INSERT INTO expenses (company_id, property_id, txn_date, description, amount_cents,
+            category, status, linked_account_id, external_id) VALUES (?,?,?,?,?,?,?,?,?)`,
+        req.companyId, null,
+        new Date((t.transacted_at || t.posted_at || Date.now()/1000) * 1000).toISOString().slice(0,10),
+        t.description || '(no description)', Math.abs(t.amount), null, 'unassigned', acct.id, ext);
+      imported++;
+    }
+    run("UPDATE linked_accounts SET last_synced_at=datetime('now') WHERE id=?", acct.id);
+    res.json({ imported });
+  } catch (e) { next(e); }
+});
+app.delete('/api/admin/linked-accounts/:id', adminOnly, (req, res) => {
+  const acct = get('SELECT * FROM linked_accounts WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!acct) return res.status(404).json({ error: 'Account not found' });
+  run("UPDATE linked_accounts SET status='disconnected' WHERE id=?", acct.id);
+  res.json({ ok: true });
 });
 
 // ---------- company signup (new servicing company self-onboards) ----------
@@ -399,6 +551,10 @@ app.get('/api/admin/properties', adminOnly, (req, res) => {
   const props = all('SELECT * FROM properties WHERE company_id=? ORDER BY id DESC', req.companyId);
   for (const p of props) {
     p.expense_total_cents = get("SELECT COALESCE(SUM(amount_cents),0) s FROM expenses WHERE property_id=? AND status='assigned'", p.id).s;
+    p.cost_basis_cents = propertyBasis(p.id).total_cents;
+    p.all_in_cents = p.cost_basis_cents + p.expense_total_cents;
+    const l = get("SELECT id, sale_price_cents, principal_balance_cents FROM loans WHERE property_id=? AND status='active' ORDER BY id DESC LIMIT 1", p.id);
+    p.loan = l || null;
   }
   res.json(props);
 });
@@ -416,6 +572,207 @@ app.put('/api/admin/properties/:id', adminOnly, (req, res) => {
   run('UPDATE properties SET address=?, city=?, state=?, zip=?, trust_name=?, trustee=?, notes=? WHERE id=?',
     b.address, b.city, b.state, b.zip, b.trust_name, b.trustee, b.notes, p.id);
   res.json(get('SELECT * FROM properties WHERE id=?', p.id));
+});
+
+// ---------- reports: P&L, balance sheet, returns ----------
+app.get('/api/admin/reports/pl', adminOnly, (req, res) => {
+  res.json(reports.profitAndLoss(req.companyId, req.query.from || null, req.query.to || null));
+});
+app.get('/api/admin/reports/balance-sheet', adminOnly, (req, res) => {
+  res.json(reports.balanceSheet(req.companyId, req.query.as_of || null));
+});
+app.get('/api/admin/reports/returns', adminOnly, (req, res) => {
+  res.json(reports.portfolioReturns(req.companyId));
+});
+app.get('/api/admin/reports/returns/:propertyId', adminOnly, (req, res) => {
+  const r = reports.propertyReturns(req.companyId, req.params.propertyId);
+  if (!r) return res.status(404).json({ error: 'Property not found' });
+  res.json(r);
+});
+
+// ---------- property profile: costs, basis, and the sale ----------
+const COST_LABELS = {
+  purchase: 'Purchase price', closing: 'Closing costs', filing: 'Filing & recording fees',
+  rehab: 'Rehab / repairs', bog: 'Boots on the ground', insurance: 'Insurance',
+  taxes: 'Property taxes', utilities: 'Utilities', marketing: 'Marketing',
+  legal: 'Legal / title', other: 'Other',
+};
+
+function propertyBasis(propertyId) {
+  const rows = all(`SELECT category, SUM(amount_cents) AS total FROM property_costs
+    WHERE property_id=? GROUP BY category`, propertyId);
+  const by = {};
+  let total = 0;
+  for (const r of rows) { by[r.category] = r.total; total += r.total; }
+  return { by_category: by, total_cents: total };
+}
+
+app.get('/api/admin/properties/:id', adminOnly, (req, res) => {
+  const prop = ownedProperty(req, req.params.id);
+  if (!prop) return res.status(404).json({ error: 'Not found' });
+  const basis = propertyBasis(prop.id);
+  const loan = get(`SELECT * FROM loans WHERE property_id=? ORDER BY id DESC LIMIT 1`, prop.id);
+  const tenant = loan && loan.tenant_user_id
+    ? get('SELECT id, name, email, phone FROM users WHERE id=?', loan.tenant_user_id) : null;
+  const pml = all('SELECT * FROM pml_loans WHERE property_id=?', prop.id);
+  const expenses = get(`SELECT COALESCE(SUM(amount_cents),0) s FROM expenses
+    WHERE property_id=? AND status='assigned'`, prop.id).s;
+  res.json({
+    property: prop,
+    costs: all('SELECT * FROM property_costs WHERE property_id=? ORDER BY cost_date DESC, id DESC', prop.id),
+    cost_labels: COST_LABELS,
+    basis,
+    returns: reports.propertyReturns(req.companyId, prop.id),
+    assigned_expenses_cents: expenses,
+    all_in_cents: basis.total_cents + expenses,
+    loan: loan || null,
+    tenant,
+    pml_loans: pml,
+    pml_balance_cents: pml.filter(p => p.status === 'active').reduce((t, p) => t + p.principal_balance_cents, 0),
+    documents: all(`SELECT id, filename, category, title, visible_to_tenant, created_at
+      FROM documents WHERE property_id=? OR loan_id=? ORDER BY id DESC`, prop.id, loan ? loan.id : -1),
+  });
+});
+
+app.put('/api/admin/properties/:id/details', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  const b = req.body || {};
+  run(`UPDATE properties SET status=?, acquired_date=?, purchase_price_cents=?,
+        target_sale_price_cents=?, beds=?, baths=?, sqft=?, year_built=?, notes=? WHERE id=?`,
+    b.status || p.status, b.acquired_date ?? p.acquired_date,
+    b.purchase_price_cents ?? p.purchase_price_cents, b.target_sale_price_cents ?? p.target_sale_price_cents,
+    b.beds ?? p.beds, b.baths ?? p.baths, b.sqft ?? p.sqft, b.year_built ?? p.year_built,
+    b.notes ?? p.notes, p.id);
+  res.json(get('SELECT * FROM properties WHERE id=?', p.id));
+});
+
+app.post('/api/admin/properties/:id/costs', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  const { category, description, vendor, amount_cents, cost_date } = req.body || {};
+  if (!description || !amount_cents) return res.status(400).json({ error: 'Description and amount required' });
+  const r = run(`INSERT INTO property_costs (company_id, property_id, category, description,
+      vendor, amount_cents, cost_date, created_by) VALUES (?,?,?,?,?,?,?,?)`,
+    req.companyId, p.id, category || 'other', description, vendor || null,
+    amount_cents, cost_date || today(), req.user.id);
+  // Keep the headline purchase price on the property in step with a "purchase" cost line.
+  if ((category || '') === 'purchase') {
+    run('UPDATE properties SET purchase_price_cents=? WHERE id=?', amount_cents, p.id);
+  }
+  res.json(get('SELECT * FROM property_costs WHERE id=?', r.lastInsertRowid));
+});
+
+app.delete('/api/admin/costs/:id', adminOnly, (req, res) => {
+  const c = get('SELECT * FROM property_costs WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!c) return res.status(404).json({ error: 'Not found' });
+  run('DELETE FROM property_costs WHERE id=?', c.id);
+  res.json({ ok: true });
+});
+
+// Sell the property to a tenant buyer: creates their login, opens the loan, and
+// prepares the text invitation in one action.
+app.post('/api/admin/properties/:id/sell', adminOnly, async (req, res, next) => {
+  const prop = ownedProperty(req, req.params.id);
+  if (!prop) return res.status(404).json({ error: 'Property not found' });
+  const b = req.body || {};
+  for (const f of ['buyer_name', 'buyer_email', 'sale_price_cents', 'principal_cents',
+                   'interest_rate_bps', 'term_months', 'first_payment_date']) {
+    if (!b[f]) return res.status(400).json({ error: `Missing ${f}` });
+  }
+  const email = String(b.buyer_email).toLowerCase().trim();
+  if (get('SELECT id FROM users WHERE email=?', email)) {
+    return res.status(400).json({ error: 'That buyer email already has an account' });
+  }
+  try {
+    const co = get('SELECT * FROM companies WHERE id=?', req.companyId);
+    const temp = 'TB-' + crypto.randomInt(100000, 999999) + '!';
+    const u = run(`INSERT INTO users (company_id, email, password_hash, role, name, phone, must_change_password)
+      VALUES (?,?,?,?,?,?,1)`, req.companyId, email, hashPassword(temp), 'tenant',
+      b.buyer_name, b.buyer_phone || null);
+    const payment = b.payment_cents ||
+      loanEngine.calcPayment(b.principal_cents, b.interest_rate_bps, b.term_months);
+    const l = run(`INSERT INTO loans (company_id, property_id, tenant_user_id, loan_type,
+        sale_price_cents, down_payment_cents, principal_cents, interest_rate_bps, term_months,
+        payment_cents, escrow_cents, late_fee_cents, grace_days, first_payment_date, due_day,
+        principal_balance_cents, beneficial_interest_pct)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      req.companyId, prop.id, u.lastInsertRowid, b.loan_type || 'land_contract',
+      b.sale_price_cents, b.down_payment_cents || 0, b.principal_cents, b.interest_rate_bps,
+      b.term_months, payment, b.escrow_cents || 0,
+      b.late_fee_cents ?? co.default_late_fee_cents ?? 0,
+      b.grace_days ?? co.default_grace_days ?? 5,
+      b.first_payment_date, Number(String(b.first_payment_date).slice(8, 10)),
+      b.principal_cents, b.beneficial_interest_pct || null);
+    run("UPDATE properties SET status='sold' WHERE id=?", prop.id);
+
+    const inv = run(`INSERT INTO invitations (company_id, loan_id, user_id, phone, temp_password, channel)
+      VALUES (?,?,?,?,?,?)`, req.companyId, l.lastInsertRowid, u.lastInsertRowid,
+      sms.normalizePhone(b.buyer_phone), temp, b.buyer_phone ? 'sms' : 'manual');
+
+    res.json({
+      loan_id: l.lastInsertRowid, tenant_user_id: u.lastInsertRowid,
+      invitation_id: inv.lastInsertRowid, temp_password: temp,
+      sms_enabled: sms.smsEnabled(),
+    });
+  } catch (e) { next(e); }
+});
+
+// ---------- invitations ----------
+function inviteBody(req, invId) {
+  const inv = get('SELECT * FROM invitations WHERE id=? AND company_id=?', invId, req.companyId);
+  if (!inv) return null;
+  const u = get('SELECT * FROM users WHERE id=?', inv.user_id);
+  const co = get('SELECT * FROM companies WHERE id=?', inv.company_id);
+  const loan = inv.loan_id ? get('SELECT * FROM loans WHERE id=?', inv.loan_id) : null;
+  const prop = loan ? get('SELECT * FROM properties WHERE id=?', loan.property_id) : null;
+  return {
+    inv, user: u,
+    text: sms.inviteMessage({
+      buyerName: u ? u.name : '', companyName: co.name,
+      address: prop ? prop.address : 'your new home',
+      url: baseUrlOf(req) + '/', email: u ? u.email : '',
+      tempPassword: inv.temp_password,
+    }),
+  };
+}
+app.get('/api/admin/invitations', adminOnly, (req, res) => {
+  res.json({
+    sms_enabled: sms.smsEnabled(),
+    invitations: all(`SELECT i.*, u.name AS buyer_name, u.email AS buyer_email, p.address
+      FROM invitations i LEFT JOIN users u ON u.id=i.user_id
+      LEFT JOIN loans l ON l.id=i.loan_id LEFT JOIN properties p ON p.id=l.property_id
+      WHERE i.company_id=? ORDER BY i.id DESC`, req.companyId),
+  });
+});
+app.get('/api/admin/invitations/:id/preview', adminOnly, (req, res) => {
+  const d = inviteBody(req, req.params.id);
+  if (!d) return res.status(404).json({ error: 'Not found' });
+  res.json({ text: d.text, phone: d.inv.phone, sms_enabled: sms.smsEnabled(),
+    buyer_name: d.user ? d.user.name : '', status: d.inv.status });
+});
+app.post('/api/admin/invitations/:id/send', adminOnly, async (req, res, next) => {
+  const d = inviteBody(req, req.params.id);
+  if (!d) return res.status(404).json({ error: 'Not found' });
+  const phone = sms.normalizePhone(req.body.phone || d.inv.phone);
+  if (!phone) return res.status(400).json({ error: 'No mobile number on file for this buyer' });
+  if (!sms.smsEnabled()) {
+    return res.status(400).json({ error: 'Texting is not set up yet. Copy the message and send it from your phone, or add your Twilio details.', text: d.text });
+  }
+  try {
+    await sms.sendSms(phone, d.text);
+    run("UPDATE invitations SET status='sent', phone=?, sent_at=datetime('now'), error=NULL WHERE id=?", phone, d.inv.id);
+    res.json({ ok: true });
+  } catch (e) {
+    run("UPDATE invitations SET status='failed', error=? WHERE id=?", e.message, d.inv.id);
+    next(e);
+  }
+});
+app.post('/api/admin/invitations/:id/mark-sent', adminOnly, (req, res) => {
+  const inv = get('SELECT * FROM invitations WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!inv) return res.status(404).json({ error: 'Not found' });
+  run("UPDATE invitations SET status='sent', channel='manual', sent_at=datetime('now') WHERE id=?", inv.id);
+  res.json({ ok: true });
 });
 
 // ---------- admin: tenant buyers ----------
@@ -865,6 +1222,236 @@ app.post('/api/tenant/notices/:id/read', tenantReady, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- processing fees ----------
+// The buyer's loan is always credited the full payment amount; the fee rides on top of the
+// charge and covers the processor. Cash at retail already charges the buyer at the register,
+// so we add nothing there.
+function feeSettings(companyId) {
+  const c = get('SELECT * FROM companies WHERE id=?', companyId) || {};
+  return {
+    pass: c.pass_fees_to_buyer === undefined ? 1 : c.pass_fees_to_buyer,
+    label: c.fee_label || 'Processing fee',
+    card_bps: c.fee_card_bps ?? 290, card_fixed: c.fee_card_fixed_cents ?? 30,
+    ach_bps: c.fee_ach_bps ?? 80, ach_fixed: c.fee_ach_fixed_cents ?? 0,
+    ach_cap: c.fee_ach_cap_cents ?? 500,
+  };
+}
+// method: 'card' | 'cashapp' | 'ach' | 'cash'
+function calcFee(companyId, amountCents, method) {
+  const f = feeSettings(companyId);
+  if (!f.pass || method === 'cash') return 0;
+  if (method === 'ach') {
+    const raw = Math.round(amountCents * f.ach_bps / 10000) + f.ach_fixed;
+    return f.ach_cap ? Math.min(raw, f.ach_cap) : raw;
+  }
+  return Math.round(amountCents * f.card_bps / 10000) + f.card_fixed;
+}
+app.get('/api/tenant/fee-quote', tenantReady, (req, res) => {
+  const loan = tenantLoan(req);
+  if (!loan) return res.status(404).json({ error: 'No loan' });
+  const amount = Number(req.query.amount_cents) || 0;
+  const f = feeSettings(loan.company_id);
+  res.json({
+    pass_fees: !!f.pass, label: f.label, amount_cents: amount,
+    card: { fee_cents: calcFee(loan.company_id, amount, 'card'), total_cents: amount + calcFee(loan.company_id, amount, 'card') },
+    cashapp: { fee_cents: calcFee(loan.company_id, amount, 'cashapp'), total_cents: amount + calcFee(loan.company_id, amount, 'cashapp') },
+    ach: { fee_cents: calcFee(loan.company_id, amount, 'ach'), total_cents: amount + calcFee(loan.company_id, amount, 'ach') },
+    cash: { fee_cents: 0, total_cents: amount, note: 'The store charges its own fee at the register.' },
+  });
+});
+
+// ---------- saved payment methods (tokenized via Stripe) ----------
+function customerFor(user) {
+  return pay.getOrCreateCustomer(user, (id) =>
+    run('UPDATE users SET stripe_customer_id=? WHERE id=?', id, user.id));
+}
+function baseUrlOf(req) {
+  const proto = req.headers['x-forwarded-proto'] || 'http';
+  return process.env.BASE_URL || `${proto}://${req.headers.host}`;
+}
+
+app.get('/api/tenant/payment-methods', tenantReady, (req, res) => {
+  res.json(all(`SELECT id, type, brand, last4, exp_month, exp_year, is_default
+    FROM payment_methods WHERE user_id=? ORDER BY is_default DESC, id DESC`, req.user.id));
+});
+
+// Opens Stripe Checkout in "setup" mode — Stripe collects and stores the card/bank.
+app.post('/api/tenant/payment-methods/setup', tenantReady, async (req, res, next) => {
+  if (!pay.stripeEnabled()) return res.status(400).json({ error: 'Online payments are not enabled yet. Ask your servicer.' });
+  try {
+    const customerId = await customerFor(req.user);
+    const session = await pay.createSetupSession({ customerId, baseUrl: baseUrlOf(req) });
+    res.json({ url: session.url });
+  } catch (e) { next(e); }
+});
+
+// Called after the redirect back — pulls the saved method into our table.
+app.get('/api/tenant/payment-methods/confirm', tenantReady, async (req, res, next) => {
+  if (!pay.stripeEnabled()) return res.json({ ok: false });
+  try {
+    const sess = await pay.retrieveSession(req.query.setup_session);
+    if (!sess.setup_intent) return res.json({ ok: false });
+    const si = await pay.retrieveSetupIntent(
+      typeof sess.setup_intent === 'string' ? sess.setup_intent : sess.setup_intent.id);
+    if (!si.payment_method) return res.json({ ok: false });
+    const pm = await pay.retrievePaymentMethod(
+      typeof si.payment_method === 'string' ? si.payment_method : si.payment_method.id);
+    savePaymentMethod(req.user.id, si.customer, pm);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+function savePaymentMethod(userId, customerId, pm) {
+  if (get('SELECT id FROM payment_methods WHERE stripe_payment_method_id=?', pm.id)) return;
+  const isCard = pm.type === 'card';
+  const d = isCard ? pm.card : pm.us_bank_account;
+  const hasDefault = get('SELECT id FROM payment_methods WHERE user_id=? AND is_default=1', userId);
+  run(`INSERT INTO payment_methods (user_id, stripe_customer_id, stripe_payment_method_id,
+        type, brand, last4, exp_month, exp_year, is_default) VALUES (?,?,?,?,?,?,?,?,?)`,
+    userId, customerId, pm.id, pm.type,
+    isCard ? (d && d.brand) : (d && d.bank_name),
+    d && d.last4, isCard && d ? d.exp_month : null, isCard && d ? d.exp_year : null,
+    hasDefault ? 0 : 1);
+}
+
+app.post('/api/tenant/payment-methods/:id/default', tenantReady, (req, res) => {
+  const pm = get('SELECT * FROM payment_methods WHERE id=? AND user_id=?', req.params.id, req.user.id);
+  if (!pm) return res.status(404).json({ error: 'Not found' });
+  run('UPDATE payment_methods SET is_default=0 WHERE user_id=?', req.user.id);
+  run('UPDATE payment_methods SET is_default=1 WHERE id=?', pm.id);
+  res.json({ ok: true });
+});
+
+app.delete('/api/tenant/payment-methods/:id', tenantReady, async (req, res, next) => {
+  const pm = get('SELECT * FROM payment_methods WHERE id=? AND user_id=?', req.params.id, req.user.id);
+  if (!pm) return res.status(404).json({ error: 'Not found' });
+  const loan = tenantLoan(req);
+  const ap = loan ? get('SELECT * FROM autopay WHERE loan_id=?', loan.id) : null;
+  if (ap && ap.payment_method_id === pm.id && ap.enabled) {
+    return res.status(400).json({ error: 'This method is used for autopay. Turn autopay off first, or switch it to another method.' });
+  }
+  try { if (pay.stripeEnabled()) await pay.detachPaymentMethod(pm.stripe_payment_method_id); } catch {}
+  run('DELETE FROM payment_methods WHERE id=?', pm.id);
+  if (pm.is_default) {
+    const next_ = get('SELECT id FROM payment_methods WHERE user_id=? ORDER BY id LIMIT 1', req.user.id);
+    if (next_) run('UPDATE payment_methods SET is_default=1 WHERE id=?', next_.id);
+  }
+  res.json({ ok: true });
+});
+
+// One-tap payment with a stored method (buyer present).
+app.post('/api/tenant/pay/saved', tenantReady, async (req, res, next) => {
+  const loan = tenantLoan(req);
+  if (!loan) return res.status(404).json({ error: 'No loan' });
+  if (!pay.stripeEnabled()) return res.status(400).json({ error: 'Online payments are not enabled yet.' });
+  const amount = Number(req.body.amount_cents);
+  const pm = get('SELECT * FROM payment_methods WHERE id=? AND user_id=?', req.body.payment_method_id, req.user.id);
+  if (!pm) return res.status(404).json({ error: 'Payment method not found' });
+  if (!amount || amount < 100) return res.status(400).json({ error: 'Enter a valid amount' });
+  try {
+    const feeKind = pm.type === 'card' ? 'card' : 'ach';
+    const fee = calcFee(loan.company_id, amount, feeKind);
+    const pi = await pay.chargeSavedMethod({
+      customerId: pm.stripe_customer_id, paymentMethodId: pm.stripe_payment_method_id,
+      amountCents: amount + fee, description: `Loan payment — loan #${loan.id}`,
+      idempotencyKey: `pay-${loan.id}-${Date.now()}`,
+    });
+    if (pi.status === 'succeeded' || pi.status === 'processing') {
+      const method = pm.type === 'card' ? 'stripe_card' : 'stripe_ach';
+      postPayment(loan.id, amount, method, today(), `stripe:${pi.id}`,
+        pi.status === 'processing' ? 'Bank payment — clearing' : 'Saved method payment', null, fee);
+      return res.json({ ok: true, status: pi.status, fee_cents: fee });
+    }
+    res.status(400).json({ error: 'Payment could not be completed. Try another method.' });
+  } catch (e) { next(e); }
+});
+
+// ---------- autopay ----------
+app.get('/api/tenant/autopay', tenantReady, (req, res) => {
+  const loan = tenantLoan(req);
+  if (!loan) return res.json({ enabled: false });
+  const ap = get('SELECT * FROM autopay WHERE loan_id=?', loan.id);
+  if (!ap) return res.json({ enabled: false });
+  const pm = get('SELECT id, type, brand, last4 FROM payment_methods WHERE id=?', ap.payment_method_id);
+  res.json({ ...ap, enabled: !!ap.enabled, payment_method: pm });
+});
+app.post('/api/tenant/autopay', tenantReady, (req, res) => {
+  const loan = tenantLoan(req);
+  if (!loan) return res.status(404).json({ error: 'No loan' });
+  const { payment_method_id, amount_mode, fixed_amount_cents, extra_principal_cents, days_before_due } = req.body || {};
+  const pm = get('SELECT * FROM payment_methods WHERE id=? AND user_id=?', payment_method_id, req.user.id);
+  if (!pm) return res.status(400).json({ error: 'Choose a saved payment method first' });
+  run(`INSERT INTO autopay (loan_id, payment_method_id, enabled, amount_mode, fixed_amount_cents,
+        extra_principal_cents, days_before_due) VALUES (?,?,1,?,?,?,?)
+       ON CONFLICT(loan_id) DO UPDATE SET payment_method_id=excluded.payment_method_id, enabled=1,
+        amount_mode=excluded.amount_mode, fixed_amount_cents=excluded.fixed_amount_cents,
+        extra_principal_cents=excluded.extra_principal_cents, days_before_due=excluded.days_before_due,
+        last_error=NULL`,
+    loan.id, pm.id, amount_mode || 'full', fixed_amount_cents || null,
+    extra_principal_cents || 0, days_before_due || 0);
+  res.json({ ok: true });
+});
+app.delete('/api/tenant/autopay', tenantReady, (req, res) => {
+  const loan = tenantLoan(req);
+  if (loan) run('UPDATE autopay SET enabled=0 WHERE loan_id=?', loan.id);
+  res.json({ ok: true });
+});
+
+// Daily sweep: charge enrolled loans on/after their due date.
+async function runAutopaySweep() {
+  if (!pay.stripeEnabled()) return;
+  const rows = all(`SELECT a.*, l.id AS loan_id, l.company_id FROM autopay a
+    JOIN loans l ON l.id=a.loan_id WHERE a.enabled=1 AND l.status='active'`);
+  for (const ap of rows) {
+    try {
+      let loan = get('SELECT * FROM loans WHERE id=?', ap.loan_id);
+      loan = assessRecurringCharges(loan);
+      const ledger = all('SELECT * FROM ledger WHERE loan_id=?', loan.id);
+      const status = loanEngine.loanStatus(loan, ledger, today());
+      const period = today().slice(0, 7);
+      if (ap.last_run_period === period) continue;          // already charged this month
+      const due = status.owed_now_cents;
+      if (due <= 0) continue;                                 // nothing owed yet
+      const charges = all('SELECT * FROM charges WHERE loan_id=? AND recurring=1 AND active=1', loan.id)
+        .reduce((t, c) => t + c.amount_cents, 0);
+      let amount = ap.amount_mode === 'fixed' ? (ap.fixed_amount_cents || 0)
+                 : ap.amount_mode === 'minimum' ? Math.min(due, loan.payment_cents + loan.escrow_cents + charges)
+                 : due;
+      amount += ap.extra_principal_cents || 0;
+      if (amount < 100) continue;
+      const pm = get('SELECT * FROM payment_methods WHERE id=?', ap.payment_method_id);
+      if (!pm) { run('UPDATE autopay SET last_error=? WHERE loan_id=?', 'Saved payment method was removed', loan.id); continue; }
+      const fee = calcFee(loan.company_id, amount, pm.type === 'card' ? 'card' : 'ach');
+      const pi = await pay.chargeSavedMethod({
+        customerId: pm.stripe_customer_id, paymentMethodId: pm.stripe_payment_method_id,
+        amountCents: amount + fee, description: `Autopay — loan #${loan.id} ${period}`,
+        idempotencyKey: `autopay-${loan.id}-${period}`,
+      });
+      if (pi.status === 'succeeded' || pi.status === 'processing') {
+        postPayment(loan.id, amount, pm.type === 'card' ? 'stripe_card' : 'stripe_ach', today(),
+          `stripe:${pi.id}`, `Autopay ${period}`, null, fee);
+        run("UPDATE autopay SET last_run_period=?, last_error=NULL WHERE loan_id=?", period, loan.id);
+        run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
+          loan.id, get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') ORDER BY id LIMIT 1", loan.company_id).id,
+          `✅ Autopay processed your payment of $${(amount/100).toFixed(2)}.`);
+        console.log(`Autopay charged loan ${loan.id} ${period}: $${(amount/100).toFixed(2)}`);
+      }
+    } catch (e) {
+      run('UPDATE autopay SET last_error=? WHERE loan_id=?', e.message, ap.loan_id);
+      const loan = get('SELECT * FROM loans WHERE id=?', ap.loan_id);
+      if (loan) run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
+        loan.id, get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') ORDER BY id LIMIT 1", loan.company_id).id,
+        `⚠️ Autopay could not process your payment: ${e.message}. Please make a payment in the app.`);
+      console.error('Autopay failed for loan', ap.loan_id, e.message);
+    }
+  }
+}
+setInterval(runAutopaySweep, 6 * 60 * 60 * 1000);   // every 6 hours
+setTimeout(runAutopaySweep, 20000);
+app.post('/api/admin/autopay-sweep', adminOnly, async (req, res, next) => {
+  try { await runAutopaySweep(); res.json({ ok: true }); } catch (e) { next(e); }
+});
+
 // ---------- consent: terms, privacy, messaging, location ----------
 // Apple 5.1.1 and Google Play both require clear consent before collecting personal data,
 // and Play requires a prominent disclosure before any location permission prompt.
@@ -968,6 +1555,10 @@ app.get('/api/tenant/loan', tenantReady, (req, res) => {
   f.stripe_enabled = pay.stripeEnabled();
   f.location_consent_at = req.user.location_consent_at;
   f.terms_accepted_at = req.user.terms_accepted_at;
+  f.fee_settings = feeSettings(loan.company_id);
+  f.autopay = get('SELECT * FROM autopay WHERE loan_id=?', loan.id) || null;
+  f.payment_methods = all(`SELECT id, type, brand, last4, exp_month, exp_year, is_default
+    FROM payment_methods WHERE user_id=? ORDER BY is_default DESC, id DESC`, req.user.id);
   res.json(f);
 });
 app.post('/api/tenant/pay/checkout', tenantReady, async (req, res) => {
@@ -980,9 +1571,11 @@ app.post('/api/tenant/pay/checkout', tenantReady, async (req, res) => {
     const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
     const proto = req.headers['x-forwarded-proto'] || 'http';
     const baseUrl = process.env.BASE_URL || `${proto}://${req.headers.host}`;
+    const fee = calcFee(loan.company_id, amount, 'card');
     const session = await pay.createCheckoutSession({
       loan: { ...loan, address: property ? property.address : 'your home' },
       amountCents: amount, baseUrl, tenantEmail: req.user.email,
+      feeCents: fee, feeLabel: feeSettings(loan.company_id).label,
     });
     res.json({ url: session.url });
   } catch (e) {

@@ -1,0 +1,78 @@
+ONE COMMAND FIXES EVERYTHING
+============================
+
+The blinking on login is the same redirect loop. Your password is correct —
+login succeeds, then the two pages start bouncing off each other. The fix has
+been sitting on your machine unpushed the whole time.
+
+
+COPY AND PASTE ALL FOUR LINES into cmd
+--------------------------------------
+Press the Windows key, type  cmd , press Enter, then paste:
+
+cd /d "C:\Users\mgots\Downloads\PorchPay-repo"
+del /f /q .git\index.lock .git\HEAD.lock 2>nul
+git add -A
+git commit -m "Reports, property workflow, autopay, login throttling; fix redirect loop" && git push
+
+Wait about 90 seconds for Railway to rebuild, then reload.
+
+
+YOUR NEW LOGIN
+--------------
+    https://porchpay-production.up.railway.app/admin
+
+    Email:    marisa@reneweqllc.com
+    Password: Dmsaa121252$
+
+I set this as a Railway variable, so it applies automatically on the next
+deploy — no action needed from you.
+
+>> AFTER you sign in successfully, delete these two variables in Railway:
+       RESET_OWNER_PASSWORD
+       RESET_OWNER_EMAIL
+   Railway -> porchpay -> Variables -> hover each one -> delete.
+   Leaving a password sitting in your config is untidy and unnecessary once
+   it has done its job.
+
+
+CHANGING IT YOURSELF FROM NOW ON
+--------------------------------
+Settings -> Your login -> type a new password twice -> Change my password.
+You never need me for this again.
+
+
+NEW: LOGIN PROTECTION
+---------------------
+Five wrong passwords now trigger a lockout that doubles each time — 30
+seconds, then a minute, two, four, up to fifteen. A script guessing passwords
+gets nowhere; you waiting out a typo costs you half a minute.
+
+I added this because an admin login that opens every loan, buyer record and
+document deserves more than a password on its own.
+
+
+EVERYTHING ELSE IN THIS PUSH
+----------------------------
+  - Reports tab: Returns (cash-on-cash, ROI), Profit & Loss, Balance Sheet
+  - Filing & recording fees as a cost category and P&L line
+  - Down payment as a line item on the property cost card
+  - Property-first workflow with costs, PML, documents and the sale flow
+  - Buyer invitations with delivery tracking
+  - Autopay and saved cards/bank for buyers
+  - Processing fees passed to the buyer (check your state law first)
+  - First-run setup wizard
+  - Financial sync to import bank and card transactions
+  - Separate mobile layout for admin
+  - Your logo everywhere, palette on #54A32F
+
+165 automated checks pass on this build.
+
+
+STILL ON YOUR PLATE
+-------------------
+  1. Revoke that GitHub token in the Seller-Financed-CRM repo description
+     (github.com/settings/tokens)
+  2. Attorney review: privacy policy, terms, and the fee pass-through
+  3. Real contact details in public/support.html
+  4. Stripe when you want live payments; PayNearMe has a long lead time

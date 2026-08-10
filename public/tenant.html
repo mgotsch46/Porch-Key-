@@ -349,17 +349,31 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
 
       <div class="card">
         <h2>How do you want to pay?</h2>
+        <div class="methods" id="saved-methods"></div>
         <div class="methods">
           <button class="method sel" id="m-card" onclick="setMethod('card')">
-            <span class="ico">💳</span><span><span class="t">Card or bank</span><span class="d">Debit, credit, or bank transfer</span></span><span class="tick">✓</span></button>
+            <span class="ico">💳</span><span><span class="t">New card or bank</span><span class="d">Debit, credit, or bank transfer</span></span><span class="tick">✓</span></button>
           <button class="method" id="m-cashapp" onclick="setMethod('cashapp')">
             <span class="ico">📱</span><span><span class="t">Cash App Pay</span><span class="d">Pay from your Cash App balance</span></span><span class="tick">✓</span></button>
           <button class="method" id="m-cash" onclick="setMethod('cash')">
             <span class="ico">🏪</span><span><span class="t">Cash at a store</span><span class="d">Walmart, 7-Eleven, CVS &amp; more</span></span><span class="tick">✓</span></button>
         </div>
+        <div id="fee-box"></div>
         <button class="btn primary" id="pay-go" onclick="startPayment()">Continue</button>
         <p class="note" style="margin-top:12px" id="pay-foot"></p>
         <div id="slip-box"></div>
+      </div>
+
+      <div class="card">
+        <h2>&#9889; Autopay</h2>
+        <div id="autopay-box"></div>
+      </div>
+
+      <div class="card">
+        <h2>Saved payment methods</h2>
+        <div id="pm-list"></div>
+        <button class="btn quiet" style="margin-top:12px" onclick="addPaymentMethod()">+ Save a card or bank account</button>
+        <p class="note" style="margin-top:10px">Your card and bank details are stored securely by Stripe. Porch Pay never sees or keeps your full numbers.</p>
       </div>
 
       <div class="card" id="open-slips-card" style="display:none">
@@ -499,7 +513,7 @@ function show(id){ for(const v of ['v-login','v-newpw','v-terms','v-app']) $(v).
 async function boot(){
   try {
     ME = await api('/api/me');
-    if (ME.role !== 'tenant') { location.href='/admin'; return; }
+    if (ME.role !== 'tenant') { location.href='/admin'; return; }   // admin session -> admin portal
     if (ME.must_change_password) return show('v-newpw');
     await enter();
   } catch(e){ if(e.message!=='terms') show('v-login'); }
@@ -536,6 +550,10 @@ async function acceptTerms(){
 
 async function enter(){
   const p = new URLSearchParams(location.search);
+  if (p.get('setup_session')) {
+    try { await api('/api/tenant/payment-methods/confirm?setup_session='+encodeURIComponent(p.get('setup_session'))); } catch {}
+    history.replaceState({},'','/');
+  }
   if (p.get('session_id')) {
     try { await api('/api/tenant/pay/confirm?session_id='+encodeURIComponent(p.get('session_id'))); } catch {}
     history.replaceState({},'','/');
@@ -661,6 +679,7 @@ function render(){
       : (ME.email||'?')[0].toUpperCase();
   }
   $('s-terms').textContent = DATA.terms_accepted_at ? fdate(String(DATA.terms_accepted_at).slice(0,10)) : '—';
+  renderSavedMethods(); renderAutopay(); renderFee();
   locOn=!!DATA.location_consent_at; locUi(); if(locOn) sendPing();
   runCalc();
 }
@@ -670,23 +689,135 @@ function methodName(m){
 }
 
 // ---------- pay ----------
-function setMethod(m){
-  payMethod=m;
-  ['card','cashapp','cash'].forEach(k=>$('m-'+k).classList.toggle('sel',k===m));
-  $('pay-go').textContent = m==='cash' ? 'Get my cash code' : 'Continue to secure payment';
+let savedPmId = null;
+function setMethod(m, pmId){
+  payMethod=m; savedPmId = pmId || null;
+  ['card','cashapp','cash'].forEach(k=>$('m-'+k).classList.toggle('sel', k===m && !pmId));
+  document.querySelectorAll('#saved-methods .method').forEach(el=>
+    el.classList.toggle('sel', !!pmId && el.dataset.pm === String(pmId)));
+  $('pay-go').textContent = m==='cash' ? 'Get my cash code'
+    : pmId ? 'Pay now' : 'Continue to secure payment';
   $('pay-foot').textContent = m==='cash'
-    ? 'You’ll get a code to show at the register. Bring cash to Walmart, 7-Eleven, CVS, Dollar General or Walgreens. A store fee may apply.'
+    ? 'You get a code to show at the register. Bring cash to Walmart, 7-Eleven, CVS, Dollar General or Walgreens. The store charges its own fee.'
     : 'Processed securely by Stripe. We never see your card or bank number.';
+  renderFee();
+}
+function pmIcon(t){ return t==='card' ? '\u{1F4B3}' : '\u{1F3E6}'; }
+function pmLabel(pm){
+  const brand = (pm.brand||'').replace(/\b\w/g, c=>c.toUpperCase());
+  return `${brand||(pm.type==='card'?'Card':'Bank')} \u00B7\u00B7\u00B7\u00B7${pm.last4||''}`;
+}
+function renderSavedMethods(){
+  const pms = (DATA && DATA.payment_methods) || [];
+  $('saved-methods').innerHTML = pms.map(pm=>`
+    <button class="method" data-pm="${pm.id}" onclick="setMethod('${pm.type==='card'?'card':'ach'}',${pm.id})">
+      <span class="ico">${pmIcon(pm.type)}</span>
+      <span><span class="t">${esc(pmLabel(pm))}</span>
+      <span class="d">${pm.type==='card' ? 'Saved card'+(pm.exp_month?` \u00B7 exp ${pm.exp_month}/${String(pm.exp_year).slice(-2)}`:'') : 'Saved bank account'}${pm.is_default?' \u00B7 default':''}</span></span>
+      <span class="tick">\u2713</span></button>`).join('');
+  $('pm-list').innerHTML = pms.length ? pms.map(pm=>`
+    <div class="row"><span class="k">${pmIcon(pm.type)} ${esc(pmLabel(pm))}
+      ${pm.is_default?'<span class="chip ok" style="margin-left:6px">Default</span>':''}
+      <small>${pm.type==='card'?'Card':'Bank account'}</small></span>
+      <span class="v" style="white-space:nowrap">
+        ${pm.is_default?'':`<button class="chip warn" style="border:none;cursor:pointer" onclick="makeDefault(${pm.id})">Make default</button>`}
+        <button class="chip due" style="border:none;cursor:pointer;margin-left:4px" onclick="removePm(${pm.id})">Remove</button>
+      </span></div>`).join('')
+    : '<p class="note">No saved methods yet. Save one to pay with a single tap next time, or to turn on autopay.</p>';
+}
+async function renderFee(){
+  const amt = totalCents();
+  const fs = (DATA && DATA.fee_settings) || {};
+  if (!fs.pass || payMethod==='cash' || !amt){ $('fee-box').innerHTML=''; return; }
+  try {
+    const q = await api('/api/tenant/fee-quote?amount_cents='+amt);
+    const key = payMethod==='ach' ? 'ach' : payMethod==='cashapp' ? 'cashapp' : 'card';
+    const f = q[key];
+    if (!f || !f.fee_cents){ $('fee-box').innerHTML=''; return; }
+    $('fee-box').innerHTML = `
+      <div class="row"><span class="k">Payment to your loan</span><span class="v">${fmt(amt)}</span></div>
+      <div class="row"><span class="k">${esc(q.label)}<small>Charged by the payment processor</small></span><span class="v">${fmt(f.fee_cents)}</span></div>
+      <div class="row total"><span class="k" style="font-weight:700;color:var(--ink)">You will be charged</span>
+        <span class="v" style="font-size:19px">${fmt(f.total_cents)}</span></div>`;
+  } catch { $('fee-box').innerHTML=''; }
+}
+async function addPaymentMethod(){
+  try { const r = await api('/api/tenant/payment-methods/setup',{method:'POST',body:'{}'}); location.href = r.url; }
+  catch(e){ alert(e.message); }
+}
+async function makeDefault(id){
+  await api(`/api/tenant/payment-methods/${id}/default`,{method:'POST',body:'{}'});
+  DATA = await api('/api/tenant/loan'); renderSavedMethods(); renderAutopay();
+}
+async function removePm(id){
+  if(!confirm('Remove this saved payment method?'))return;
+  try { await api('/api/tenant/payment-methods/'+id,{method:'DELETE'});
+    DATA = await api('/api/tenant/loan'); renderSavedMethods(); renderAutopay();
+  } catch(e){ alert(e.message); }
+}
+function renderAutopay(){
+  const ap = DATA && DATA.autopay;
+  const pms = (DATA && DATA.payment_methods) || [];
+  if (!pms.length){
+    $('autopay-box').innerHTML = '<p class="note">Save a card or bank account below, then you can turn on autopay and never think about the due date again.</p>';
+    return;
+  }
+  if (ap && ap.enabled){
+    const pm = pms.find(x=>x.id===ap.payment_method_id);
+    $('autopay-box').innerHTML = `
+      <div class="alert ok" style="margin-bottom:12px"><span class="ico">\u26A1</span><span>
+        <div class="t">Autopay is on</div>
+        <div class="d">We charge ${pm?esc(pmLabel(pm)):'your saved method'} for ${ap.amount_mode==='full'?'the full amount due':'your regular monthly payment'}${ap.extra_principal_cents?` plus ${fmt(ap.extra_principal_cents)} extra to principal`:''} each month.</div>
+      </span></div>
+      ${ap.last_error?`<div class="err">Last attempt failed: ${esc(ap.last_error)}</div>`:''}
+      <button class="btn danger" onclick="turnOffAutopay()">Turn off autopay</button>`;
+  } else {
+    $('autopay-box').innerHTML = `
+      <p class="note" style="margin-bottom:14px">Have your payment taken automatically each month so you never miss a due date or a late fee.</p>
+      <div class="field"><label>Pay with</label>
+        <select id="ap-pm">${pms.map(pm=>`<option value="${pm.id}" ${pm.is_default?'selected':''}>${esc(pmLabel(pm))}</option>`).join('')}</select></div>
+      <div class="field"><label>Amount</label>
+        <select id="ap-mode">
+          <option value="full">Everything due that month</option>
+          <option value="minimum">Just the regular monthly payment</option>
+        </select></div>
+      <div class="field"><label>Extra toward principal each month (optional)</label>
+        <div class="money-in"><span>$</span><input id="ap-extra" type="number" step="0.01" inputmode="decimal" placeholder="0.00"></div></div>
+      <button class="btn primary" onclick="turnOnAutopay()">Turn on autopay</button>
+      <p class="note" style="margin-top:10px">You can turn this off any time. We message you after every autopay charge, and if one fails.</p>`;
+  }
+}
+async function turnOnAutopay(){
+  try{
+    await api('/api/tenant/autopay',{method:'POST',body:JSON.stringify({
+      payment_method_id:Number($('ap-pm').value), amount_mode:$('ap-mode').value,
+      extra_principal_cents: Math.round((parseFloat($('ap-extra').value)||0)*100) })});
+    DATA = await api('/api/tenant/loan'); renderAutopay();
+  }catch(e){ alert(e.message); }
+}
+async function turnOffAutopay(){
+  if(!confirm('Turn off autopay? You will go back to making payments yourself.'))return;
+  await api('/api/tenant/autopay',{method:'DELETE'});
+  DATA = await api('/api/tenant/loan'); renderAutopay();
 }
 function totalCents(){
   return Math.round((parseFloat($('pay-amt').value)||0)*100) + Math.round((parseFloat($('pay-extra').value)||0)*100);
 }
-function payTotal(){ $('pay-total').textContent=fmt(totalCents()); }
+function payTotal(){ $('pay-total').textContent=fmt(totalCents()); renderFee(); }
 async function startPayment(){
   $('pay-err').classList.add('hidden');
   const amt=totalCents();
   if(amt<100){ $('pay-err').textContent='Enter an amount of at least $1.00'; $('pay-err').classList.remove('hidden'); return; }
   try{
+    if(savedPmId){
+      const r = await api('/api/tenant/pay/saved',{method:'POST',
+        body:JSON.stringify({amount_cents:amt, payment_method_id:savedPmId})});
+      DATA = await api('/api/tenant/loan'); render();
+      alert(r.status==='processing'
+        ? 'Payment submitted. Bank transfers take a few business days to clear.'
+        : 'Payment complete. Thank you!');
+      go('home'); return;
+    }
     if(payMethod==='cash'){
       const s=await api('/api/tenant/pay/cash-slip',{method:'POST',body:JSON.stringify({amount_cents:amt})});
       $('slip-box').innerHTML=slipHtml(s,true);

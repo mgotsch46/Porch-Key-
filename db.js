@@ -221,6 +221,82 @@ CREATE TABLE IF NOT EXISTS pml_ledger (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Money spent acquiring and holding a property, before any buyer exists.
+-- Rolls up into the cost basis you compare against the sale price.
+CREATE TABLE IF NOT EXISTS property_costs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  property_id INTEGER NOT NULL REFERENCES properties(id),
+  category TEXT NOT NULL DEFAULT 'other' CHECK (category IN
+    ('purchase','closing','filing','rehab','bog','insurance','taxes','utilities','marketing','legal','other')),
+  description TEXT NOT NULL,
+  vendor TEXT,
+  amount_cents INTEGER NOT NULL,
+  cost_date TEXT,
+  document_id INTEGER REFERENCES documents(id),
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Invitations texted to a tenant buyer once the home is sold to them.
+CREATE TABLE IF NOT EXISTS invitations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  loan_id INTEGER REFERENCES loans(id),
+  user_id INTEGER REFERENCES users(id),
+  phone TEXT,
+  temp_password TEXT,
+  channel TEXT NOT NULL DEFAULT 'sms' CHECK (channel IN ('sms','manual','email')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','sent','failed','accepted')),
+  error TEXT,
+  sent_at TEXT,
+  accepted_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Saved payment methods. We never store card or bank numbers — only Stripe tokens
+-- plus the display crumbs Stripe returns (brand, last4) so the buyer can tell them apart.
+CREATE TABLE IF NOT EXISTS payment_methods (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  stripe_customer_id TEXT NOT NULL,
+  stripe_payment_method_id TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL,               -- card | us_bank_account
+  brand TEXT,                       -- visa, mastercard, or bank name
+  last4 TEXT,
+  exp_month INTEGER, exp_year INTEGER,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Autopay enrollment, per loan. Buyer opts in; admin can see but not enable it for them.
+CREATE TABLE IF NOT EXISTS autopay (
+  loan_id INTEGER PRIMARY KEY REFERENCES loans(id),
+  payment_method_id INTEGER NOT NULL REFERENCES payment_methods(id),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  amount_mode TEXT NOT NULL DEFAULT 'full' CHECK (amount_mode IN ('full','minimum','fixed')),
+  fixed_amount_cents INTEGER,
+  extra_principal_cents INTEGER NOT NULL DEFAULT 0,
+  days_before_due INTEGER NOT NULL DEFAULT 0,
+  last_run_period TEXT,             -- YYYY-MM of the last successful charge
+  last_error TEXT,
+  enrolled_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Business bank / credit card accounts the admin links for expense import.
+CREATE TABLE IF NOT EXISTS linked_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  stripe_account_id TEXT NOT NULL UNIQUE,   -- Financial Connections account id
+  institution_name TEXT,
+  display_name TEXT,
+  last4 TEXT,
+  category TEXT,                    -- checking | savings | credit_card
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disconnected')),
+  last_synced_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 -- Late / legal notices with read receipts
 CREATE TABLE IF NOT EXISTS notices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -262,6 +338,31 @@ addColumnIfMissing('users', 'location_consent_at', 'TEXT');
 addColumnIfMissing('users', 'terms_accepted_at', 'TEXT');
 addColumnIfMissing('users', 'terms_version', 'TEXT');
 addColumnIfMissing('users', 'deleted_at', 'TEXT');
+addColumnIfMissing('users', 'stripe_customer_id', 'TEXT');
+addColumnIfMissing('companies', 'setup_complete', 'INTEGER DEFAULT 0');
+addColumnIfMissing('companies', 'logo_path', 'TEXT');
+addColumnIfMissing('companies', 'default_late_fee_cents', 'INTEGER DEFAULT 0');
+addColumnIfMissing('companies', 'default_grace_days', 'INTEGER DEFAULT 5');
+// Processing fees passed on to the buyer. Defaults mirror Stripe's published rates so the
+// pass-through is cost recovery, not a markup. Set pass_fees_to_buyer=0 to absorb them.
+addColumnIfMissing('companies', 'pass_fees_to_buyer', 'INTEGER DEFAULT 1');
+addColumnIfMissing('companies', 'fee_card_bps', 'INTEGER DEFAULT 290');
+addColumnIfMissing('companies', 'fee_card_fixed_cents', 'INTEGER DEFAULT 30');
+addColumnIfMissing('companies', 'fee_ach_bps', 'INTEGER DEFAULT 80');
+addColumnIfMissing('companies', 'fee_ach_fixed_cents', 'INTEGER DEFAULT 0');
+addColumnIfMissing('companies', 'fee_ach_cap_cents', 'INTEGER DEFAULT 500');
+addColumnIfMissing('companies', 'fee_label', "TEXT DEFAULT 'Processing fee'");
+addColumnIfMissing('ledger', 'fee_cents', 'INTEGER DEFAULT 0');
+addColumnIfMissing('expenses', 'linked_account_id', 'INTEGER');
+addColumnIfMissing('expenses', 'external_id', 'TEXT');
+addColumnIfMissing('properties', 'status', "TEXT DEFAULT 'owned'"); // owned / listed / sold
+addColumnIfMissing('properties', 'acquired_date', 'TEXT');
+addColumnIfMissing('properties', 'purchase_price_cents', 'INTEGER DEFAULT 0');
+addColumnIfMissing('properties', 'target_sale_price_cents', 'INTEGER DEFAULT 0');
+addColumnIfMissing('properties', 'beds', 'INTEGER');
+addColumnIfMissing('properties', 'baths', 'REAL');
+addColumnIfMissing('properties', 'sqft', 'INTEGER');
+addColumnIfMissing('properties', 'year_built', 'INTEGER');
 addColumnIfMissing('users', 'archived_at', 'TEXT');
 addColumnIfMissing('users', 'archived_reason', 'TEXT');
 addColumnIfMissing('charges', 'category', "TEXT DEFAULT 'other'");
@@ -287,6 +388,33 @@ function backfillCompany() {
   console.log(`Migrated existing data into company #${firstCo.id}`);
 }
 
+// Older databases created property_costs before 'filing' existed as a category.
+// SQLite cannot alter a CHECK constraint, so rebuild the table when we spot the old one.
+(function migrateCostCategories() {
+  const t = get("SELECT sql FROM sqlite_master WHERE type='table' AND name='property_costs'");
+  if (!t || t.sql.includes("'filing'")) return;
+  db.exec(`
+    ALTER TABLE property_costs RENAME TO property_costs_old;
+    CREATE TABLE property_costs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id INTEGER NOT NULL REFERENCES companies(id),
+      property_id INTEGER NOT NULL REFERENCES properties(id),
+      category TEXT NOT NULL DEFAULT 'other' CHECK (category IN
+        ('purchase','closing','filing','rehab','bog','insurance','taxes','utilities','marketing','legal','other')),
+      description TEXT NOT NULL,
+      vendor TEXT,
+      amount_cents INTEGER NOT NULL,
+      cost_date TEXT,
+      document_id INTEGER REFERENCES documents(id),
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    INSERT INTO property_costs SELECT * FROM property_costs_old;
+    DROP TABLE property_costs_old;
+  `);
+  console.log('Migrated property_costs to include filing fees');
+})();
+
 CREATE_INDEXES();
 function CREATE_INDEXES() {
   db.exec(`
@@ -296,6 +424,10 @@ function CREATE_INDEXES() {
     CREATE INDEX IF NOT EXISTS idx_docs_co ON documents(company_id);
     CREATE INDEX IF NOT EXISTS idx_exp_co ON expenses(company_id);
     CREATE INDEX IF NOT EXISTS idx_users_co ON users(company_id);
+    CREATE INDEX IF NOT EXISTS idx_pm_user ON payment_methods(user_id);
+    CREATE INDEX IF NOT EXISTS idx_linked_co ON linked_accounts(company_id);
+    CREATE INDEX IF NOT EXISTS idx_costs_prop ON property_costs(property_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_exp_external ON expenses(external_id) WHERE external_id IS NOT NULL;
   `);
 }
 
@@ -339,5 +471,19 @@ function ensureSeed() {
   }
 }
 ensureSeed();
+
+// Emergency password reset. Set RESET_OWNER_PASSWORD (optionally RESET_OWNER_EMAIL) and
+// redeploy; the password is changed on boot and the variable can then be deleted.
+(function resetOwnerPassword() {
+  const pw = process.env.RESET_OWNER_PASSWORD;
+  if (!pw) return;
+  const email = (process.env.RESET_OWNER_EMAIL || process.env.ADMIN_EMAIL || '').toLowerCase();
+  const u = email
+    ? get('SELECT * FROM users WHERE email=? AND deleted_at IS NULL', email)
+    : get("SELECT * FROM users WHERE role='owner' AND deleted_at IS NULL ORDER BY id LIMIT 1");
+  if (!u) { console.log('RESET_OWNER_PASSWORD set but no matching account found'); return; }
+  run('UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?', hashPassword(pw), u.id);
+  console.log(`Password reset for ${u.email}. Remove RESET_OWNER_PASSWORD from your variables now.`);
+})();
 
 module.exports = { db, get, all, run, hashPassword, verifyPassword };

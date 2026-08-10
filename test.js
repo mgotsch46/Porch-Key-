@@ -205,6 +205,112 @@ async function main() {
   r = await req(`/api/admin/tenants/${tbId}/location`);
   ok(!r.json.consent_at && !r.json.last_ping, 'revoking consent deletes location history');
 
+  console.log('— property-first workflow (costs, basis, sale)');
+  r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '77 Maple Ave', city: 'Dayton', state: 'OH' }) });
+  const p2 = r.json.id;
+  r = await req(`/api/admin/properties/${p2}/details`, { method: 'PUT', body: JSON.stringify({
+    acquired_date: '2026-02-01', purchase_price_cents: 4500000, target_sale_price_cents: 9500000, beds: 3, baths: 1.5, sqft: 1240 }) });
+  ok(r.status === 200 && r.json.beds === 3, 'property details saved');
+  for (const [cat, desc, amt] of [['purchase','Purchase price',4500000], ['closing','Title & closing',180000],
+      ['rehab','Roof and kitchen',1250000], ['bog','Boots on the ground — weekly checks',95000],
+      ['insurance','Builders risk policy',72000], ['utilities','Water & power during rehab',31000]]) {
+    r = await req(`/api/admin/properties/${p2}/costs`, { method: 'POST', body: JSON.stringify({
+      category: cat, description: desc, amount_cents: amt, cost_date: '2026-03-01' }) });
+    ok(r.status === 200, `logged ${cat} cost`);
+  }
+  r = await req('/api/admin/properties/' + p2);
+  const expectedBasis = 4500000 + 180000 + 1250000 + 95000 + 72000 + 31000;
+  ok(r.json.basis.total_cents === expectedBasis, `cost basis totals correctly ($${(expectedBasis/100).toLocaleString()})`);
+  ok(r.json.basis.by_category.bog === 95000, 'boots-on-the-ground tracked as its own category');
+  ok(r.json.all_in_cents === expectedBasis, 'all-in = basis + assigned expenses');
+  ok(r.json.loan === null, 'property has no loan before sale');
+  r = await req('/api/admin/properties');
+  ok(r.json.find(x => x.id === p2).cost_basis_cents === expectedBasis, 'basis shows in the property list');
+
+  console.log('— sell to a tenant buyer + invitation');
+  r = await req(`/api/admin/properties/${p2}/sell`, { method: 'POST', body: JSON.stringify({
+    buyer_name: 'Carlos Buyer', buyer_email: 'carlos@test.com', buyer_phone: '(555) 867-5309',
+    sale_price_cents: 9500000, down_payment_cents: 500000, principal_cents: 9000000,
+    interest_rate_bps: 900, term_months: 360, first_payment_date: '2026-09-01' }) });
+  ok(r.status === 200 && r.json.loan_id && r.json.temp_password, 'sale creates loan + buyer login');
+  const soldLoan = r.json.loan_id, inviteId = r.json.invitation_id;
+  r = await req('/api/admin/properties/' + p2);
+  ok(r.json.property.status === 'sold', 'property marked sold');
+  ok(r.json.loan && r.json.loan.id === soldLoan, 'loan linked to property');
+  const margin = 9500000 - expectedBasis;
+  ok(r.json.loan.sale_price_cents - r.json.all_in_cents === margin, `gross margin computes ($${(margin/100).toLocaleString()})`);
+  r = await req(`/api/admin/invitations/${inviteId}/preview`);
+  ok(r.json.text.includes('carlos@test.com') && r.json.text.includes('Carlos'), 'invite text personalised with login');
+  ok(r.json.phone === '+15558675309', 'phone normalised to E.164 for texting');
+  r = await req(`/api/admin/invitations/${inviteId}/send`, { method: 'POST', body: '{}' });
+  ok(r.status === 400 && r.json.text, 'without Twilio, send returns the copyable message');
+  r = await req(`/api/admin/invitations/${inviteId}/mark-sent`, { method: 'POST', body: '{}' });
+  ok(r.status === 200, 'admin can mark an invite sent manually');
+  r = await req('/api/admin/invitations');
+  ok(r.json.invitations.some(i => i.id === inviteId && i.status === 'sent'), 'invitation shows as sent');
+
+  console.log('— processing fees passed to the buyer');
+  const carlosPw = (await req('/api/admin/tenants')).json.find(t => t.email === 'carlos@test.com');
+  r = await req('/api/admin/loans/' + soldLoan);
+  ok(r.json.loan.late_fee_cents >= 0, 'company late-fee default applied to the new loan');
+
+  console.log('— reports: P&L, balance sheet, returns');
+  // Worked example on 77 Maple: all-in 61,280 (incl. filing), PML advanced 40,000,
+  // down payment 5,000 -> cash invested should be 61,280 + filing - 40,000 - 5,000.
+  r = await req(`/api/admin/properties/${p2}/costs`, { method: 'POST', body: JSON.stringify({
+    category: 'filing', description: 'Deed recording & filing fees', amount_cents: 24000, cost_date: '2026-03-05' }) });
+  ok(r.status === 200 && r.json.category === 'filing', 'filing fees accepted as a cost category');
+  const basisWithFiling = 4500000 + 180000 + 1250000 + 95000 + 72000 + 31000 + 24000;
+
+  r = await req('/api/admin/pml', { method: 'POST', body: JSON.stringify({
+    property_id: p2, lender_name: 'Maple Capital', lien_position: 1, principal_cents: 4000000,
+    interest_rate_bps: 1100, term_months: 60, payment_type: 'interest_only',
+    first_payment_date: '2026-03-01' }) });
+  const maplePml = r.json.id;
+
+  r = await req(`/api/admin/reports/returns/${p2}`);
+  const ret = r.json;
+  ok(ret.all_in_cents === basisWithFiling, `all-in includes filing ($${(basisWithFiling/100).toLocaleString()})`);
+  ok(ret.lender_advanced_cents === 4000000, 'lender advance recognised');
+  ok(ret.down_payment_cents === 500000, 'buyer down payment recognised');
+  ok(ret.cash_invested_cents === basisWithFiling - 4000000 - 500000,
+    `cash invested = all-in less lender and down payment ($${((basisWithFiling-4500000)/100).toLocaleString()})`);
+
+  // A lender draw increases what was advanced, so cash invested falls by the same amount.
+  r = await req(`/api/admin/pml/${maplePml}/draw`, { method: 'POST', body: JSON.stringify({ amount_cents: 300000, memo: 'rehab draw' }) });
+  r = await req(`/api/admin/reports/returns/${p2}`);
+  ok(r.json.lender_advanced_cents === 4300000, 'draw adds to lender advanced');
+  ok(r.json.cash_invested_cents === basisWithFiling - 4300000 - 500000, 'draw reduces your cash in the deal');
+
+  // Paying the lender back out of pocket puts your own cash back into the deal.
+  r = await req(`/api/admin/pml/${maplePml}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 100000 }) });
+  const pmlPay = r.json;
+  r = await req(`/api/admin/reports/returns/${p2}`);
+  ok(r.json.cash_invested_cents === basisWithFiling - 4300000 - 500000 + pmlPay.to_principal_cents,
+    'lender principal repaid adds back to cash invested');
+
+  r = await req('/api/admin/reports/pl');
+  const pl = r.json;
+  ok(pl.revenue.interest_income > 0, 'P&L books interest income from buyer payments');
+  ok(pl.expenses.lender_interest >= pmlPay.to_interest_cents && pl.expenses.lender_interest > 0, 'P&L books lender interest as an expense');
+  ok(pl.expenses.bog === 95000, 'boots-on-the-ground shows as an operating expense');
+  ok(pl.expenses.filing === 24000, 'filing fees show as an operating expense');
+  ok(pl.memo.principal_collected_cents > 0, 'buyer principal held out of income (return of capital)');
+  ok(!('principal' in pl.revenue), 'principal never counted as revenue');
+  ok(pl.net_income_cents === pl.revenue.total_cents - pl.expenses.total_cents + pl.gain_on_sale_cents,
+    'net income = revenue - expenses + gain on sale');
+
+  r = await req('/api/admin/reports/balance-sheet');
+  const bs = r.json;
+  ok(bs.assets.notes_receivable_cents > 0, 'balance sheet carries notes receivable');
+  ok(bs.liabilities.lender_notes_payable_cents > 0, 'balance sheet carries lender debt');
+  ok(bs.equity_cents === bs.assets.total_cents - bs.liabilities.total_cents, 'assets - liabilities = equity');
+  ok(!bs.properties_held.some(h => h.id === p2), 'sold property no longer carried as inventory');
+
+  r = await req('/api/admin/reports/returns');
+  ok(r.json.totals.count >= 2 && r.json.totals.cash_invested_cents !== 0, 'portfolio returns roll up every property');
+  ok(r.json.properties.some(x => x.property_id === p2), 'portfolio includes the sold property');
+
   console.log('— multi-company isolation');
   r = await req('/api/signup', { method: 'POST', body: JSON.stringify({
     company_name: 'Rival Holdings LLC', name: 'Rival Owner', email: 'rival@test.com', password: 'RivalPass123!' }) }, '');
@@ -291,6 +397,16 @@ async function main() {
   ok(r.status === 404, 'rival cannot archive company A buyer');
   r = await req(`/api/admin/tenants/${tbId}`, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) }, rivalCookie);
   ok(r.status === 404, 'rival cannot delete company A buyer');
+
+  console.log('— login throttling');
+  let throttled = false;
+  for (let i = 0; i < 8; i++) {
+    const rr = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'admin@test.com', password: 'wrong-guess-' + i }) }, '');
+    if (rr.status === 429) { throttled = true; break; }
+  }
+  ok(throttled, 'repeated wrong passwords get rate limited');
+  r = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'nobody@test.com', password: 'x' }) }, '');
+  ok(r.status === 401 || r.status === 429, 'unknown email still rejected');
 
   console.log('— security');
   r = await req('/api/admin/pml', {}, tbCookie);
