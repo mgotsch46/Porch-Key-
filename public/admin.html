@@ -40,7 +40,129 @@ aside .logo{padding:0 20px 18px;font-weight:700;font-size:17px;border-bottom:1px
 aside .co{padding:0 20px 14px;font-size:12px;color:#9FC4D2;margin-top:-8px}
 aside button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:none;color:#C5DBE4;padding:12px 20px;font-size:14.5px;font-family:inherit;cursor:pointer;border-left:3px solid transparent}
 aside button .ico{font-size:17px;width:20px;text-align:center;flex-shrink:0}
-aside button.mobile-only{display:none}
+aside button/* ---------- amortization as blocks ---------- */
+/* Interest is warm, principal is green. The same two colours everywhere so the
+   split reads the same on the bar, the blocks and the month rows. */
+.lifebar{margin-bottom:18px}
+.lifebar-track{display:flex;height:34px;border-radius:10px;overflow:hidden;box-shadow:inset 0 0 0 1px rgba(0,0,0,.04)}
+.lifebar-track .seg{display:flex;align-items:center;justify-content:center;font-size:12px;
+  font-weight:700;color:#fff;white-space:nowrap}
+.lifebar-track .seg.int{background:linear-gradient(135deg,#E8894A,#D9703A)}
+.lifebar-track .seg.prin{background:linear-gradient(135deg,#5FB03A,#3F8C24)}
+.lifekey{display:flex;gap:16px;flex-wrap:wrap;margin-top:9px;font-size:13px;font-weight:600;align-items:center}
+.sw{width:10px;height:10px;border-radius:3px;display:inline-block;margin-right:6px;vertical-align:0}
+.sw.int{background:#D9703A}
+.sw.prin{background:#3F8C24}
+
+.yblocks{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:12px}
+.yblock{border-radius:14px;padding:14px;cursor:pointer;border:1.5px solid transparent;
+  transition:transform .08s,box-shadow .12s}
+.yblock:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(10,35,28,.10)}
+.yblock.hot{background:#FDF0E7;border-color:#F3D9C6}
+.yblock.warm{background:#FBF6E4;border-color:#EFE3B8}
+.yblock.cool{background:#EDF7E6;border-color:#CFE7BE}
+.yblock.open{box-shadow:0 6px 18px rgba(10,35,28,.12)}
+.yhead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:9px}
+.yname{font-size:19px;font-weight:700;letter-spacing:-.4px}
+.ynum{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--mut);font-weight:700}
+.ybar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:rgba(0,0,0,.05)}
+.ybar i{display:block;height:100%}
+.ybar i.int{background:#D9703A}
+.ybar i.prin{background:#3F8C24}
+.ysplit{display:flex;justify-content:space-between;font-size:12.5px;font-weight:700;margin-top:7px}
+.ybal{margin-top:10px;padding-top:9px;border-top:1px solid rgba(0,0,0,.07)}
+.ybal .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);font-weight:700}
+.ybal .v{font-size:17px;font-weight:700;letter-spacing:-.4px}
+.ybal .pct{font-size:11.5px;color:var(--mut);margin-top:2px}
+.ymonths:not(:empty){margin-top:10px;padding-top:9px;border-top:1px solid rgba(0,0,0,.07);
+  display:flex;flex-direction:column-reverse}
+.mrow{display:grid;grid-template-columns:34px 1fr 1fr 1fr;gap:5px;font-size:11.5px;padding:2px 0;text-align:right}
+.mrow .m{text-align:left;font-weight:700;color:var(--mut)}
+.mrow .i{color:#B85A28}
+.mrow .p{color:#2F6B1A}
+.mrow .b{font-weight:600}
+.mrow.head{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--mut);
+  font-weight:700;padding-bottom:3px;border-bottom:1px solid rgba(0,0,0,.07);margin-bottom:3px}
+@media (max-width:520px){
+  .yblocks{grid-template-columns:1fr 1fr;gap:9px}
+  .yblock{padding:11px}
+  .yname{font-size:16px}
+  .ybal .v{font-size:15px}
+}
+
+/* ---------- calculator: type straight into blocks ---------- */
+.inblocks{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:14px}
+.inblock{background:var(--card);border:1.5px solid var(--line);border-radius:16px;padding:16px 18px;
+  border-top:4px solid var(--line);cursor:text;display:block;transition:border-color .12s,box-shadow .12s}
+.inblock:hover{border-color:#CBD8D2}
+.inblock:focus-within{border-color:var(--brand);border-top-color:var(--brand);
+  box-shadow:0 0 0 3px rgba(84,163,47,.12)}
+.inblock .l{display:block;font-size:11.5px;color:var(--mut);text-transform:uppercase;
+  letter-spacing:.8px;font-weight:700;margin-bottom:4px}
+.inblock .row{display:flex;align-items:baseline;gap:2px}
+.inblock .pre,.inblock .post{font-size:20px;font-weight:700;color:var(--mut);flex-shrink:0}
+.inblock .post{font-size:14px;margin-left:4px}
+.inblock input{border:none;padding:0;background:none;font-size:26px;font-weight:700;
+  letter-spacing:-.8px;width:100%;min-width:0;color:var(--ink);font-family:inherit}
+.inblock input:focus{outline:none;box-shadow:none}
+.inblock input::placeholder{color:#C6D4CE;font-weight:600}
+.inblock input::-webkit-outer-spin-button,
+.inblock input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.inblock input[type=number]{-moz-appearance:textfield}
+.inblock .tag{display:block;font-size:11px;color:var(--mut);font-weight:600;margin-top:4px;min-height:14px}
+/* The one the app worked out, rather than the ones you typed. */
+.inblock.solved{background:var(--brand-pale);border-color:#C9E5B8;border-top-color:var(--brand)}
+.inblock.solved input{color:var(--brand)}
+.inblock.solved .pre,.inblock.solved .post{color:var(--brand)}
+.inblock.solved .tag{color:var(--brand);font-weight:700}
+
+/* ---------- fold-away sections ---------- */
+.disclose{display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;
+  font-family:inherit;font-size:16px;font-weight:700;color:var(--ink);cursor:pointer;padding:2px 0;
+  letter-spacing:-.2px}
+.disclose:hover{color:var(--brand)}
+.disclose .chev{font-size:13px;color:var(--brand);width:14px;flex-shrink:0}
+.disclose.open{margin-bottom:14px}
+
+/* ---------- message composer ---------- */
+/* A place to actually write, not a one-line slot. */
+.composer{border:1.5px solid var(--line);border-radius:16px;background:#fff;margin-top:14px;
+  transition:border-color .12s,box-shadow .12s;overflow:hidden}
+.composer:focus-within{border-color:var(--brand);box-shadow:0 0 0 3px rgba(84,163,47,.12)}
+.composer .ctools{display:flex;align-items:center;gap:6px;padding:9px 12px;background:var(--bg);
+  border-bottom:1px solid var(--line);flex-wrap:wrap}
+.composer .ctool{background:#fff;border:1px solid var(--line);border-radius:9px;padding:6px 11px;
+  font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer;color:var(--ink);margin:0}
+.composer .ctool:hover{background:var(--brand-pale);border-color:var(--brand);color:var(--brand)}
+.composer .chint{font-size:11.5px;color:var(--mut)}
+.composer textarea{border:none;border-radius:0;width:100%;min-height:92px;max-height:260px;
+  padding:15px 16px;font-size:15px;line-height:1.6;resize:none;background:#fff;font-family:inherit;
+  color:var(--ink);display:block}
+.composer textarea:focus{outline:none;box-shadow:none;border:none}
+.composer textarea::placeholder{color:#A9BDB5}
+.composer .cfoot{display:flex;align-items:center;gap:12px;padding:10px 12px;border-top:1px solid var(--line);
+  background:var(--bg)}
+.composer .ccount{font-size:11.5px;color:var(--mut);flex:1}
+.composer .cfoot button.primary{padding:11px 22px}
+.composer .emojibar{border-radius:0;border:none;border-bottom:1px solid var(--line);margin:0}
+@media (max-width:640px){
+  .composer .chint{display:none}
+  .composer textarea{min-height:110px;font-size:16px}   /* 16px stops iOS zooming in */
+  .composer .cfoot button.primary{width:100%;padding:14px}
+  .composer .ccount{display:none}
+}
+
+/* Names the variable being solved for — the point of a missing-variable calculator. */
+.solvebar{padding:11px 15px;border-radius:12px;background:var(--bg);border:1.5px dashed var(--line);
+  font-size:13.5px;font-weight:600;color:var(--mut);margin-bottom:14px}
+.solvebar.on{background:var(--brand-pale);border:1.5px solid #C9E5B8;color:var(--brand)}
+.solvebar.full{background:var(--accent-pale);border:1.5px solid #EFE3B8;color:#8A5A00}
+.inblock .clr{background:none;border:none;color:#C6D4CE;font-size:12px;cursor:pointer;padding:0 0 0 6px;
+  font-family:inherit;line-height:1;vertical-align:1px}
+.inblock .clr:hover{color:var(--red)}
+.inblock.solved .clr{display:none}
+
+.mobile-only{display:none}
 
 /* A row of actions under a heading. Even gaps, wraps cleanly, and on a phone
    every button goes full width so it is a proper tap target. */
@@ -272,6 +394,14 @@ aside button.signout{margin-top:6px;color:#7FA3B2}
 #more-sheet .sheet{position:absolute;left:0;right:0;bottom:0;background:#fff;
   border-radius:20px 20px 0 0;padding:18px 16px calc(20px + env(safe-area-inset-bottom));
   max-height:78vh;overflow-y:auto}
+/* The bar you drag down to dismiss. Standard phone gesture, so it needs no label. */
+#more-sheet .grabber{padding:2px 0 12px;margin:-6px 0 0;cursor:grab;touch-action:none;
+  display:flex;justify-content:center}
+#more-sheet .grabber span{display:block;width:44px;height:5px;border-radius:3px;background:#CBD8D2}
+#more-sheet .grabber:active{cursor:grabbing}
+#more-sheet .grabber:active span{background:var(--mut)}
+#more-sheet .sheet{transition:transform .22s ease}
+#more-sheet .sheet.dragging{transition:none}
 #more-sheet .sheet h3{font-size:15px;margin-bottom:12px}
 #more-sheet .sheetgrp{font-size:10.5px;text-transform:uppercase;letter-spacing:1.1px;font-weight:700;
   color:var(--mut);padding:10px 4px 6px}
@@ -618,21 +748,48 @@ a{color:var(--brand);font-weight:600}
     <!-- CALCULATOR -->
     <section id="pg-calc" class="hidden">
       <h1>Amortization Calculator</h1>
-      <div class="card">
-        <p class="note" style="margin-bottom:14px">Fill in <b>any three</b> and leave the fourth blank. The missing one appears as you type. Click into a filled field and clear it to solve for that one instead.</p>
-        <div class="grid2">
-          <div class="field"><label>Amount financed ($)</label><input id="ca-principal" type="number" step="0.01" inputmode="decimal" oninput="calcSolve()"></div>
-          <div class="field"><label>Interest rate (% APR)</label><input id="ca-rate" type="number" step="0.001" inputmode="decimal" oninput="calcSolve()"></div>
-          <div class="field"><label>Term (months)</label><input id="ca-term" type="number" inputmode="numeric" oninput="calcSolve()"></div>
-          <div class="field"><label>Monthly P&amp;I ($)</label><input id="ca-payment" type="number" step="0.01" inputmode="decimal" oninput="calcSolve()"></div>
-          <div class="field"><label>First payment date</label><input id="ca-first" type="date" oninput="calcSolve()"></div>
-          <div class="field"><label>Total interest</label><input id="ca-interest" readonly style="background:var(--bg)"></div>
-        </div>
-        <div id="ca-msg" class="note"></div>
-        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-          <button class="primary" onclick="printSchedule()">🖨️ Print the schedule shown</button>
+      <p class="note" style="margin-bottom:12px">This is a <b>missing-variable</b> calculator: it solves for whichever
+        one you leave out. Fill any three blocks and the fourth works itself out and turns green. To solve for a
+        different one, clear it with its &#10005;.</p>
+      <div id="ca-solving" class="solvebar">Waiting on three values&hellip;</div>
+
+      <!-- The four unknowns, as blocks you type straight into. -->
+      <div class="inblocks">
+        <label class="inblock" for="ca-principal">
+          <span class="l">Amount financed<button class="clr" title="Clear this and solve for it" onclick="event.preventDefault();calcClearField('ca-principal')">&#10005;</button></span>
+          <span class="row"><span class="pre">$</span>
+            <input id="ca-principal" type="number" step="0.01" inputmode="decimal" placeholder="0.00" oninput="calcSolve()"></span>
+          <span class="tag"></span>
+        </label>
+        <label class="inblock" for="ca-rate">
+          <span class="l">Interest rate<button class="clr" title="Clear this and solve for it" onclick="event.preventDefault();calcClearField('ca-rate')">&#10005;</button></span>
+          <span class="row"><input id="ca-rate" type="number" step="0.001" inputmode="decimal" placeholder="0.000" oninput="calcSolve()"><span class="post">%</span></span>
+          <span class="tag"></span>
+        </label>
+        <label class="inblock" for="ca-term">
+          <span class="l">Term<button class="clr" title="Clear this and solve for it" onclick="event.preventDefault();calcClearField('ca-term')">&#10005;</button></span>
+          <span class="row"><input id="ca-term" type="number" inputmode="numeric" placeholder="360" oninput="calcSolve()"><span class="post">mo</span></span>
+          <span class="tag" id="ca-termyrs"></span>
+        </label>
+        <label class="inblock" for="ca-payment">
+          <span class="l">Monthly P&amp;I<button class="clr" title="Clear this and solve for it" onclick="event.preventDefault();calcClearField('ca-payment')">&#10005;</button></span>
+          <span class="row"><span class="pre">$</span>
+            <input id="ca-payment" type="number" step="0.01" inputmode="decimal" placeholder="0.00" oninput="calcSolve()"></span>
+          <span class="tag"></span>
+        </label>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0;min-width:180px">
+            <label>First payment date</label><input id="ca-first" type="date" oninput="calcSolve()"></div>
+          <div class="field" style="margin:0;min-width:160px">
+            <label>Total interest</label><input id="ca-interest" readonly style="background:var(--bg);font-weight:700"></div>
+          <div style="flex:1"></div>
           <button class="small" onclick="calcClear()">Clear all</button>
+          <button class="small" onclick="printSchedule()">🖨️ Print</button>
         </div>
+        <div id="ca-msg" class="note" style="margin-top:10px"></div>
       </div>
       <div id="ca-out"></div>
     </section>
@@ -773,16 +930,24 @@ a{color:var(--brand);font-weight:600}
         <button class="small" onclick="openMsgs()">← All conversations</button>
         <div class="card" style="margin-top:12px">
           <h2 id="mt-title"></h2>
-          <div id="mt-list" style="max-height:420px;overflow:auto;padding:6px 0"></div>
-          <div id="emoji-bar" class="emojibar hidden"></div>
-          <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
-            <button class="small" style="margin:0" onclick="toggleEmoji()" title="Insert emoji">&#128578;</button>
-            <input id="mt-input" placeholder="Write a message…" style="flex:1" onkeydown="if(event.key==='Enter')sendAdminMsg()">
-            <button class="primary" onclick="sendAdminMsg()">Send</button>
-          </div>
-          <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-            <button class="small" onclick="sendTemplateModal()">&#128221; Use a template</button>
-            <button class="small" onclick="remindModal(msgLoanId)">&#128276; Send a reminder</button>
+          <div id="mt-list" style="max-height:460px;overflow:auto;padding:6px 0"></div>
+
+          <!-- Composer: a real writing area, not a one-line box. Grows as you type. -->
+          <div class="composer" id="mt-composer">
+            <div id="emoji-bar" class="emojibar hidden"></div>
+            <div class="ctools">
+              <button class="ctool" onclick="toggleEmoji()" title="Insert emoji">&#128578;</button>
+              <button class="ctool" onclick="sendTemplateModal()" title="Insert a saved template">&#128221; Template</button>
+              <button class="ctool" onclick="remindModal(msgLoanId)" title="Send a payment reminder">&#128276; Reminder</button>
+              <span style="flex:1"></span>
+              <span class="chint" id="mt-hint">Enter to send · Shift+Enter for a new line</span>
+            </div>
+            <textarea id="mt-input" rows="3" placeholder="Write a message to your buyer…"
+              oninput="growComposer()" onkeydown="composerKey(event)"></textarea>
+            <div class="cfoot">
+              <span class="ccount" id="mt-count"></span>
+              <button class="primary" id="mt-send" onclick="sendAdminMsg()">Send message</button>
+            </div>
           </div>
         </div>
       </div>
@@ -938,8 +1103,9 @@ a{color:var(--brand);font-weight:600}
   </div>
 </div>
 
-<div id="more-sheet" onclick="if(event.target===this)toggleMoreSheet()">
-  <div class="sheet">
+<div id="more-sheet" onclick="if(event.target===this)closeMoreSheet()">
+  <div class="sheet" id="more-sheetbody">
+    <div class="grabber" id="more-grab"><span></span></div>
     <h3>More</h3>
     <div class="sheetgrp">Portfolio</div>
     <button onclick="navSheet('loans')">📄 TB Loans</button>
@@ -2499,6 +2665,13 @@ function printSchedule(){
       td{padding:5px 4px;border-bottom:1px solid #E6EEDD}
       td.r,th.r{text-align:right}
       tr:nth-child(12n) td{border-bottom:1.5px solid #B9D3C8}
+      .yearbars{margin-bottom:18px}
+      .ybarrow{display:flex;align-items:center;gap:9px;padding:2px 0;font-size:11px}
+      .ybarrow .yy{width:38px;font-weight:700}
+      .ybarrow .yb{flex:1;display:flex;height:9px;border-radius:4px;overflow:hidden}
+      .ybarrow .yb i{background:#D9703A}
+      .ybarrow .yb u{background:#3F8C24}
+      .ybarrow .yv{width:82px;text-align:right;font-weight:600}
       @media print{ body{padding:0} .noprint{display:none} }
       .noprint{margin-bottom:16px}
       .foot{margin-top:20px;font-size:10px;color:#6B7A5F;text-align:center}
@@ -2517,6 +2690,12 @@ function printSchedule(){
       <div class="t"><div class="l">Final payment</div><div class="v">${fdate(r.final_payment_date)}</div></div>
     </div>
     <h2 style="font-size:14px;margin-bottom:8px">${yearly?'Year by year':'Month by month'}</h2>
+    ${yearly?`<div class="yearbars">${(r.schedule_yearly||[]).map(row=>{
+      const tot=row.interest_cents+row.principal_cents, ip=tot?Math.round(row.interest_cents/tot*100):0;
+      return `<div class="ybarrow"><span class="yy">${row.year}</span>
+        <span class="yb"><i style="width:${ip}%"></i><u style="width:${100-ip}%"></u></span>
+        <span class="yv">${fmt(row.balance_cents)}</span></div>`;
+    }).join('')}</div>`:''}
     ${yearly
       ? `<table><thead><tr><th>Year</th><th class="r">Payments</th><th class="r">Paid</th><th class="r">Interest</th>
           <th class="r">Principal</th><th class="r">Balance at year end</th></tr></thead><tbody>
@@ -2535,9 +2714,15 @@ function printSchedule(){
   w.document.close();
 }
 function calcClear(){
-  ['ca-principal','ca-rate','ca-term','ca-payment'].forEach(id=>{ $(id).value=''; $(id).classList.remove('solved'); });
+  ['ca-principal','ca-rate','ca-term','ca-payment'].forEach(id=>{
+    $(id).value=''; $(id).classList.remove('solved');
+    const b=$(id).closest('.inblock');
+    if(b){ b.classList.remove('solved'); const t=b.querySelector('.tag'); if(t) t.textContent=''; }
+  });
   if($('ca-interest')) $('ca-interest').value='';
-  $('ca-out').innerHTML=''; $('ca-msg').textContent=''; CALC_LAST=null;
+  $('ca-out').innerHTML=''; $('ca-msg').textContent=''; CALC_LAST=null; CALC_OPEN=false;
+  if($('ca-solving')){ $('ca-solving').className='solvebar'; $('ca-solving').textContent='Waiting on three values…'; }
+  if($('ca-termyrs')) $('ca-termyrs').textContent='';
 }
 function calcSolve(){
   clearTimeout(calcTimer);
@@ -2562,7 +2747,35 @@ function calcSolve(){
       ['ca-principal','ca-rate','ca-term','ca-payment'].forEach(id=>{
         $(id).classList.remove('solved'); $(id).removeAttribute('title');
       });
+      // Mark which block was calculated rather than typed.
+      ['ca-principal','ca-rate','ca-term','ca-payment'].forEach(id=>{
+        const b=$(id)&&$(id).closest('.inblock');
+        if(b){ b.classList.remove('solved'); const tg=b.querySelector('.tag'); if(tg&&id!=='ca-term') tg.textContent=''; }
+      });
       const solvedField = {payment:'ca-payment',principal:'ca-principal',term:'ca-term',rate:'ca-rate'}[r.solved_for];
+      if(solvedField){
+        const blk=$(solvedField).closest('.inblock');
+        if(blk){ blk.classList.add('solved');
+          const tg=blk.querySelector('.tag');
+          if(tg) tg.textContent = r.solved_for==='principal' ? 'calculated — approximate' : 'calculated';
+        }
+      }
+      // Name the variable being solved for — that is what this calculator is.
+      const NAMES={payment:'Monthly P&I',principal:'Amount financed',term:'Term',rate:'Interest rate'};
+      if($('ca-solving')){
+        const sb=$('ca-solving');
+        if(r.solved_for && r.solved_for!=='nothing'){
+          sb.className='solvebar on';
+          sb.innerHTML='Solving for <b>'+NAMES[r.solved_for]+'</b>';
+        } else {
+          sb.className='solvebar full';
+          sb.textContent='All four filled in — clear one with its ✕ to solve for that one.';
+        }
+      }
+      if($('ca-termyrs') && r.term_months){
+        const yy=Math.floor(r.term_months/12), mm=r.term_months%12;
+        $('ca-termyrs').textContent = yy ? `${yy} year${yy===1?'':'s'}${mm?` ${mm} mo`:''}` : '';
+      }
       if(solvedField){
         const val = r.solved_for==='payment' ? (r.payment_cents/100).toFixed(2)
           : r.solved_for==='principal' ? (r.principal_cents/100).toFixed(2)
@@ -2582,18 +2795,27 @@ function calcSolve(){
           <div class="stat"><div class="n">${(r.interest_rate_bps/100).toFixed(3)}%</div><div class="l">Interest rate</div></div>
           <div class="stat"><div class="n">${r.term_months}</div><div class="l">Months${yrs?` (${yrs}y ${mos}m)`:''}</div></div>
         </div>
-        <div class="card">
-          <h2>Totals</h2>
-          ${rline('Total of all payments', fmt(r.total_paid_cents))}
-          ${rline('Total interest paid', fmt(r.total_interest_cents))}
-          ${rline('Interest as a share of principal', ((r.total_interest_cents/r.principal_cents)*100).toFixed(1)+'%')}
-          ${r.final_payment_date?rline('Final payment date', fdate(r.final_payment_date)):''}
+        <div class="cards">
+          <div class="stat"><div class="n">${fmt(r.total_paid_cents)}</div><div class="l">Total of all payments</div></div>
+          <div class="stat"><div class="n" style="color:#D9703A">${fmt(r.total_interest_cents)}</div><div class="l">Total interest</div></div>
+          <div class="stat"><div class="n">${((r.total_interest_cents/r.principal_cents)*100).toFixed(0)}%</div><div class="l">Interest vs principal</div></div>
+          <div class="stat"><div class="n" style="font-size:20px">${r.final_payment_date?fdate(r.final_payment_date):'—'}</div><div class="l">Paid off</div></div>
         </div>
-        <div class="card"><h2>Schedule
-            <span class="segbtn"><button id="cv-yearly" class="active" onclick="setCalcView('yearly')">Yearly</button><button id="cv-monthly" onclick="setCalcView('monthly')">Monthly</button></span></h2>
-          <div id="calc-sched"></div>
+        <div class="card">
+          <button class="disclose" id="sched-toggle" onclick="toggleCalcSched()">
+            <span class="chev">▸</span>
+            <span class="t">Year-by-year schedule</span>
+            <span class="note" style="margin-left:auto">${r.schedule_yearly?r.schedule_yearly.length:0} years</span>
+          </button>
+          <div id="sched-panel" class="hidden">
+            <div class="segbtn" style="margin-bottom:14px"><button id="cv-yearly" class="active" onclick="setCalcView('yearly')">Yearly</button><button id="cv-monthly" onclick="setCalcView('monthly')">Monthly</button></div>
+            <div id="calc-sched"></div>
+          </div>
         </div>`;
-      CALC_VIEW='yearly'; renderCalcSched();
+      CALC_VIEW='yearly';
+      // The schedule stays folded away until asked for — the four numbers above it are
+      // what most questions are actually about.
+      if(CALC_OPEN) openCalcSched();
     }catch(e){ $('ca-msg').innerHTML='<span style="color:var(--red)">'+esc(e.message)+'</span>'; }
   },300);
 }
@@ -3016,9 +3238,40 @@ async function openPML(id){
       <td class="right">${fmt(e.amount_cents)}</td><td class="right">${e.to_interest_cents?fmt(e.to_interest_cents):''}</td>
       <td class="right">${e.to_principal_cents?fmt(e.to_principal_cents):''}</td><td class="right">${e.principal_balance_after_cents!=null?fmt(e.principal_balance_after_cents):''}</td>
       <td class="note">${esc(e.memo||'')}</td></tr>`).join('')||'<tr><td colspan="7" class="note">No entries yet.</td></tr>'}</tbody></table></div></div>
-  ${f.schedule.length?`<div class="card"><h2>Amortization schedule</h2><div style="max-height:300px;overflow:auto"><table>
-    <thead><tr><th>#</th><th>Date</th><th class="right">Payment</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Balance</th></tr></thead>
-    <tbody>${f.schedule.map(r=>`<tr><td>${r.n}</td><td>${fdate(r.date)}</td><td class="right">${fmt(r.payment_cents)}</td><td class="right">${fmt(r.interest_cents)}</td><td class="right">${fmt(r.principal_cents)}</td><td class="right">${fmt(r.balance_cents)}</td></tr>`).join('')}</tbody></table></div></div>`:''}`;
+  ${f.schedule.length?`<div class="card">
+    <button class="disclose" id="pmlsched-toggle" onclick="togglePmlSched()">
+      <span class="chev">▸</span>
+      <span class="t">Amortization schedule</span>
+      <span class="note" style="margin-left:auto">${f.schedule_yearly?f.schedule_yearly.length:0} years</span>
+    </button>
+    <div id="pmlsched-panel" class="hidden">
+      <div class="segbtn" style="margin-bottom:14px"><button id="pv-yearly" class="active" onclick="setPmlSchedView('yearly')">Yearly</button><button id="pv-monthly" onclick="setPmlSchedView('monthly')">Monthly</button></div>
+      <div id="pmlsched-wrap"></div>
+    </div>
+  </div>`:''}`;
+  PML_F=f; PMLSCHED_OPEN=false; PML_VIEW='yearly';
+}
+
+// Same treatment as the buyer loans, so both sides of a house read the same way.
+let PML_F=null, PMLSCHED_OPEN=false, PML_VIEW='yearly';
+function togglePmlSched(){
+  PMLSCHED_OPEN=!PMLSCHED_OPEN;
+  const p=$('pmlsched-panel'), t=$('pmlsched-toggle');
+  if(p) p.classList.toggle('hidden', !PMLSCHED_OPEN);
+  if(t){ t.classList.toggle('open', PMLSCHED_OPEN); t.querySelector('.chev').textContent=PMLSCHED_OPEN?'▾':'▸'; }
+  if(PMLSCHED_OPEN) renderPmlSched();
+}
+function setPmlSchedView(v){
+  PML_VIEW=v;
+  $('pv-yearly').classList.toggle('active', v==='yearly');
+  $('pv-monthly').classList.toggle('active', v==='monthly');
+  renderPmlSched();
+}
+function renderPmlSched(){
+  const el=$('pmlsched-wrap'); if(!el||!PML_F) return;
+  el.style.maxHeight = PML_VIEW==='yearly' ? 'none' : '340px';
+  el.style.overflow  = PML_VIEW==='yearly' ? 'visible' : 'auto';
+  el.innerHTML = schedTable(PML_F, PML_VIEW);
 }
 function pmlScheduleModal(pid){
   const p=PML_CACHE||{};
@@ -3284,11 +3537,19 @@ async function openLoan(id){
       what to watch. Internal only; the buyer never sees these.</p>
     <div id="loan-notes"></div>
   </div>
-  <div class="card"><h2>Amortization schedule
-      <span class="segbtn"><button id="sv-yearly" class="active" onclick="setSchedView('yearly')">Yearly</button><button id="sv-monthly" onclick="setSchedView('monthly')">Monthly</button></span></h2>
-    <div id="sched-wrap"></div></div>
+  <div class="card">
+    <button class="disclose" id="loansched-toggle" onclick="toggleLoanSched()">
+      <span class="chev">&#9656;</span>
+      <span class="t">Amortization schedule</span>
+      <span class="note" style="margin-left:auto">${f.schedule_yearly?f.schedule_yearly.length:0} years</span>
+    </button>
+    <div id="loansched-panel" class="hidden">
+      <div class="segbtn" style="margin-bottom:14px"><button id="sv-yearly" class="active" onclick="setSchedView('yearly')">Yearly</button><button id="sv-monthly" onclick="setSchedView('monthly')">Monthly</button></div>
+      <div id="sched-wrap"></div>
+    </div>
+  </div>
   </table></div>`;
-  renderSched();
+  LOANSCHED_OPEN=false;
   loadNotes({elId:'loan-notes', loan_id:L.id});
   loadNoticesAdmin();
   loadDocCenter();
@@ -3395,6 +3656,22 @@ function modal(html){
   },0);
 }
 // Most people want the year-by-year picture; the month-by-month detail is one tap away.
+let CALC_OPEN=false;
+function toggleCalcSched(){ CALC_OPEN ? closeCalcSched() : openCalcSched(); }
+function openCalcSched(){
+  CALC_OPEN=true;
+  const p=$('sched-panel'), t=$('sched-toggle');
+  if(!p) return;
+  p.classList.remove('hidden');
+  if(t){ t.classList.add('open'); t.querySelector('.chev').textContent='▾'; }
+  renderCalcSched();
+}
+function closeCalcSched(){
+  CALC_OPEN=false;
+  const p=$('sched-panel'), t=$('sched-toggle');
+  if(p) p.classList.add('hidden');
+  if(t){ t.classList.remove('open'); t.querySelector('.chev').textContent='▸'; }
+}
 function setCalcView(v){
   CALC_VIEW=v;
   $('cv-yearly').classList.toggle('active', v==='yearly');
@@ -3407,6 +3684,17 @@ function renderCalcSched(){
   el.style.overflow  = CALC_VIEW==='yearly' ? 'visible' : 'auto';
   el.innerHTML = schedTable(CALC_LAST, CALC_VIEW);
 }
+// Folded away by default. The numbers at the top of the loan answer most questions;
+// the schedule is for when you actually want to walk the years.
+let LOANSCHED_OPEN=false;
+function toggleLoanSched(){
+  LOANSCHED_OPEN=!LOANSCHED_OPEN;
+  const p=$('loansched-panel'), t=$('loansched-toggle');
+  if(p) p.classList.toggle('hidden', !LOANSCHED_OPEN);
+  if(t){ t.classList.toggle('open', LOANSCHED_OPEN); t.querySelector('.chev').textContent=LOANSCHED_OPEN?'▾':'▸'; }
+  if(LOANSCHED_OPEN) renderSched();
+}
+
 function setSchedView(v){
   SCHED_VIEW=v;
   $('sv-yearly').classList.toggle('active', v==='yearly');
@@ -3414,15 +3702,8 @@ function setSchedView(v){
   renderSched();
 }
 function schedTable(f, view){
-  if(view==='yearly'){
-    const rows=(f.schedule_yearly||[]);
-    if(!rows.length) return '<p class="note">No schedule.</p>';
-    return `<table>
-      <thead><tr><th>Year</th><th class="right">Payments</th><th class="right">Paid</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Balance at year end</th></tr></thead>
-      <tbody>${rows.map(r=>`<tr><td><b>${r.year}</b></td><td class="right">${r.payments}</td>
-        <td class="right">${fmt(r.payment_cents)}</td><td class="right">${fmt(r.interest_cents)}</td>
-        <td class="right">${fmt(r.principal_cents)}</td><td class="right">${fmt(r.balance_cents)}</td></tr>`).join('')}</tbody></table>`;
-  }
+  if(view==='yearly') return schedBlocks(f);
+
   const rows=(f.schedule||[]);
   if(!rows.length) return '<p class="note">No schedule.</p>';
   return `<table>
@@ -3431,6 +3712,83 @@ function schedTable(f, view){
       <td class="right">${fmt(r.interest_cents)}</td><td class="right">${fmt(r.principal_cents)}</td>
       <td class="right">${fmt(r.balance_cents)}</td></tr>`).join('')}</tbody></table>`;
 }
+
+// The schedule as blocks you can take in at a glance, one per year, rather than three
+// hundred rows in a scrolling box. Each block shows the interest / principal split as a
+// bar, because that split is the whole story of an amortized note: nearly all interest
+// early, nearly all principal late.
+function schedBlocks(f){
+  const years=(f.schedule_yearly||[]);
+  if(!years.length) return '<p class="note">No schedule.</p>';
+  const totalInt=years.reduce((t,y)=>t+y.interest_cents,0);
+  const totalPrin=years.reduce((t,y)=>t+y.principal_cents,0);
+  const total=totalInt+totalPrin;
+  const startBal=totalPrin;                       // what was financed
+  const intShare=total?Math.round(totalInt/total*100):0;
+
+  // A single bar for the life of the loan, so the headline lands before the detail.
+  const summary=`
+    <div class="lifebar">
+      <div class="lifebar-track">
+        <div class="seg int" style="width:${intShare}%">${intShare>=14?'Interest '+intShare+'%':''}</div>
+        <div class="seg prin" style="width:${100-intShare}%">${(100-intShare)>=14?'Principal '+(100-intShare)+'%':''}</div>
+      </div>
+      <div class="lifekey">
+        <span><i class="sw int"></i> Interest ${fmt(totalInt)}</span>
+        <span><i class="sw prin"></i> Principal ${fmt(totalPrin)}</span>
+        <span class="note">Total paid ${fmt(total)} over ${years.length} year${years.length===1?'':'s'}</span>
+      </div>
+    </div>`;
+
+  const blocks=years.map((y,i)=>{
+    const yTotal=y.interest_cents+y.principal_cents;
+    const yInt=yTotal?Math.round(y.interest_cents/yTotal*100):0;
+    const paidOff=startBal?Math.round((1-y.balance_cents/startBal)*100):0;
+    // Warm where interest dominates, green as principal takes over.
+    const tone = yInt>=75 ? 'hot' : yInt>=45 ? 'warm' : 'cool';
+    return `<div class="yblock ${tone}" onclick="toggleYear(${i},this)" data-year="${y.year}">
+      <div class="yhead">
+        <span class="yname">${y.year}</span>
+        <span class="ynum">Year ${i+1}</span>
+      </div>
+      <div class="ybar"><i class="int" style="width:${yInt}%"></i><i class="prin" style="width:${100-yInt}%"></i></div>
+      <div class="ysplit">
+        <span><i class="sw int"></i>${fmt(y.interest_cents)}</span>
+        <span><i class="sw prin"></i>${fmt(y.principal_cents)}</span>
+      </div>
+      <div class="ybal">
+        <div class="l">Balance at year end</div>
+        <div class="v">${fmt(y.balance_cents)}</div>
+        <div class="pct">${paidOff}% paid off · ${y.payments} payment${y.payments===1?'':'s'}</div>
+      </div>
+      <div class="ymonths" id="ym-${i}"></div>
+    </div>`;
+  }).join('');
+
+  return summary + `<div class="yblocks">${blocks}</div>
+    <p class="note" style="margin-top:12px">Tap any year to see its months. Warmer blocks are the years where
+      most of the payment is interest; greener blocks are where it turns into equity.</p>`;
+}
+
+// Months for one year, opened in place — no scrolling to find them.
+function toggleYear(i, el){
+  const box=$('ym-'+i); if(!box) return;
+  const src = el.closest('#calc-sched') ? CALC_LAST
+            : el.closest('#pmlsched-wrap') ? PML_F
+            : LOAN_F;
+  if(box.innerHTML){ box.innerHTML=''; el.classList.remove('open'); return; }
+  const year=el.dataset.year;
+  const rows=(src&&src.schedule||[]).filter(r=>r.date.slice(0,4)===year);
+  box.innerHTML=rows.map(r=>`<div class="mrow">
+      <span class="m">${new Date(r.date+'T00:00:00').toLocaleDateString('en-US',{month:'short'})}</span>
+      <span class="i">${fmt(r.interest_cents)}</span>
+      <span class="p">${fmt(r.principal_cents)}</span>
+      <span class="b">${fmt(r.balance_cents)}</span>
+    </div>`).join('')
+    + `<div class="mrow head"><span class="m"></span><span class="i">interest</span><span class="p">principal</span><span class="b">balance</span></div>`;
+  el.classList.add('open');
+}
+
 function renderSched(){
   const el=$('sched-wrap'); if(!el||!LOAN_F) return;
   el.style.maxHeight = SCHED_VIEW==='yearly' ? 'none' : '340px';
@@ -3704,73 +4062,8 @@ async function uploadLoanDoc(){
 }
 
 // ---------- new deal ----------
-function ndFilesChosen(){
-  const files=[...$('nd-files').files];
-  $('nd-filelist').textContent = files.map(f=>f.name).join(' · ');
-  $('nd-extract-btn').classList.toggle('hidden', !files.length);
-}
-async function ndExtract(){
-  $('nd-extract-err').classList.add('hidden');
-  $('nd-extract-status').textContent='Uploading & reading documents… this can take up to a minute.';
-  try{
-    ndUploadedIds=[];
-    for(const f of [...$('nd-files').files]){
-      const data=await fileToB64(f);
-      const doc=await api('/api/admin/documents',{method:'POST',body:JSON.stringify({filename:f.name,mime:f.type,data_base64:data,kind:'closing'})});
-      ndUploadedIds.push(doc.id);
-    }
-    const x=await api('/api/admin/ai/extract-loan',{method:'POST',body:JSON.stringify({document_ids:ndUploadedIds})});
-    const set=(id,v)=>{ if(v!=null&&v!=='') $(id).value=v; };
-    set('nd-name',x.buyer_name); set('nd-email',x.buyer_email); set('nd-phone',x.buyer_phone);
-    set('nd-addr',x.property_address); set('nd-city',x.city); set('nd-state',x.state); set('nd-zip',x.zip);
-    if(x.loan_type) $('nd-type').value=x.loan_type;
-    set('nd-trust',x.trust_name); set('nd-trustee',x.trustee); set('nd-bi',x.beneficial_interest_pct);
-    set('nd-price',x.sale_price); set('nd-down',x.down_payment); set('nd-fin',x.amount_financed);
-    set('nd-rate',x.interest_rate_pct); set('nd-term',x.term_months); set('nd-pi',x.monthly_payment_pi);
-    set('nd-escrow',x.monthly_escrow); set('nd-late',x.late_fee); set('nd-grace',x.grace_days); set('nd-first',x.first_payment_date);
-    ndCalc();
-    $('nd-extract-status').innerHTML='✅ Documents read — <b>review every field below before creating the deal.</b>'+(x.notes?' Notes: '+esc(x.notes):'');
-  }catch(e){
-    $('nd-extract-status').textContent='';
-    $('nd-extract-err').textContent=e.message; $('nd-extract-err').classList.remove('hidden');
-  }
-}
-function ndCalc(finEdited){
-  const price=parseFloat($('nd-price').value)||0, down=parseFloat($('nd-down').value)||0;
-  if(!finEdited && price) $('nd-fin').value=(price-down).toFixed(2);
-}
-async function ndCreate(){
-  $('nd-err').classList.add('hidden'); $('nd-ok').classList.add('hidden');
-  try{
-    const name=$('nd-name').value.trim(), email=$('nd-email').value.trim();
-    if(!name||!email) throw new Error('Buyer name and email are required');
-    if(!$('nd-addr').value.trim()) throw new Error('Property address is required');
-    if(!$('nd-fin').value||!$('nd-rate').value||!$('nd-term').value||!$('nd-first').value)
-      throw new Error('Amount financed, rate, term, and first payment date are required');
-    const prop=await api('/api/admin/properties',{method:'POST',body:JSON.stringify({
-      address:$('nd-addr').value, city:$('nd-city').value, state:$('nd-state').value, zip:$('nd-zip').value,
-      trust_name:$('nd-trust').value||null, trustee:$('nd-trustee').value||null })});
-    const tb=await api('/api/admin/tenants',{method:'POST',body:JSON.stringify({name,email,phone:$('nd-phone').value})});
-    const loan=await api('/api/admin/loans',{method:'POST',body:JSON.stringify({
-      property_id:prop.id, tenant_user_id:tb.id, loan_type:$('nd-type').value,
-      sale_price_cents:Math.round(parseFloat($('nd-price').value||$('nd-fin').value)*100),
-      down_payment_cents:Math.round(parseFloat($('nd-down').value||0)*100),
-      principal_cents:Math.round(parseFloat($('nd-fin').value)*100),
-      interest_rate_bps:Math.round(parseFloat($('nd-rate').value)*100),
-      term_months:parseInt($('nd-term').value),
-      payment_cents:$('nd-pi').value?Math.round(parseFloat($('nd-pi').value)*100):undefined,
-      escrow_cents:Math.round(parseFloat($('nd-escrow').value||0)*100),
-      late_fee_cents:Math.round(parseFloat($('nd-late').value||0)*100),
-      grace_days:parseInt($('nd-grace').value||5),
-      first_payment_date:$('nd-first').value,
-      beneficial_interest_pct:$('nd-bi').value?parseFloat($('nd-bi').value):null })});
-    // link uploaded docs to the new loan
-    for(const id of ndUploadedIds){ /* docs already stored; attach via loan update not needed for MVP */ }
-    $('nd-ok').innerHTML=`✅ Deal created. <b>Buyer login:</b> ${esc(email)} · <b>Temporary password:</b> <code>${esc(tb.temp_password)}</code> — share this with the buyer; they'll set their own password on first sign-in.`;
-    $('nd-ok').classList.remove('hidden');
-    window.scrollTo(0,document.body.scrollHeight);
-  }catch(e){ $('nd-err').textContent=e.message; $('nd-err').classList.remove('hidden'); }
-}
+// The old "New Deal" page was replaced by the properties-first workflow. Its helper
+// functions lived on here with nothing calling them and no markup to act on.
 
 // ---------- TBs / properties ----------
 let tbArchived=false;
@@ -3935,13 +4228,36 @@ async function openThread(loanId,title){
     return `<div class="msg ${m.sender_role==='admin'?'me':'them'}">${esc(m.body)}<div class="t">${m.sender_role==='admin'?'You':esc(m.sender_name)} · ${when}</div></div>`;
   }).join('')||'<p class="note">No messages yet.</p>';
   $('mt-list').scrollTop=$('mt-list').scrollHeight;
+  if($('mt-input')){ $('mt-input').style.height=''; growComposer(); }
   loadDash();
 }
+// Grow with the text rather than making somebody write into a slot.
+function growComposer(){
+  const t=$('mt-input'); if(!t) return;
+  t.style.height='auto';
+  t.style.height=Math.min(t.scrollHeight, 260)+'px';
+  const n=t.value.length;
+  if($('mt-count')) $('mt-count').textContent = n ? `${n} character${n===1?'':'s'}` : '';
+  if($('mt-send')) $('mt-send').disabled = !t.value.trim();
+}
+// Enter sends. Shift+Enter is a new line — the usual arrangement, and the hint says so.
+function composerKey(e){
+  if(e.key==='Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey){ e.preventDefault(); sendAdminMsg(); }
+}
 async function sendAdminMsg(){
-  const v=$('mt-input').value.trim(); if(!v)return;
-  $('mt-input').value='';
-  await api(`/api/admin/loans/${msgLoanId}/messages`,{method:'POST',body:JSON.stringify({body:v})});
-  openThread(msgLoanId,$('mt-title').textContent);
+  const t=$('mt-input');
+  const v=t.value.trim(); if(!v)return;
+  const btn=$('mt-send');
+  if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
+  try{
+    await api(`/api/admin/loans/${msgLoanId}/messages`,{method:'POST',body:JSON.stringify({body:v})});
+    t.value=''; growComposer();
+    await openThread(msgLoanId,$('mt-title').textContent);
+  }catch(e){
+    alert(e.message);          // keep what they wrote — do not throw the message away
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='Send message'; }
+  }
 }
 
 // ---------- cash slips ----------
@@ -4037,8 +4353,63 @@ async function wzNext(){
   } catch(e){ fail(e.message); }
 }
 
-function toggleMoreSheet(){ $('more-sheet').classList.toggle('open'); }
-function navSheet(pg){ $('more-sheet').classList.remove('open'); nav(pg); }
+function toggleMoreSheet(){
+  const open=$('more-sheet').classList.toggle('open');
+  const body=$('more-sheetbody');
+  if(body){ body.style.transform=''; }
+  if(open) wireSheetDrag();
+}
+function closeMoreSheet(){
+  const body=$('more-sheetbody');
+  if(body) body.style.transform='';
+  $('more-sheet').classList.remove('open');
+}
+
+// Drag the bar at the top downwards to dismiss. Past a third of the sheet's height,
+// or on a quick flick, it closes; otherwise it springs back.
+let sheetWired=false;
+function wireSheetDrag(){
+  if(sheetWired) return;
+  const grab=$('more-grab'), body=$('more-sheetbody');
+  if(!grab||!body) return;
+  sheetWired=true;
+  let startY=0, startT=0, dy=0, dragging=false;
+
+  const down=(e)=>{
+    dragging=true; dy=0;
+    startY=(e.touches?e.touches[0].clientY:e.clientY);
+    startT=Date.now();
+    body.classList.add('dragging');
+    e.preventDefault();
+  };
+  const move=(e)=>{
+    if(!dragging) return;
+    const y=(e.touches?e.touches[0].clientY:e.clientY);
+    dy=Math.max(0, y-startY);                 // downwards only
+    body.style.transform=`translateY(${dy}px)`;
+    e.preventDefault();
+  };
+  const up=()=>{
+    if(!dragging) return;
+    dragging=false;
+    body.classList.remove('dragging');
+    const flick=(Date.now()-startT)<300 && dy>40;
+    if(dy > body.offsetHeight*0.33 || flick){
+      body.style.transform=`translateY(${body.offsetHeight}px)`;
+      setTimeout(closeMoreSheet, 180);
+    } else {
+      body.style.transform='';
+    }
+  };
+
+  grab.addEventListener('touchstart',down,{passive:false});
+  grab.addEventListener('touchmove',move,{passive:false});
+  grab.addEventListener('touchend',up);
+  grab.addEventListener('mousedown',down);
+  window.addEventListener('mousemove',move);
+  window.addEventListener('mouseup',up);
+}
+function navSheet(pg){ closeMoreSheet(); nav(pg); }
 
 boot();
 </script>

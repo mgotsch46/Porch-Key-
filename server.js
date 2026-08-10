@@ -2231,6 +2231,7 @@ app.get('/api/admin/pml/:id', adminOnly, (req, res) => {
   }) : [];
   res.json({
     pml, property, ledger, schedule,
+    schedule_yearly: schedule.length ? loanEngine.yearlySchedule(schedule) : [],
     payoff: loanEngine.payoffQuote({ ...pml, fees_due_cents: 0, escrow_balance_cents: 0 }, today()),
     next_due_date: loanEngine.nextDueDate(pml, today()),
     tb_loan: tb ? { id: tb.id, payment_cents: tb.payment_cents + tb.escrow_cents, balance_cents: tb.principal_balance_cents } : null,

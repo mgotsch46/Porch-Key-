@@ -32,7 +32,7 @@ git add -A
 if errorlevel 1 goto failed
 
 echo  Committing...
-git commit -m "Grouped sidebar with Templates and Contacts under Messages, TB Loans vs PML Loans naming, loans search and sort, repaired broken nav CSS rule"
+git commit -m "Calculator as input blocks with solve-for indicator, amortization as colored year blocks, schedules folded away, proper message composer, swipe-down More sheet, dead code removed"
 
 echo  Pushing to GitHub...
 echo.

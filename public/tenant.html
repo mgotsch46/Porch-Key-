@@ -150,12 +150,17 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--brand)}
 .msg.them{background:#fff;border:1px solid var(--line);border-bottom-left-radius:6px}
 .msg .t{font-size:11px;opacity:.72;margin-top:5px}
 .composer{position:sticky;bottom:calc(88px + env(safe-area-inset-bottom));
-  background:var(--card);border:1px solid var(--line);border-radius:18px;padding:10px;
-  display:flex;gap:9px;box-shadow:0 4px 16px rgba(0,0,0,.07)}
-.composer input{border:none;padding:12px;font-size:16px;flex:1}
-.composer input:focus{outline:none}
-.composer button{background:var(--brand);color:#fff;border:none;border-radius:13px;
-  width:52px;font-size:19px;cursor:pointer;flex-shrink:0}
+  background:var(--card);border:2px solid var(--line);border-radius:18px;padding:10px;
+  display:flex;gap:9px;align-items:flex-end;box-shadow:0 4px 16px rgba(0,0,0,.07)}
+.composer:focus-within{border-color:var(--brand)}
+/* Grows with what they write. 16px keeps iOS from zooming the page on focus. */
+.composer textarea{border:none;padding:12px;font-size:16px;line-height:1.5;flex:1;resize:none;
+  min-height:48px;max-height:180px;background:none;font-family:inherit;color:var(--ink)}
+.composer textarea:focus{outline:none;border:none;box-shadow:none}
+.composer textarea::placeholder{color:#9FB5AC}
+.composer button{background:var(--brand);color:#fff;border:none;border-radius:14px;
+  width:54px;height:48px;font-size:19px;cursor:pointer;flex-shrink:0}
+.composer button:disabled{opacity:.4}
 
 /* ---------- bottom nav: big targets ---------- */
 .nav{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--line);
@@ -484,8 +489,9 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
     <section id="tab-msgs" class="hidden">
       <div id="m-list"></div>
       <div class="composer">
-        <input id="m-input" placeholder="Write a message…" onkeydown="if(event.key==='Enter')sendMsg()">
-        <button onclick="sendMsg()" aria-label="Send">➤</button>
+        <textarea id="m-input" rows="1" placeholder="Write a message…"
+          oninput="growMsgBox()" onkeydown="msgKey(event)"></textarea>
+        <button id="m-send" onclick="sendMsg()" aria-label="Send" disabled>➤</button>
       </div>
     </section>
 
@@ -1008,10 +1014,25 @@ async function pollMsgs(){
     if(tab==='msgs') window.scrollTo(0,document.body.scrollHeight);
   }catch{}
 }
+function growMsgBox(){
+  const t=$('m-input'); if(!t) return;
+  t.style.height='auto';
+  t.style.height=Math.min(t.scrollHeight, 180)+'px';
+  if($('m-send')) $('m-send').disabled = !t.value.trim();
+}
+// Enter sends, Shift+Enter starts a new line.
+function msgKey(e){
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMsg(); }
+}
 async function sendMsg(){
-  const v=$('m-input').value.trim(); if(!v) return;
-  $('m-input').value='';
-  try{ await api('/api/tenant/messages',{method:'POST',body:JSON.stringify({body:v})}); pollMsgs(); }catch{}
+  const t=$('m-input');
+  const v=t.value.trim(); if(!v) return;
+  try{
+    await api('/api/tenant/messages',{method:'POST',body:JSON.stringify({body:v})});
+    t.value=''; growMsgBox(); pollMsgs();
+  }catch(e){
+    alert('Could not send that just now. Your message is still here — try again in a moment.');
+  }
 }
 
 // ---------- location (opt-in) ----------
