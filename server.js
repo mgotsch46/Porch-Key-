@@ -192,10 +192,10 @@ app.post('/sms/incoming', (req, res) => {
   // Otherwise it is a buyer replying to their one-time invitation. Point them at the app.
   let companyName = null;
   if (bare) {
-    const u = get(`SELECT c.name FROM users u JOIN companies c ON c.id=u.company_id
+    const u = get(`SELECT c.name, c.mgmt_company_name FROM users u JOIN companies c ON c.id=u.company_id
       WHERE u.phone IS NOT NULL AND u.deleted_at IS NULL
         AND ${digitsOf('u.phone')} = ? LIMIT 1`, bare);
-    if (u) companyName = u.name;
+    if (u) companyName = u.mgmt_company_name || u.name;
   }
   res.type('text/xml').send(sms.autoReplyTwiml(companyName));
 });
@@ -482,7 +482,7 @@ app.get('/api/admin/summary', adminOnly, (req, res) => {
     monthly_spread_cents: tbTotalMonthly - pmlTotalMonthly,
     properties_in_progress: all(`SELECT id, address, phase FROM properties
       WHERE company_id=? AND COALESCE(phase,'acquired') NOT IN ('sold','paid_off') ORDER BY id DESC`, req.companyId),
-    integrations: { stripe: pay.stripeEnabled(), ai: ai.aiEnabled(), paynearme: pay.pnmEnabled(), sms: sms.smsEnabled() },
+    integrations: { stripe: pay.stripeEnabled(), ai: ai.aiEnabled(), paynearme: pay.pnmEnabled(), sms: sms.smsEnabled(myCompany(req)) },
     pending_invitations: get("SELECT COUNT(*) c FROM invitations WHERE company_id=? AND status IN ('pending','failed')", req.companyId).c,
     overdue_tasks: get(`SELECT COUNT(*) c FROM tasks WHERE company_id=? AND status='open'
       AND due_date IS NOT NULL AND due_date < date('now')`, req.companyId).c,
@@ -1057,6 +1057,9 @@ app.post('/api/admin/tasks/run-reminders', adminOnly, async (req, res, next) => 
 // their reply. Inbound texts from a known contact land in their thread; anything from an
 // unknown number still gets the automatic "use the app" answer.
 
+// The signed-in admin's own company — texting credentials hang off it.
+function myCompany(req) { return get('SELECT * FROM companies WHERE id=?', req.companyId); }
+
 const CONTACT_ROLES = {
   bog: { label: 'Boots on the ground', icon: '👟' },
   contractor: { label: 'Contractor', icon: '🔨' },
@@ -1087,7 +1090,7 @@ app.get('/api/admin/contacts', adminOnly, (req, res) => {
     FROM contacts c
     WHERE c.company_id=? AND c.archived_at IS ${showArchived ? 'NOT' : ''} NULL
     ORDER BY c.name`, req.companyId).map(contactRow);
-  res.json({ contacts: rows, roles: CONTACT_ROLES, sms_enabled: sms.smsEnabled() });
+  res.json({ contacts: rows, roles: CONTACT_ROLES, sms_enabled: sms.smsEnabled(myCompany(req)) });
 });
 
 app.post('/api/admin/contacts', adminOnly, (req, res) => {
@@ -1143,7 +1146,7 @@ app.get('/api/admin/properties/:id/contacts', adminOnly, (req, res) => {
     FROM property_contacts pc JOIN contacts c ON c.id=pc.contact_id
     WHERE pc.property_id=? AND c.archived_at IS NULL
     ORDER BY c.role, c.name`, p.id, p.id).map(contactRow);
-  res.json({ contacts: rows, roles: CONTACT_ROLES, sms_enabled: sms.smsEnabled() });
+  res.json({ contacts: rows, roles: CONTACT_ROLES, sms_enabled: sms.smsEnabled(myCompany(req)) });
 });
 
 app.post('/api/admin/properties/:id/contacts', adminOnly, (req, res) => {
@@ -1173,7 +1176,7 @@ app.get('/api/admin/contacts/:id/messages', adminOnly, (req, res) => {
     LEFT JOIN users u ON u.id=m.sent_by
     WHERE m.contact_id=? ORDER BY m.id`, c.id);
   run("UPDATE contact_messages SET read_at=datetime('now') WHERE contact_id=? AND direction='in' AND read_at IS NULL", c.id);
-  res.json({ contact: contactRow(c), messages: rows, sms_enabled: sms.smsEnabled() });
+  res.json({ contact: contactRow(c), messages: rows, sms_enabled: sms.smsEnabled(myCompany(req)) });
 });
 
 app.post('/api/admin/contacts/:id/messages', adminOnly, async (req, res, next) => {
@@ -1187,15 +1190,15 @@ app.post('/api/admin/contacts/:id/messages', adminOnly, async (req, res, next) =
     ? req.body.property_id : null;
 
   // Sign it, so the vendor knows who is texting before they answer.
-  const co = get('SELECT name FROM companies WHERE id=?', req.companyId);
+  const co = myCompany(req);
   const prop = propertyId ? get('SELECT address FROM properties WHERE id=?', propertyId) : null;
   const text = [
     prop ? `${prop.address}:` : null,
     body,
-    `— ${req.user.name || co.name}, ${co.name}`,
+    `— ${req.user.name || tpl.outboundName(co)}, ${tpl.outboundName(co)}`,
   ].filter(Boolean).join('\n');
 
-  if (!sms.smsEnabled()) {
+  if (!sms.smsEnabled(myCompany(req))) {
     // No Twilio yet: record it and hand back the text to send from a phone.
     const r = run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction,
         phone, body, status, sent_by) VALUES (?,?,?,'out',?,?,'not_sent',?)`,
@@ -1206,7 +1209,7 @@ app.post('/api/admin/contacts/:id/messages', adminOnly, async (req, res, next) =
     });
   }
   try {
-    await sms.sendSms(phone, text);
+    await sms.sendSms(phone, text, myCompany(req));
     const r = run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction,
         phone, body, status, sent_by) VALUES (?,?,?,'out',?,?,'sent',?)`,
       req.companyId, c.id, propertyId, phone, text, req.user.id);
@@ -1227,17 +1230,17 @@ app.post('/api/admin/properties/:id/broadcast', adminOnly, async (req, res, next
   const ids = (req.body && req.body.contact_ids) || [];
   if (!body) return res.status(400).json({ error: 'Nothing to send' });
   if (!ids.length) return res.status(400).json({ error: 'Pick at least one contact' });
-  const co = get('SELECT name FROM companies WHERE id=?', req.companyId);
+  const co = myCompany(req);
   const results = [];
   for (const id of ids) {
     const c = get('SELECT * FROM contacts WHERE id=? AND company_id=?', id, req.companyId);
     if (!c) { results.push({ id, ok: false, error: 'Not found' }); continue; }
     const phone = sms.normalizePhone(c.phone);
     if (!phone) { results.push({ id, name: c.name, ok: false, error: 'No mobile number' }); continue; }
-    const text = `${p.address}:\n${body}\n— ${req.user.name || co.name}, ${co.name}`;
+    const text = `${p.address}:\n${body}\n— ${req.user.name || tpl.outboundName(co)}, ${tpl.outboundName(co)}`;
     try {
-      if (!sms.smsEnabled()) throw new Error('Texting is not connected yet');
-      await sms.sendSms(phone, text);
+      if (!sms.smsEnabled(myCompany(req))) throw new Error('Texting is not connected yet');
+      await sms.sendSms(phone, text, myCompany(req));
       run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction,
           phone, body, status, sent_by) VALUES (?,?,?,'out',?,?,'sent',?)`,
         req.companyId, c.id, p.id, phone, text, req.user.id);
@@ -1540,15 +1543,85 @@ app.post('/api/admin/properties/:id/sell', adminOnly, async (req, res, next) => 
     }
     run("UPDATE properties SET status='sold', phase='sold', phase_updated_at=datetime('now') WHERE id=?", prop.id);
 
+    const phone = sms.normalizePhone(b.buyer_phone);
     const inv = run(`INSERT INTO invitations (company_id, loan_id, user_id, phone, temp_password, channel)
       VALUES (?,?,?,?,?,?)`, req.companyId, l.lastInsertRowid, u.lastInsertRowid,
-      sms.normalizePhone(b.buyer_phone), temp, b.buyer_phone ? 'sms' : 'manual');
+      phone, temp, b.buyer_phone ? 'sms' : 'manual');
+
+    // Text it now. Recording a sale and inviting the buyer are one action, not two —
+    // there is no reason to make somebody go and press a second button.
+    let invite = { sent: false, error: null };
+    if (phone && sms.smsEnabled(co)) {
+      const d = inviteBody(req, inv.lastInsertRowid);
+      try {
+        await sms.sendSms(phone, d.text, co);
+        run("UPDATE invitations SET status='sent', sent_at=datetime('now'), error=NULL WHERE id=?",
+          inv.lastInsertRowid);
+        invite = { sent: true, error: null, phone };
+      } catch (e) {
+        run("UPDATE invitations SET status='failed', error=? WHERE id=?", e.message, inv.lastInsertRowid);
+        invite = { sent: false, error: e.message, phone };
+      }
+    } else if (!phone) {
+      invite.error = 'No mobile number for this buyer, so nothing could be texted.';
+    } else {
+      invite.error = 'Texting is not connected yet — add your Twilio details under Settings → Texting.';
+    }
 
     res.json({
       loan_id: l.lastInsertRowid, tenant_user_id: u.lastInsertRowid,
       invitation_id: inv.lastInsertRowid, temp_password: temp,
-      sms_enabled: sms.smsEnabled(),
+      sms_enabled: sms.smsEnabled(co), invite,
     });
+  } catch (e) { next(e); }
+});
+
+// ---------- texting setup ----------
+// Credentials are entered in the app rather than on the host, because the person who
+// needs texting working is not the person with access to the deployment.
+app.get('/api/admin/texting', adminOnly, (req, res) => {
+  const co = myCompany(req);
+  const c = sms.creds(co);
+  res.json({
+    connected: !!c,
+    source: c ? c.source : null,          // 'company' = entered here, 'env' = set on the host
+    from: c ? c.from : null,
+    sid_tail: co.twilio_sid ? '…' + co.twilio_sid.slice(-4) : null,
+    webhook_url: baseUrlOf(req) + '/sms/incoming',
+  });
+});
+
+app.put('/api/admin/texting', ownerOnly, async (req, res, next) => {
+  const b = req.body || {};
+  const sid = String(b.sid || '').trim();
+  const token = String(b.token || '').trim();
+  const from = sms.normalizePhone(b.from);
+  if (!sid || !token || !from) return res.status(400).json({ error: 'All three values are needed' });
+  if (!/^AC[0-9a-f]{32}$/i.test(sid)) {
+    return res.status(400).json({ error: 'That does not look like an Account SID — it starts with AC and is 34 characters' });
+  }
+  try {
+    const info = await sms.verifyCreds({ sid, token, from });   // fail before saving
+    run('UPDATE companies SET twilio_sid=?, twilio_token=?, twilio_from=? WHERE id=?',
+      sid, token, from, req.companyId);
+    res.json({ ok: true, account: info.account, status: info.status, from });
+  } catch (e) { next(e); }
+});
+
+app.delete('/api/admin/texting', ownerOnly, (req, res) => {
+  run('UPDATE companies SET twilio_sid=NULL, twilio_token=NULL, twilio_from=NULL WHERE id=?', req.companyId);
+  res.json({ ok: true });
+});
+
+// Send a real text to yourself to prove the whole path works.
+app.post('/api/admin/texting/test', adminOnly, async (req, res, next) => {
+  const co = myCompany(req);
+  const to = sms.normalizePhone(req.body && req.body.to);
+  if (!to) return res.status(400).json({ error: 'Give a mobile number to test with' });
+  if (!sms.smsEnabled(co)) return res.status(400).json({ error: 'Connect Twilio first' });
+  try {
+    await sms.sendSms(to, `Porch Pay test from ${tpl.outboundName(co)}. Texting is working.`, co);
+    res.json({ ok: true, to });
   } catch (e) { next(e); }
 });
 
@@ -1563,7 +1636,7 @@ function inviteBody(req, invId) {
   return {
     inv, user: u,
     text: sms.inviteMessage({
-      buyerName: u ? u.name : '', companyName: co.name,
+      buyerName: u ? u.name : '', companyName: tpl.outboundName(co),
       address: prop ? prop.address : 'your new home',
       url: baseUrlOf(req) + '/', email: u ? u.email : '',
       tempPassword: inv.temp_password,
@@ -1572,7 +1645,7 @@ function inviteBody(req, invId) {
 }
 app.get('/api/admin/invitations', adminOnly, (req, res) => {
   res.json({
-    sms_enabled: sms.smsEnabled(),
+    sms_enabled: sms.smsEnabled(myCompany(req)),
     invitations: all(`SELECT i.*, u.name AS buyer_name, u.email AS buyer_email, p.address
       FROM invitations i LEFT JOIN users u ON u.id=i.user_id
       LEFT JOIN loans l ON l.id=i.loan_id LEFT JOIN properties p ON p.id=l.property_id
@@ -1582,7 +1655,7 @@ app.get('/api/admin/invitations', adminOnly, (req, res) => {
 app.get('/api/admin/invitations/:id/preview', adminOnly, (req, res) => {
   const d = inviteBody(req, req.params.id);
   if (!d) return res.status(404).json({ error: 'Not found' });
-  res.json({ text: d.text, phone: d.inv.phone, sms_enabled: sms.smsEnabled(),
+  res.json({ text: d.text, phone: d.inv.phone, sms_enabled: sms.smsEnabled(myCompany(req)),
     buyer_name: d.user ? d.user.name : '', status: d.inv.status });
 });
 app.post('/api/admin/invitations/:id/send', adminOnly, async (req, res, next) => {
@@ -1599,11 +1672,11 @@ app.post('/api/admin/invitations/:id/send', adminOnly, async (req, res, next) =>
   if (!d) return res.status(404).json({ error: 'Not found' });
   const phone = sms.normalizePhone(req.body.phone || d.inv.phone);
   if (!phone) return res.status(400).json({ error: 'No mobile number on file for this buyer' });
-  if (!sms.smsEnabled()) {
+  if (!sms.smsEnabled(myCompany(req))) {
     return res.status(400).json({ error: 'Texting is not set up yet. Copy the message and send it from your phone, or add your Twilio details.', text: d.text });
   }
   try {
-    await sms.sendSms(phone, d.text);
+    await sms.sendSms(phone, d.text, myCompany(req));
     run("UPDATE invitations SET status='sent', phone=?, sent_at=datetime('now'), error=NULL WHERE id=?", phone, d.inv.id);
     res.json({ ok: true });
   } catch (e) {
@@ -1712,7 +1785,13 @@ app.get('/api/admin/loans', adminOnly, (req, res) => {
   const loans = all('SELECT * FROM loans WHERE company_id=? ORDER BY id DESC', req.companyId);
   res.json(loans.map(l => {
     const f = loanFull(l);
-    return { ...f.loan, address: f.property ? f.property.address : '', tenant_name: f.tenant ? f.tenant.name : null, status_info: f.status };
+    // City and email come along so the loans list can be searched by them.
+    return { ...f.loan,
+      address: f.property ? f.property.address : '',
+      city: f.property ? f.property.city : null,
+      tenant_name: f.tenant ? f.tenant.name : null,
+      tenant_email: f.tenant ? f.tenant.email : null,
+      status_info: f.status };
   }));
 });
 app.post('/api/admin/loans', adminOnly, (req, res) => {
@@ -2099,9 +2178,9 @@ app.post('/api/admin/loans/:id/messages', adminOnly, (req, res) => {
       loan.id, req.user.id, b.body);
   }
   if (loan.tenant_user_id) {
-    const co = get('SELECT name FROM companies WHERE id=?', req.companyId);
+    const co = myCompany(req);
     notify.notify(loan.tenant_user_id, {
-      kind: 'message', title: `New message from ${co ? co.name : 'your servicer'}`,
+      kind: 'message', title: `New message from ${co ? tpl.outboundName(co) : 'your servicer'}`,
       body: b.subject || (b.body || '').slice(0, 120), url: '/?tab=msgs',
     }).catch(() => {});
   }

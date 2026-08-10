@@ -40,7 +40,9 @@ aside .logo{padding:0 20px 18px;font-weight:700;font-size:17px;border-bottom:1px
 aside .co{padding:0 20px 14px;font-size:12px;color:#9FC4D2;margin-top:-8px}
 aside button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:none;color:#C5DBE4;padding:12px 20px;font-size:14.5px;font-family:inherit;cursor:pointer;border-left:3px solid transparent}
 aside button .ico{font-size:17px;width:20px;text-align:center;flex-shrink:0}
-aside button/* A row of actions under a heading. Even gaps, wraps cleanly, and on a phone
+aside button.mobile-only{display:none}
+
+/* A row of actions under a heading. Even gaps, wraps cleanly, and on a phone
    every button goes full width so it is a proper tap target. */
 .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 .actions button{margin-left:0!important}
@@ -144,7 +146,16 @@ tr.click:hover .addr-link{text-decoration-color:var(--brand)}
 .attn:hover{background:#DCF0CE}
 .attn.bad{background:var(--red-pale);color:var(--red);border-color:#F3D2D2}
 .attn.bad:hover{background:#FBE0E0}
-.mobile-only{display:none}
+/* Dashboard: tasks and the next two days. */
+.dtask{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)}
+.dtask:last-child{border-bottom:none}
+.dayblock{margin-bottom:14px}
+.dayblock:last-child{margin-bottom:0}
+.daylbl{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;font-weight:700;color:var(--mut);
+  padding-bottom:5px;border-bottom:1.5px solid var(--line)}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--brand)}
+.sarrow{font-size:9px;color:var(--brand)}
 aside button:hover{background:rgba(255,255,255,.06);color:#fff}
 aside button.active{background:var(--nav2);color:#fff;border-left-color:var(--accent);font-weight:600}
 aside .me-chip{display:flex;align-items:center;gap:9px;margin:0 12px 14px;padding:9px 11px;
@@ -243,10 +254,18 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand)}
 .msg.them{background:#EDF2F0;border-bottom-left-radius:5px}
 .msg .t{font-size:10.5px;opacity:.72;margin-top:3px}
 .modal-bg{position:fixed;inset:0;background:rgba(10,35,28,.55);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
+/* Sidebar grouping. Headings orient you; sub-items sit under their parent. */
+aside .navgrp{padding:18px 20px 6px;font-size:10.5px;text-transform:uppercase;letter-spacing:1.1px;
+  font-weight:700;color:#7FA3B2}
+aside .navgrp:first-of-type{padding-top:10px}
+aside button.subnav{padding-left:44px;font-size:13.5px;color:#A9C6D2}
+aside button.subnav .ico{font-size:14px;width:16px}
+aside button.subnav.active{padding-left:41px}
+aside button.signout{margin-top:6px;color:#7FA3B2}
+
 .mobile-only{display:none}
 @media (max-width:900px){
   .mobile-only{display:flex!important}
-  aside button.mobile-only{order:99}
   #more-sheet.open{display:block}
 }
 #more-sheet{display:none;position:fixed;inset:0;background:rgba(10,35,28,.5);z-index:60}
@@ -254,6 +273,8 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand)}
   border-radius:20px 20px 0 0;padding:18px 16px calc(20px + env(safe-area-inset-bottom));
   max-height:78vh;overflow-y:auto}
 #more-sheet .sheet h3{font-size:15px;margin-bottom:12px}
+#more-sheet .sheetgrp{font-size:10.5px;text-transform:uppercase;letter-spacing:1.1px;font-weight:700;
+  color:var(--mut);padding:10px 4px 6px}
 #more-sheet .sheet button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
   background:var(--bg);border:none;border-radius:12px;padding:15px;font-size:15px;
   font-family:inherit;font-weight:600;margin-bottom:8px;cursor:pointer;color:var(--ink)}
@@ -281,9 +302,12 @@ a{color:var(--brand);font-weight:600}
   aside button.active::before{content:'';position:absolute;top:0;left:26%;right:26%;height:3px;
     background:var(--brand);border-radius:0 0 4px 4px}
   aside button{position:relative}
-  /* only the first five destinations live in the phone tab bar; the rest sit in More */
-  aside button:nth-child(n+6){display:none}
-  aside button.mobile-only{display:flex!important}
+  /* The phone tab bar is whichever buttons carry .tab — position-independent, so
+     reordering the desktop sidebar can never quietly change what shows on a phone. */
+  aside > button{display:none}
+  aside > button.tab{display:flex}
+  aside .navgrp{display:none}
+  aside button.subnav{padding-left:0}
   aside .badge{position:absolute;top:5px;right:50%;margin-right:-22px;margin-left:0;padding:0 6px}
   main{padding:14px 14px 20px;max-width:100%}
   h1{font-size:21px;margin-bottom:14px}
@@ -332,25 +356,39 @@ a{color:var(--brand);font-weight:600}
     <div class="logo"><img src="/logo-mark-white.png" alt="" style="height:22px;width:auto;vertical-align:-4px;margin-right:7px">Porch Pay <span style="font-weight:400;font-size:12px;opacity:.7">Admin</span></div>
     <div class="co" id="co-name"></div>
     <div class="me-chip" id="me-chip"></div>
-    <button id="nv-dash" class="active" onclick="nav('dash')"><span class="ico">📊</span><span class="lbl">Dashboard</span></button>
-    <button id="nv-props" onclick="nav('props')"><span class="ico">🏠</span><span class="lbl">Properties</span></button>
-    <button id="nv-calc" onclick="nav('calc')"><span class="ico">🧮</span><span class="lbl">Calculator</span></button>
-    <button id="nv-msgs" onclick="nav('msgs')"><span class="ico">💬</span><span class="lbl">Messages</span><span id="msg-badge" class="badge hidden"></span></button>
-    <button id="nv-more" class="mobile-only" onclick="toggleMoreSheet()"><span class="ico">⋯</span><span class="lbl">More</span></button>
-    <button id="nv-loans" onclick="nav('loans')"><span class="ico">📄</span><span class="lbl">Loans</span></button>
-    <button id="nv-tasks" onclick="nav('tasks')"><span class="ico">✅</span><span class="lbl">Tasks</span><span id="task-badge" class="badge hidden"></span></button>
-    <button id="nv-cal" onclick="nav('cal')"><span class="ico">📅</span><span class="lbl">Calendar</span></button>
-    <button id="nv-contacts" onclick="nav('contacts')"><span class="ico">📇</span><span class="lbl">Contacts</span><span id="ct-badge" class="badge hidden"></span></button>
+    <!-- The five buttons carrying class="tab" are the phone's bottom bar, in this order.
+         Everything else, and every group heading, is desktop only. -->
+    <button id="nv-dash" class="tab active" onclick="nav('dash')"><span class="ico">📊</span><span class="lbl">Dashboard</span></button>
+
+    <div class="navgrp">Portfolio</div>
+    <button id="nv-props" class="tab" onclick="nav('props')"><span class="ico">🏠</span><span class="lbl">Properties</span></button>
+    <button id="nv-loans" onclick="nav('loans')"><span class="ico">📄</span><span class="lbl">TB Loans</span></button>
     <button id="nv-pml" onclick="nav('pml')"><span class="ico">🏦</span><span class="lbl">PML Loans</span></button>
     <button id="nv-tbs" onclick="nav('tbs')"><span class="ico">👥</span><span class="lbl">Tenant Buyers</span></button>
-    <button id="nv-reports" onclick="nav('reports')"><span class="ico">📈</span><span class="lbl">Reports</span></button>
-    <button id="nv-templates" onclick="nav('templates')"><span class="ico">📝</span><span class="lbl">Templates</span></button>
+
+    <div class="navgrp">Schedule</div>
+    <button id="nv-tasks" onclick="nav('tasks')"><span class="ico">✅</span><span class="lbl">Tasks</span><span id="task-badge" class="badge hidden"></span></button>
+    <button id="nv-cal" onclick="nav('cal')"><span class="ico">📅</span><span class="lbl">Calendar</span></button>
     <button id="nv-reminders" onclick="nav('reminders')"><span class="ico">🔔</span><span class="lbl">Reminders</span></button>
-    <button id="nv-invites" onclick="nav('invites')"><span class="ico">📲</span><span class="lbl">Invitations</span><span id="inv-badge" class="badge hidden"></span></button>
+
+    <div class="navgrp">Communication</div>
+    <button id="nv-msgs" class="tab" onclick="nav('msgs')"><span class="ico">💬</span><span class="lbl">Messages</span><span id="msg-badge" class="badge hidden"></span></button>
+    <button id="nv-templates" class="subnav" onclick="nav('templates')"><span class="ico">📝</span><span class="lbl">Templates</span></button>
+    <button id="nv-contacts" class="subnav" onclick="nav('contacts')"><span class="ico">📇</span><span class="lbl">Contacts</span><span id="ct-badge" class="badge hidden"></span></button>
+    <button id="nv-invites" class="subnav" onclick="nav('invites')"><span class="ico">📲</span><span class="lbl">Invitations</span><span id="inv-badge" class="badge hidden"></span></button>
+
+    <div class="navgrp">Money</div>
+    <button id="nv-reports" onclick="nav('reports')"><span class="ico">📈</span><span class="lbl">Reports</span></button>
     <button id="nv-exp" onclick="nav('exp')"><span class="ico">🧾</span><span class="lbl">Expenses</span><span id="exp-badge" class="badge hidden"></span></button>
     <button id="nv-slips" onclick="nav('slips')"><span class="ico">💵</span><span class="lbl">Cash Codes</span></button>
+
+    <div class="navgrp">Tools</div>
+    <button id="nv-calc" class="tab" onclick="nav('calc')"><span class="ico">🧮</span><span class="lbl">Calculator</span></button>
+
+    <div class="navgrp">&nbsp;</div>
     <button id="nv-settings" onclick="nav('settings')"><span class="ico">⚙️</span><span class="lbl">Settings</span></button>
-    <button style="margin-top:14px;color:#7FA3B2" onclick="logout()">Sign out</button>
+    <button class="signout" onclick="logout()"><span class="ico">↩︎</span><span class="lbl">Sign out</span></button>
+    <button id="nv-more" class="tab mobile-only" onclick="toggleMoreSheet()"><span class="ico">⋯</span><span class="lbl">More</span></button>
   </aside>
   <main>
     <header class="apphead">
@@ -376,15 +414,51 @@ a{color:var(--brand);font-weight:600}
         <thead><tr><th>Lender</th><th>Property</th><th>Lien</th><th class="right">Balance</th><th class="right">Monthly</th><th>Next due</th><th>Scheduled</th></tr></thead>
         <tbody id="d-pml"></tbody></table></div>
         <div id="d-spread" class="note" style="margin-top:12px"></div></div>
+      <div class="grid2">
+        <div class="card"><h2>✅ Outstanding tasks
+            <button class="small" onclick="nav('tasks')">All tasks</button></h2>
+          <div id="d-tasks"><p class="note">Loading…</p></div>
+        </div>
+        <div class="card"><h2>📅 Today &amp; tomorrow
+            <button class="small" onclick="nav('cal')">Calendar</button></h2>
+          <div id="d-agenda"><p class="note">Loading…</p></div>
+        </div>
+      </div>
       <div class="card"><h2>Properties in progress</h2><div id="d-props"></div></div>
       <div id="d-integrations" class="note"></div>
     </section>
 
     <!-- LOANS LIST -->
     <section id="pg-loans" class="hidden">
-      <h1>Loans</h1>
+      <h1>TB Loans</h1>
+      <p class="note" style="margin-bottom:12px">Money owed <b>to you</b> by tenant buyers. Click any line to open the
+        loan — ledger, payments, amortization, documents and notices. Money you owe your lenders is under PML Loans.</p>
+      <div class="card" style="margin-bottom:14px">
+        <div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">
+          <div style="flex:1;min-width:200px">
+            <input id="loan-search" placeholder="🔍 Search buyer, address, city, loan number…"
+              oninput="renderLoans()" autocomplete="off">
+          </div>
+          <select id="loan-status" style="width:auto" onchange="renderLoans()">
+            <option value="">All loans</option>
+            <option value="active">Active</option>
+            <option value="pastdue">Past due only</option>
+            <option value="current">Current only</option>
+            <option value="paid_off">Paid off</option>
+          </select>
+        </div>
+        <div id="loan-count" class="note" style="margin-top:9px"></div>
+      </div>
       <div class="card"><div style="overflow-x:auto"><table>
-        <thead><tr><th>#</th><th>Property</th><th>Tenant Buyer</th><th>Type</th><th class="right">Balance</th><th class="right">Rate</th><th>Status</th></tr></thead>
+        <thead><tr>
+          <th class="sortable" onclick="sortLoans('id')"># <span class="sarrow" data-lk="id"></span></th>
+          <th class="sortable" onclick="sortLoans('address')">Property <span class="sarrow" data-lk="address"></span></th>
+          <th class="sortable" onclick="sortLoans('buyer')">Tenant Buyer <span class="sarrow" data-lk="buyer"></span></th>
+          <th>Type</th>
+          <th class="right sortable" onclick="sortLoans('balance')">Balance <span class="sarrow" data-lk="balance"></span></th>
+          <th class="right sortable" onclick="sortLoans('rate')">Rate <span class="sarrow" data-lk="rate"></span></th>
+          <th class="sortable" onclick="sortLoans('status')">Status <span class="sarrow" data-lk="status"></span></th>
+        </tr></thead>
         <tbody id="loans-rows"></tbody></table></div></div>
     </section>
 
@@ -396,13 +470,26 @@ a{color:var(--brand);font-weight:600}
 
     <!-- PML LOANS -->
     <section id="pg-pml" class="hidden">
-      <h1>Private Money Lender Loans</h1>
-      <p class="note" style="margin-bottom:12px">Loans you owe against your properties. Never visible to tenant buyers.</p>
+      <h1>PML Loans</h1>
+      <p class="note" style="margin-bottom:12px">Money <b>you owe</b> to private money lenders against your properties.
+        Never visible to tenant buyers. What buyers owe you is under TB Loans.</p>
       <div class="cards" id="pml-stats"></div>
       <div class="card" id="pml-due-card" style="display:none">
         <h2>Due this month</h2><div id="pml-due"></div>
       </div>
-      <button class="primary" style="margin-bottom:14px" onclick="pmlModal()">+ Add PML loan</button>
+      <div class="card" style="margin-bottom:14px">
+        <div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">
+          <button class="primary" onclick="pmlModal()">+ Add PML loan</button>
+          <div style="flex:1;min-width:190px">
+            <input id="pml-search" placeholder="🔍 Search lender or property…" oninput="renderPML()" autocomplete="off">
+          </div>
+          <select id="pml-status" style="width:auto" onchange="renderPML()">
+            <option value="">All</option><option value="active">Active</option>
+            <option value="paid_off">Paid off</option><option value="default">In default</option>
+          </select>
+        </div>
+        <div id="pml-count" class="note" style="margin-top:9px"></div>
+      </div>
       <div class="card"><div style="overflow-x:auto"><table>
         <thead><tr><th>Lender</th><th>Property</th><th>Lien</th><th>Type</th><th class="right">Balance</th><th class="right">Rate</th><th class="right">PML pmt</th><th class="right">TB pmt</th><th class="right">Spread</th><th>Status</th></tr></thead>
         <tbody id="pml-rows"></tbody></table></div></div>
@@ -433,9 +520,31 @@ a{color:var(--brand);font-weight:600}
     <section id="pg-props" class="hidden">
       <h1>Properties</h1>
       <p class="note" style="margin-bottom:12px">Start here. Add the property, log what you spend acquiring and fixing it, attach the paperwork and the private money loan. Sell it to a buyer when it's ready.</p>
-      <button class="primary" style="margin-bottom:14px" onclick="newPropModal()">+ Add property</button>
+      <div class="card" style="margin-bottom:14px">
+        <div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">
+          <button class="primary" onclick="newPropModal()">+ Add property</button>
+          <div style="flex:1;min-width:200px;position:relative">
+            <input id="prop-search" placeholder="🔍 Search address, city, ZIP, buyer, trust…"
+              oninput="renderProps()" autocomplete="off">
+          </div>
+          <select id="prop-status" style="width:auto" onchange="renderProps()">
+            <option value="">All statuses</option>
+            <option value="owned">Owned</option>
+            <option value="listed">Listed</option>
+            <option value="sold">Sold</option>
+          </select>
+        </div>
+        <div id="prop-count" class="note" style="margin-top:9px"></div>
+      </div>
       <div class="card"><div style="overflow-x:auto"><table>
-        <thead><tr><th>Address</th><th>Status</th><th class="right">All-in cost</th><th class="right">Owed to PML</th><th class="right">Sale price</th><th class="right">Buyer balance</th></tr></thead>
+        <thead><tr>
+          <th class="sortable" onclick="sortProps('address')">Address <span class="sarrow" data-k="address"></span></th>
+          <th class="sortable" onclick="sortProps('status')">Status <span class="sarrow" data-k="status"></span></th>
+          <th class="right sortable" onclick="sortProps('all_in')">All-in cost <span class="sarrow" data-k="all_in"></span></th>
+          <th class="right">Owed to PML</th>
+          <th class="right sortable" onclick="sortProps('sale')">Sale price <span class="sarrow" data-k="sale"></span></th>
+          <th class="right sortable" onclick="sortProps('balance')">Buyer balance <span class="sarrow" data-k="balance"></span></th>
+        </tr></thead>
         <tbody id="prop-rows"></tbody></table></div></div>
     </section>
 
@@ -653,7 +762,7 @@ a{color:var(--brand);font-weight:600}
             text &mdash; the invitation to download the app &mdash; from a send-only number, and everything after that
             happens in-app where it is recorded against the loan.</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <button class="small" onclick="nav('contacts')">&#128199; Manage contacts</button>
+            <button class="small" onclick="nav('contacts')">&#128199; Contacts</button>
             <button class="small" onclick="nav('invites')">&#128242; Buyer invitations</button>
             <span id="msg-smsnote" class="note"></span>
           </div>
@@ -687,12 +796,15 @@ a{color:var(--brand);font-weight:600}
         <div id="set-err" class="err hidden"></div>
         <div id="set-ok" class="okmsg hidden"></div>
         <div class="grid3">
-          <div class="field"><label>Company name</label><input id="co-input"></div>
+          <div class="field"><label>Legal entity name</label><input id="co-input">
+            <div class="note" style="margin-top:5px">Internal and on your books. Buyers do not see this.</div></div>
           <div class="field"><label>Contact email</label><input id="co-email"></div>
           <div class="field"><label>Contact phone</label><input id="co-phone"></div>
         </div>
         <div class="grid3">
-          <div class="field"><label>Management company name</label><input id="co-mgmt"></div>
+          <div class="field"><label>Management company name</label><input id="co-mgmt">
+            <div class="note" style="margin-top:5px"><b>This is the name on everything that goes out</b> — messages,
+              texts, notices, invitations. Leave it blank to use the legal entity name.</div></div>
           <div class="field"><label>Representative name</label><input id="co-rep"></div>
           <div class="field"><label>Representative phone</label><input id="co-repphone"></div>
           <div class="field" style="grid-column:span 2"><label>Mailing address</label><input id="co-mail"></div>
@@ -736,7 +848,11 @@ a{color:var(--brand);font-weight:600}
       <div class="card">
         <h2>Integrations</h2>
         <div id="set-integrations"></div>
-        <p class="note" style="margin-top:10px">Integrations are configured with environment variables on the server. See the README for setup.</p>
+        <p class="note" style="margin-top:10px">Stripe and AI document reading are configured on the server. See the README.</p>
+      </div>
+      <div class="card">
+        <h2>&#128241; Texting</h2>
+        <div id="set-texting"><p class="note">Loading…</p></div>
       </div>
       <div class="card">
         <h2>Buyer app</h2>
@@ -825,18 +941,23 @@ a{color:var(--brand);font-weight:600}
 <div id="more-sheet" onclick="if(event.target===this)toggleMoreSheet()">
   <div class="sheet">
     <h3>More</h3>
-    <button onclick="navSheet('tasks')">✅ Tasks</button>
-    <button onclick="navSheet('cal')">📅 Calendar</button>
-    <button onclick="navSheet('contacts')">📇 Contacts</button>
-    <button onclick="navSheet('loans')">📄 Loans</button>
+    <div class="sheetgrp">Portfolio</div>
+    <button onclick="navSheet('loans')">📄 TB Loans</button>
     <button onclick="navSheet('pml')">🏦 PML Loans</button>
     <button onclick="navSheet('tbs')">👥 Tenant Buyers</button>
-    <button onclick="navSheet('reports')">📈 Reports</button>
-    <button onclick="navSheet('templates')">📝 Templates</button>
+    <div class="sheetgrp">Schedule</div>
+    <button onclick="navSheet('tasks')">✅ Tasks</button>
+    <button onclick="navSheet('cal')">📅 Calendar</button>
     <button onclick="navSheet('reminders')">🔔 Reminders</button>
+    <div class="sheetgrp">Communication</div>
+    <button onclick="navSheet('templates')">📝 Templates</button>
+    <button onclick="navSheet('contacts')">📇 Contacts</button>
     <button onclick="navSheet('invites')">📲 Invitations</button>
+    <div class="sheetgrp">Money</div>
+    <button onclick="navSheet('reports')">📈 Reports</button>
     <button onclick="navSheet('exp')">🧾 Expenses</button>
     <button onclick="navSheet('slips')">💵 Cash Codes</button>
+    <div class="sheetgrp">&nbsp;</div>
     <button onclick="navSheet('settings')">⚙️ Settings</button>
     <button onclick="logout()" style="color:var(--red)">↩︎ Sign out</button>
   </div>
@@ -968,11 +1089,11 @@ function nav(pg){
     const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
   }
-  if(pg==='dash')loadDash(); if(pg==='loans')loadLoans(); if(pg==='tbs')loadTBs();
+  if(pg==='dash'){loadDash();loadDashTasks();loadDashAgenda();} if(pg==='loans')loadLoans(); if(pg==='tbs')loadTBs();
   if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();loadLinked();}
   if(pg==='msgs')openMsgs(); if(pg==='slips')loadSlips();
   if(pg==='pml'){loadProps();loadPML();}
-  if(pg==='settings')loadSettings();
+  if(pg==='settings'){loadSettings();loadTexting();}
   if(pg==='invites')loadInvites();
   if(pg==='reports')loadReports();
   if(pg==='calc')calcSolve();
@@ -1055,17 +1176,52 @@ async function createProp(){
     closeModal(); openProp(prop.id);
   }catch(e){ $('np-err').textContent=e.message; $('np-err').classList.remove('hidden'); }
 }
+let propSort={key:'address',dir:1};
 async function loadProps(){
   PROPS=await api('/api/admin/properties');
+  renderProps();
+}
+function sortProps(key){
+  propSort = (propSort.key===key) ? {key, dir:-propSort.dir} : {key, dir:1};
+  renderProps();
+}
+function renderProps(){
   const el=$('prop-rows'); if(!el) return;
-  el.innerHTML=PROPS.map(p=>
+  const q=($('prop-search')?$('prop-search').value:'').trim().toLowerCase();
+  const status=$('prop-status')?$('prop-status').value:'';
+
+  // Search across everything you might remember a house by.
+  const hay=(p)=>[p.address,p.city,p.state,p.zip,p.county,p.trust_name,p.trustee,p.owner_name,
+      p.notes,p.loan&&p.loan.buyer_name,p.phase,p.status]
+    .filter(Boolean).join(' ').toLowerCase();
+  let list=PROPS.filter(p=>(!q||hay(p).includes(q)) && (!status||(p.status||'owned')===status));
+
+  const val=(p)=>({
+    address:(p.address||'').toLowerCase(),
+    status:p.status||'owned',
+    all_in:p.all_in_cents||0,
+    sale:p.loan?p.loan.sale_price_cents:-1,
+    balance:p.loan?p.loan.principal_balance_cents:-1,
+  }[propSort.key]);
+  list.sort((a,b)=>{ const x=val(a),y=val(b); return (x<y?-1:x>y?1:0)*propSort.dir; });
+
+  document.querySelectorAll('.sarrow').forEach(el2=>{
+    el2.textContent = el2.dataset.k===propSort.key ? (propSort.dir>0?'▲':'▼') : '';
+  });
+  if($('prop-count')) $('prop-count').textContent =
+    (q||status) ? `${list.length} of ${PROPS.length} propert${PROPS.length===1?'y':'ies'}`
+                : `${PROPS.length} propert${PROPS.length===1?'y':'ies'}`;
+
+  el.innerHTML=list.map(p=>
     `<tr class="click" onclick="openProp(${p.id})"><td><span class="addr-link">${esc(p.address)}</span>${p.city?', '+esc(p.city):''}</td>
      <td>${p.status==='sold'?'<span class="pill ok">sold</span>':p.status==='listed'?'<span class="pill amber">listed</span>':'<span class="pill gray">owned</span>'}</td>
      <td class="right">${fmt(p.all_in_cents||0)}</td>
      <td class="right">${fmt(0)}</td>
      <td class="right">${p.loan?fmt(p.loan.sale_price_cents):'—'}</td>
      <td class="right">${p.loan?fmt(p.loan.principal_balance_cents):'—'}</td></tr>`
-  ).join('')||'<tr><td colspan="6" class="note">No properties yet — add your first one above.</td></tr>';
+  ).join('') || (PROPS.length
+    ? `<tr><td colspan="6" class="note">Nothing matches “${esc(q||status)}”. <a href="#" onclick="$('prop-search').value='';$('prop-status').value='';renderProps();return false">Clear the search</a></td></tr>`
+    : '<tr><td colspan="6" class="note">No properties yet — add your first one above.</td></tr>');
 }
 let currentPropId=null, TEAM=[];
 // One place that knows how to show or hide a count bubble.
@@ -1436,7 +1592,14 @@ async function doSell(pid){
       misc_label:$('sl-misclabel').value||null,
       first_payment_date:$('sl-first').value,
       beneficial_interest_pct:$('sl-bi').value?parseFloat($('sl-bi').value):null })});
-    closeModal(); showInvite(r.invitation_id);
+    closeModal();
+    // The text already went out with the sale. Only stop and ask if it did not.
+    if(r.invite && r.invite.sent){
+      toast('Sale recorded — invitation texted to ' + (r.invite.phone||'the buyer') + '.');
+      loadProps(); openProp(pid);
+    } else {
+      showInvite(r.invitation_id, r.invite && r.invite.error);
+    }
   }catch(e){ $('sl-err').textContent=e.message; $('sl-err').classList.remove('hidden'); }
 }
 
@@ -1686,6 +1849,149 @@ async function loadTextThreads(){
       + (rest.length?`<h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.7px;color:var(--mut);margin:18px 0 8px">Not texted yet</h3>`
         + rest.map(row).join(''):'')
     : '<p class="note">No contacts with a mobile number yet. Add one under Contacts and you can text them from here or straight from the property.</p>';
+}
+
+// ---------- what the dashboard shows about the days ahead ----------
+// Overdue first, because that is what actually needs deciding about.
+async function loadDashTasks(){
+  const el=$('d-tasks'); if(!el) return;
+  try{
+    const r=await api('/api/admin/tasks?status=open');
+    TASK_CATS=r.categories;
+    const today=new Date().toISOString().slice(0,10);
+    const overdue=r.tasks.filter(t=>t.due_date&&t.due_date<today);
+    const rest=r.tasks.filter(t=>!t.due_date||t.due_date>=today);
+    const show=[...overdue,...rest].slice(0,7);
+    el.innerHTML = show.length ? show.map(t=>`
+      <div class="dtask${t.is_overdue?' late':''}">
+        <button class="tickbox" onclick="event.stopPropagation();toggleTask(${t.id},false)" title="Mark done"></button>
+        <div style="flex:1;min-width:0;cursor:pointer" onclick="taskModal(${t.id})">
+          <div style="font-size:14px;font-weight:600">${t.category_icon} ${esc(t.title)}</div>
+          <div class="note" style="font-size:12px">
+            ${t.due_date?`<span${t.is_overdue?' style="color:var(--red);font-weight:700"':''}>${t.is_overdue?'Overdue · ':''}${fdate(t.due_date)}</span>`:'no date'}
+            ${t.property_address?' · '+esc(t.property_address):''}</div>
+        </div>
+      </div>`).join('')
+      + (r.tasks.length>7?`<p class="note" style="margin-top:10px">and ${r.tasks.length-7} more —
+          <a href="#" onclick="nav('tasks');return false">see all</a></p>`:'')
+      : '<p class="note">Nothing outstanding. <a href="#" onclick="taskModal();return false">Add a task</a></p>';
+  }catch(e){ el.innerHTML='<p class="note">Could not load tasks.</p>'; }
+}
+
+// Everything landing today or tomorrow, from every calendar layer.
+async function loadDashAgenda(){
+  const el=$('d-agenda'); if(!el) return;
+  try{
+    const now=new Date();
+    const d0=now.toISOString().slice(0,10);
+    const tm=new Date(now); tm.setDate(tm.getDate()+1);
+    const d1=tm.toISOString().slice(0,10);
+    const r=await api(`/api/admin/calendar?from=${d0}&to=${d1}`);
+    const open=r.events.filter(e=>e.status!=='done');
+    if(!open.length){ el.innerHTML='<p class="note">Nothing due today or tomorrow.</p>'; return; }
+    const block=(label,date)=>{
+      const evs=open.filter(e=>e.date===date);
+      if(!evs.length) return `<div class="dayblock"><div class="daylbl">${label}</div>
+        <p class="note" style="margin:4px 0 0">Clear.</p></div>`;
+      return `<div class="dayblock"><div class="daylbl">${label}</div>
+        ${evs.map(e=>`<div class="agrow ${e.source}${e.overdue?' late':''}" style="padding:9px 0">
+          <div style="flex:1">
+            <div style="font-size:13.5px">${e.icon} ${esc(e.title)}${e.amount_cents?` <b>${fmt(e.amount_cents)}</b>`:''}</div>
+            ${e.property_address?`<div class="note" style="font-size:12px">${esc(e.property_address)}</div>`:''}
+          </div>
+          ${e.source==='task'?`<button class="small" onclick="taskModal(${e.task_id})">Open</button>`:''}
+          ${e.source==='payment'?`<button class="small" onclick="openLoan(${e.loan_id})">Loan</button>`:''}
+          ${e.source==='pml'?`<button class="small" onclick="openPML(${e.pml_loan_id})">Lender</button>`:''}
+          ${e.source==='renewal'?`<button class="small" onclick="openProp(${e.property_id})">Property</button>`:''}
+        </div>`).join('')}</div>`;
+    };
+    el.innerHTML = block('Today', d0) + block('Tomorrow', d1);
+  }catch(e){ el.innerHTML='<p class="note">Could not load the calendar.</p>'; }
+}
+
+// ---------- texting setup ----------
+// Deliberately in the app rather than in the deployment: the person who needs texting
+// working should not have to go and edit server variables.
+async function loadTexting(){
+  const el=$('set-texting'); if(!el) return;
+  const t=await api('/api/admin/texting');
+  if(t.connected){
+    el.innerHTML=`
+      <p class="okmsg">Connected — invitations text themselves the moment you record a sale.</p>
+      <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+        <span class="note">Texting from</span><b>${esc(t.from||'')}</b></div>
+      <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+        <span class="note">Account</span><b>${t.source==='env'?'set on the server':esc(t.sid_tail||'')}</b></div>
+      <p class="note" style="margin:12px 0">
+        <b>One thing to check in Twilio.</b> Open your number → Messaging → "A message comes in" → set it to<br>
+        <code style="font-size:12px;background:#EDF2F0;padding:3px 6px;border-radius:5px;display:inline-block;margin-top:4px">POST ${esc(t.webhook_url)}</code><br>
+        Without it, replies from your boots-on-the-ground and contractors go nowhere.</p>
+      <div class="actions">
+        <button class="small" onclick="testTextModal()">Send a test text</button>
+        ${t.source==='company'?`<button class="small warn" onclick="disconnectTexting()">Disconnect</button>`:''}
+      </div>`;
+  } else {
+    el.innerHTML=`
+      <p class="note" style="margin-bottom:14px">Texting is <b>not connected</b>, which is why buyer invitations come back
+        as a message to copy instead of going out on their own. Connect a Twilio account and the invitation texts itself
+        the moment you record a sale — and your vendors become one-tap.</p>
+      <details style="margin-bottom:16px">
+        <summary class="note" style="cursor:pointer;font-weight:700">How to get these three values</summary>
+        <ol class="note" style="margin:10px 0 0 18px;line-height:1.9">
+          <li>Sign up at <a href="https://www.twilio.com/try-twilio" target="_blank">twilio.com</a> — you will need a card;
+              texts run roughly a penny each.</li>
+          <li>Buy a phone number with SMS enabled. Pick one in your own area code.</li>
+          <li>From the Twilio console home, copy the <b>Account SID</b> and <b>Auth Token</b>.</li>
+          <li>Paste all three below. I check them before saving, so a typo tells you straight away.</li>
+          <li>Start <b>A2P 10DLC registration</b> in Twilio the same day. US carriers filter unregistered business
+              texting, and approval takes a few days.</li>
+        </ol>
+      </details>
+      <div class="field"><label>Account SID</label>
+        <input id="tw-sid" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off"></div>
+      <div class="field"><label>Auth Token</label>
+        <input id="tw-token" type="password" placeholder="your auth token" autocomplete="off"></div>
+      <div class="field"><label>Your Twilio number</label>
+        <input id="tw-from" placeholder="513-555-0100"></div>
+      <div id="tw-err" class="err hidden"></div>
+      <div id="tw-ok" class="okmsg hidden"></div>
+      <button class="primary" onclick="saveTexting()">Connect texting</button>`;
+    setTimeout(()=>attachPhoneMask('tw-from'),60);
+  }
+}
+async function saveTexting(){
+  const btn=event&&event.target; if(btn){ btn.disabled=true; btn.textContent='Checking with Twilio…'; }
+  try{
+    const r=await api('/api/admin/texting',{method:'PUT',body:JSON.stringify({
+      sid:$('tw-sid').value.trim(), token:$('tw-token').value.trim(), from:$('tw-from').value.trim() })});
+    $('tw-ok').textContent=`Connected to ${r.account}. Texting from ${r.from}.`;
+    $('tw-ok').classList.remove('hidden'); $('tw-err').classList.add('hidden');
+    setTimeout(loadTexting, 1200);
+  }catch(e){
+    $('tw-err').textContent=e.message; $('tw-err').classList.remove('hidden');
+    if(btn){ btn.disabled=false; btn.textContent='Connect texting'; }
+  }
+}
+async function disconnectTexting(){
+  if(!confirm('Disconnect texting? Invitations will go back to being copied and sent by hand.')) return;
+  await api('/api/admin/texting',{method:'DELETE'});
+  loadTexting();
+}
+function testTextModal(){
+  modal(`<h2>Send a test text</h2>
+    <p class="note" style="margin-bottom:12px">Use your own mobile. This proves the whole path works before a real buyer depends on it.</p>
+    <div class="field"><label>Send to</label><input id="tt-to" placeholder="555-555-5555"></div>
+    <div id="tt-err" class="err hidden"></div>
+    <div id="tt-ok" class="okmsg hidden"></div>
+    <button class="primary" onclick="sendTestText()">Send it</button>`);
+  setTimeout(()=>attachPhoneMask('tt-to'),60);
+}
+async function sendTestText(){
+  try{
+    await api('/api/admin/texting/test',{method:'POST',body:JSON.stringify({to:$('tt-to').value})});
+    $('tt-ok').textContent='Sent. It should arrive within a few seconds.';
+    $('tt-ok').classList.remove('hidden'); $('tt-err').classList.add('hidden');
+  }catch(e){ $('tt-err').textContent=e.message; $('tt-err').classList.remove('hidden'); }
 }
 
 // ---------- contacts ----------
@@ -1983,21 +2289,26 @@ async function loadPropTasks(pid){
 }
 
 // ---------- invitations ----------
-async function showInvite(id){
+async function showInvite(id, whyNotSent){
   const p=await api(`/api/admin/invitations/${id}/preview`);
   modal(`<h2>📲 Invite ${esc(p.buyer_name)}</h2>
-    <p class="note" style="margin-bottom:12px">Sale complete. This goes out as <b>one text</b> from your automated
-      send-only number. If they reply to it they get an automatic answer pointing them into the app, so nothing
-      lands in a mailbox nobody watches. Every buyer is texted once — sending again takes a deliberate confirm.</p>
-    <div class="field"><label>Mobile number</label><input id="iv-phone" value="${esc(p.phone||'')}" placeholder="(555) 555-5555"></div>
+    ${whyNotSent?`<div class="err">Sale recorded, but the invitation could not be texted: ${esc(whyNotSent)}</div>`:''}
+    <p class="note" style="margin-bottom:12px">One text, from your send-only number. If they reply they get an
+      automatic answer pointing them into the app. Each buyer is texted once — sending again takes a deliberate confirm.</p>
+    <div class="field"><label>Mobile number</label><input id="iv-phone" value="${esc(p.phone||'')}" placeholder="555-555-5555"></div>
     <div class="field"><label>Message</label><textarea id="iv-text" rows="12" readonly>${esc(p.text)}</textarea></div>
     <div id="iv-err" class="err hidden"></div>
     <div id="iv-ok" class="okmsg hidden"></div>
     ${p.sms_enabled
-      ? `<button class="primary" onclick="sendInvite(${id})">Send text now</button>`
-      : `<button class="primary" onclick="copyInvite()">📋 Copy message</button>
-         <p class="note" style="margin-top:10px">Texting isn't set up yet, so send this from your own phone. Add your Twilio details to send automatically from the app.</p>
-         <button class="small" style="margin-top:8px" onclick="markInviteSent(${id})">I sent it</button>`}`);
+      ? `<button class="primary" onclick="sendInvite(${id})">📲 Text it now</button>`
+      : `<div class="err" style="margin-bottom:12px">Texting is not connected, so this cannot be sent from the app yet.</div>
+         <button class="primary" onclick="nav('settings');closeModal()">⚙️ Connect texting — takes a few minutes</button>
+         <p class="note" style="margin:12px 0 8px">Or send it from your own phone this once:</p>
+         <div class="actions" style="margin-top:0">
+           <button class="small" onclick="copyInvite()">📋 Copy the message</button>
+           <button class="small" onclick="markInviteSent(${id})">I sent it by hand</button>
+         </div>`}`);
+  setTimeout(()=>attachPhoneMask('iv-phone'),60);
 }
 async function sendInvite(id, resend){
   try{
@@ -2607,22 +2918,36 @@ async function quickPmlPay(id,amount){
   await api(`/api/admin/pml/${id}/payments`,{method:'POST',body:JSON.stringify({amount_cents:amount})});
   loadPmlDue(); loadPML(); loadDash();
 }
+let PMLS=[];
 async function loadPML(){
   loadPmlDue();
-  const rows=await api('/api/admin/pml');
-  const owed=rows.filter(r=>r.status==='active').reduce((s,r)=>s+r.principal_balance_cents,0);
-  const spread=rows.filter(r=>r.status==='active').reduce((s,r)=>s+r.monthly_spread_cents,0);
-  $('pml-stats').innerHTML=[['Active PML loans',rows.filter(r=>r.status==='active').length],
+  PMLS=await api('/api/admin/pml');
+  const owed=PMLS.filter(r=>r.status==='active').reduce((s,r)=>s+r.principal_balance_cents,0);
+  const spread=PMLS.filter(r=>r.status==='active').reduce((s,r)=>s+r.monthly_spread_cents,0);
+  $('pml-stats').innerHTML=[['Active PML loans',PMLS.filter(r=>r.status==='active').length],
     ['Total owed to lenders',fmt(owed)],['Monthly spread',fmt(spread)]]
     .map(([l,n])=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
-  $('pml-rows').innerHTML=rows.map(r=>
-    `<tr class="click" onclick="openPML(${r.id})"><td>${esc(r.lender_name)}</td><td>${esc(r.address||'')}</td>
+  renderPML();
+}
+function renderPML(){
+  const el=$('pml-rows'); if(!el) return;
+  const q=($('pml-search')?$('pml-search').value:'').trim().toLowerCase();
+  const st=$('pml-status')?$('pml-status').value:'';
+  const rows=PMLS.filter(r=>
+    (!q || [r.lender_name,r.address,r.lender_contact].filter(Boolean).join(' ').toLowerCase().includes(q))
+    && (!st || r.status===st));
+  if($('pml-count')) $('pml-count').textContent =
+    (q||st) ? `${rows.length} of ${PMLS.length} lender loans` : `${PMLS.length} lender loan${PMLS.length===1?'':'s'}`;
+  el.innerHTML=rows.map(r=>
+    `<tr class="click" onclick="openPML(${r.id})"><td><span class="addr-link">${esc(r.lender_name)}</span></td><td>${esc(r.address||'')}</td>
      <td>${r.lien_position}</td><td>${r.payment_type.replace('_',' ')}</td>
      <td class="right">${fmt(r.principal_balance_cents)}</td><td class="right">${(r.interest_rate_bps/100).toFixed(2)}%</td>
      <td class="right">${fmt(r.payment_cents)}</td><td class="right">${fmt(r.tb_payment_cents)}</td>
      <td class="right" style="color:${r.monthly_spread_cents>=0?'var(--green)':'var(--red)'}">${fmt(r.monthly_spread_cents)}</td>
      <td>${r.status==='active'?'<span class="pill ok">active</span>':`<span class="pill gray">${r.status}</span>`}</td></tr>`
-  ).join('')||'<tr><td colspan="10" class="note">No PML loans yet.</td></tr>';
+  ).join('') || (PMLS.length
+    ? `<tr><td colspan="10" class="note">Nothing matches. <a href="#" onclick="$('pml-search').value='';$('pml-status').value='';renderPML();return false">Clear the search</a></td></tr>`
+    : '<tr><td colspan="10" class="note">No PML loans yet.</td></tr>');
 }
 function pmlModal(presetProp){
   modal(`<h2>Add PML loan</h2>
@@ -2836,14 +3161,62 @@ async function loadDash(){
 }
 
 // ---------- loans ----------
+let LOANS=[], loanSort={key:'id',dir:1};
 async function loadLoans(){
-  const rows = await api('/api/admin/loans');
-  $('loans-rows').innerHTML = rows.map(l=>
-    `<tr class="click" onclick="openLoan(${l.id})"><td>${l.id}</td><td>${esc(l.address)}</td><td>${esc(l.tenant_name||'(unassigned)')}</td>
+  LOANS = await api('/api/admin/loans');
+  renderLoans();
+}
+function sortLoans(key){
+  loanSort = (loanSort.key===key) ? {key, dir:-loanSort.dir} : {key, dir:1};
+  renderLoans();
+}
+function renderLoans(){
+  const el=$('loans-rows'); if(!el) return;
+  const q=($('loan-search')?$('loan-search').value:'').trim().toLowerCase();
+  const filt=$('loan-status')?$('loan-status').value:'';
+
+  const hay=(l)=>[l.address, l.city, l.tenant_name, l.tenant_email, 'loan '+l.id, '#'+l.id,
+      AGREEMENT_LABELS[l.loan_type], l.status]
+    .filter(Boolean).join(' ').toLowerCase();
+  const late=(l)=>l.status==='active' && l.status_info && l.status_info.is_past_due;
+
+  let list=LOANS.filter(l=>{
+    if(q && !hay(l).includes(q)) return false;
+    if(filt==='active') return l.status==='active';
+    if(filt==='pastdue') return late(l);
+    if(filt==='current') return l.status==='active' && !late(l);
+    if(filt==='paid_off') return l.status==='paid_off';
+    return true;
+  });
+
+  const val=(l)=>({
+    id:l.id,
+    address:(l.address||'').toLowerCase(),
+    buyer:(l.tenant_name||'zzz').toLowerCase(),
+    balance:l.principal_balance_cents||0,
+    rate:l.interest_rate_bps||0,
+    status:late(l)?0:(l.status==='active'?1:2),   // trouble first
+  }[loanSort.key]);
+  list.sort((a,b)=>{ const x=val(a),y=val(b); return (x<y?-1:x>y?1:0)*loanSort.dir; });
+
+  document.querySelectorAll('.sarrow[data-lk]').forEach(el2=>{
+    el2.textContent = el2.dataset.lk===loanSort.key ? (loanSort.dir>0?'▲':'▼') : '';
+  });
+  const overdue=LOANS.filter(late).length;
+  if($('loan-count')) $('loan-count').innerHTML =
+    ((q||filt) ? `${list.length} of ${LOANS.length} loans` : `${LOANS.length} loan${LOANS.length===1?'':'s'}`)
+    + (overdue?` · <span style="color:var(--red);font-weight:700">${overdue} past due</span>`:'');
+
+  el.innerHTML = list.map(l=>
+    `<tr class="click" onclick="openLoan(${l.id})"><td>${l.id}</td>
+     <td><span class="addr-link">${esc(l.address)}</span></td>
+     <td>${esc(l.tenant_name||'(unassigned)')}</td>
      <td>${AGREEMENT_LABELS[l.loan_type]||'Land contract'}</td>
      <td class="right">${fmt(l.principal_balance_cents)}</td><td class="right">${(l.interest_rate_bps/100).toFixed(2)}%</td>
-     <td>${l.status==='active'?(l.status_info.is_past_due?'<span class="pill due">Past due</span>':'<span class="pill ok">Current</span>'):`<span class="pill gray">${l.status}</span>`}</td></tr>`
-  ).join('') || '<tr><td colspan="7" class="note">No loans yet.</td></tr>';
+     <td>${l.status==='active'?(late(l)?'<span class="pill due">Past due</span>':'<span class="pill ok">Current</span>'):`<span class="pill gray">${l.status}</span>`}</td></tr>`
+  ).join('') || (LOANS.length
+    ? `<tr><td colspan="7" class="note">Nothing matches. <a href="#" onclick="$('loan-search').value='';$('loan-status').value='';renderLoans();return false">Clear the search</a></td></tr>`
+    : '<tr><td colspan="7" class="note">No loans yet — sell a property to a buyer to create one.</td></tr>');
 }
 async function openLoan(id){
   currentLoanId=id;
@@ -3459,13 +3832,6 @@ async function resetTB(id){
   $('tb-temp').innerHTML=`New temporary password: <code>${esc(r.temp_password)}</code> — share it with the buyer.`;
   $('tb-temp').classList.remove('hidden');
 }
-async function loadProps(){
-  PROPS=await api('/api/admin/properties');
-  if($('prop-rows')) $('prop-rows').innerHTML=PROPS.map(p=>
-    `<tr><td>${esc(p.address)}${p.city?', '+esc(p.city):''}</td><td class="note">${esc(p.trust_name||'')}${p.trustee?' / '+esc(p.trustee):''}</td><td class="right">${fmt(p.expense_total_cents)}</td></tr>`
-  ).join('')||'<tr><td colspan="3" class="note">No properties yet.</td></tr>';
-}
-
 // ---------- linked accounts (financial sync) ----------
 async function loadLinked(){
   const el=$('linked-list'); if(!el) return;

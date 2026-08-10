@@ -1,0 +1,71 @@
+CONNECTING TEXTING — why invitations aren't sending, and how to fix it
+=====================================================================
+
+The app has always been built to text the invitation. It has never been able to,
+because there is no Twilio account connected. I checked your Railway variables —
+there are no Twilio credentials there. So every invitation fell back to "copy this
+and send it from your phone".
+
+That is the only thing standing between you and automatic texting.
+
+
+WHAT I CHANGED
+--------------
+1. THE SALE TEXTS THE BUYER BY ITSELF.
+   Recording a sale and inviting the buyer are now one action. The moment you save
+   the sale, the text goes out. No second screen, no button. You get a confirmation
+   saying it was texted and to which number.
+
+   If it cannot send, it says exactly why — no Twilio, no mobile number, bad number,
+   carrier rejection — rather than quietly doing nothing.
+
+2. YOU CAN CONNECT TWILIO FROM INSIDE THE APP.
+   Settings → Texting. Previously this meant editing server variables in Railway.
+   Now you paste three values into the app and it checks them with Twilio before
+   saving, so a typo tells you immediately instead of failing silently on a real
+   buyer weeks later.
+
+3. TWILIO'S ERROR CODES ARE TRANSLATED.
+   Instead of "Twilio error 21608" you get "Your Twilio trial can only text verified
+   numbers — upgrade the account or verify this number first." The half dozen errors
+   that actually happen in practice are all covered.
+
+4. A TEST BUTTON. Once connected, send yourself a text to prove the whole path works
+   before a real buyer depends on it.
+
+
+WHAT YOU NEED TO DO — about fifteen minutes
+-------------------------------------------
+1. Sign up at twilio.com. A card is required. Texts cost roughly a penny each, so a
+   handful of buyers is a couple of dollars a month.
+
+2. Buy a phone number with SMS enabled. Choose your own area code — people answer
+   local numbers.
+
+3. From the Twilio console home page, copy the Account SID and the Auth Token.
+
+4. In Porch Pay: Settings → Texting. Paste the Account SID, Auth Token and your new
+   number. Press Connect. It verifies with Twilio before saving.
+
+5. Send yourself a test text.
+
+6. In Twilio, open your number → Messaging → "A message comes in" and set it to:
+
+       POST  https://porchpay-production.up.railway.app/sms/incoming
+
+   This is what makes vendor replies come back into the app. The exact URL is shown
+   on the Settings → Texting screen once you are connected, so you can copy it there.
+
+7. Start A2P 10DLC registration in Twilio the same day. US carriers filter
+   unregistered business texting, and approval takes a few days. Do it before you
+   have live buyers depending on it.
+
+I cannot do steps 1 through 3 for you — creating an account and entering payment
+details is yours to do. Everything after that is paste-and-press.
+
+
+WHILE IT IS NOT CONNECTED
+-------------------------
+Nothing is blocked. The invitation is still created, the buyer login still works, and
+you can still copy the message and send it from your own phone. The app just says
+plainly that it could not send rather than pretending.

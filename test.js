@@ -420,6 +420,41 @@ async function main() {
   r = await req('/api/admin/notes/' + noteId, { method: 'DELETE' });
   ok(r.status === 200, 'a note can be deleted');
 
+  console.log('— connecting texting from inside the app');
+  r = await req('/api/admin/texting');
+  ok(r.status === 200 && r.json.connected === false, 'texting starts disconnected');
+  ok(r.json.webhook_url && r.json.webhook_url.endsWith('/sms/incoming'), 'the webhook URL to paste into Twilio is shown');
+  r = await req('/api/admin/texting', { method: 'PUT', body: JSON.stringify({ sid: 'nonsense', token: 'x', from: '5135550000' }) });
+  ok(r.status === 400 && /Account SID/.test(r.json.error), 'a malformed Account SID is caught before Twilio is called');
+  r = await req('/api/admin/texting', { method: 'PUT', body: JSON.stringify({ sid: 'AC' + 'a'.repeat(32), token: '' }) });
+  ok(r.status === 400, 'all three values are required');
+  r = await req('/api/admin/texting/test', { method: 'POST', body: JSON.stringify({ to: '5135550000' }) });
+  ok(r.status === 400 && /Connect Twilio/.test(r.json.error), 'the test text refuses until Twilio is connected');
+  r = await req('/api/admin/texting/test', { method: 'POST', body: '{}' });
+  ok(r.status === 400, 'the test text needs a number');
+
+  console.log('— the sale texts the buyer by itself');
+  r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '77 Auto Ln', city: 'Columbus', state: 'OH' }) });
+  const autoProp = r.json.id;
+  r = await req(`/api/admin/properties/${autoProp}/sell`, { method: 'POST', body: JSON.stringify({
+    buyer_name: 'Auto Buyer', buyer_email: 'auto@test.com', buyer_phone: '614-555-7788',
+    sale_price_cents: 8000000, down_payment_cents: 500000, principal_cents: 7500000,
+    interest_rate_bps: 900, term_months: 360, first_payment_date: '2026-10-01' }) });
+  ok(r.status === 200 && r.json.invite, 'the sale reports what happened to the invitation');
+  ok(r.json.invite.sent === false && /not connected/i.test(r.json.invite.error),
+    'without Twilio it says plainly that nothing was texted');
+  const autoInv = r.json.invitation_id;
+  r = await req('/api/admin/invitations');
+  const ai2 = r.json.invitations.find(i => i.id === autoInv);
+  ok(ai2 && ai2.status !== 'sent', 'an invitation that could not be texted is not marked sent');
+  // and a buyer with no mobile at all
+  r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '78 Nophone Ln' }) });
+  r = await req(`/api/admin/properties/${r.json.id}/sell`, { method: 'POST', body: JSON.stringify({
+    buyer_name: 'No Phone', buyer_email: 'nophone@test.com',
+    sale_price_cents: 5000000, down_payment_cents: 0, principal_cents: 5000000,
+    interest_rate_bps: 900, term_months: 240, first_payment_date: '2026-10-01' }) });
+  ok(/No mobile number/i.test(r.json.invite.error), 'a buyer with no mobile is called out clearly');
+
   console.log('— property-first workflow (costs, basis, sale)');
   r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '77 Maple Ave', city: 'Dayton', state: 'OH' }) });
   const p2 = r.json.id;
@@ -476,6 +511,25 @@ async function main() {
   const buyerXml = await twiml.text();
   ok(twiml.status === 200 && /<Response><Message>/.test(buyerXml), 'texting the number back gets an automatic reply');
   ok(/Porch Pay app/.test(buyerXml), 'the auto-reply points them into the app');
+
+  console.log('— correspondence carries the management company name');
+  await req('/api/admin/company', { method: 'PUT', body: JSON.stringify({ name: 'Renew EQ LLC' }) });
+  r = await req('/api/admin/setup', { method: 'POST', body: JSON.stringify({
+    mgmt_company_name: 'RenewEQ Property Management',
+    rep_name: 'Marisa G', rep_phone: '5135551000' }) });
+  ok(r.status === 200, 'management company name saved');
+  r = await req('/api/admin/templates');
+  const welcome = r.json.templates.find(t => t.category === 'welcome') || r.json.templates[0];
+  r = await req('/api/admin/templates/preview', { method: 'POST', body: JSON.stringify({
+    loan_id: loanId, subject: welcome.subject, body_html: welcome.body_html }) });
+  ok(/RenewEQ Property Management/.test(r.json.html), 'the letterhead shows the management company');
+  ok(!/Renew EQ LLC/.test(r.json.html), 'the legal entity name is not what buyers see');
+  ok(r.json.values.company_name === 'RenewEQ Property Management',
+    'the {{company_name}} merge field resolves to the management company');
+  r = await req(`/api/admin/invitations/${inviteId}/preview`);
+  ok(/RenewEQ Property Management/.test(r.json.text), 'the buyer invitation names the management company');
+  r = await req(`/api/admin/contacts/${rayId}/messages`, { method: 'POST', body: JSON.stringify({ body: 'sign check' }) });
+  ok(/RenewEQ Property Management/.test(r.json.text), 'vendor texts are signed by the management company');
 
   console.log('— processing fees passed to the buyer');
   const carlosPw = (await req('/api/admin/tenants')).json.find(t => t.email === 'carlos@test.com');

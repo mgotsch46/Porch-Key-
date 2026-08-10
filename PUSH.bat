@@ -32,7 +32,7 @@ git add -A
 if errorlevel 1 goto failed
 
 echo  Committing...
-git commit -m "Tasks with property tagging, in-app calendar, contacts with two-way vendor texting, notes on properties and loans, in-app vs text split"
+git commit -m "Grouped sidebar with Templates and Contacts under Messages, TB Loans vs PML Loans naming, loans search and sort, repaired broken nav CSS rule"
 
 echo  Pushing to GitHub...
 echo.

@@ -411,6 +411,12 @@ addColumnIfMissing('companies', 'default_buyer_email', 'TEXT');
 addColumnIfMissing('companies', 'default_buyer_phone', 'TEXT');
 // The management company and the person buyers actually deal with. Prefilled onto
 // every property and used on all correspondence; overridable per property.
+// Texting credentials live per company: each servicer uses their own number and pays
+// their own carrier bill. Environment variables still work as a platform-wide default.
+addColumnIfMissing('companies', 'twilio_sid', 'TEXT');
+addColumnIfMissing('companies', 'twilio_token', 'TEXT');
+addColumnIfMissing('companies', 'twilio_from', 'TEXT');
+
 addColumnIfMissing('companies', 'mgmt_company_name', 'TEXT');
 addColumnIfMissing('companies', 'rep_name', 'TEXT');
 addColumnIfMissing('companies', 'rep_phone', 'TEXT');

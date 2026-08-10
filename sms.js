@@ -7,8 +7,21 @@
 // them back into the app, and every message carries a STOP line because US carriers
 // require an opt-out on automated business texting.
 
-const smsEnabled = () =>
-  !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
+// A company's own Twilio details win; the environment is the fallback. This means a
+// servicer can connect texting from inside the app without touching the host.
+function creds(company) {
+  if (company && company.twilio_sid && company.twilio_token && company.twilio_from) {
+    return { sid: company.twilio_sid, token: company.twilio_token, from: company.twilio_from,
+             source: 'company' };
+  }
+  if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER) {
+    return { sid: process.env.TWILIO_ACCOUNT_SID, token: process.env.TWILIO_AUTH_TOKEN,
+             from: process.env.TWILIO_FROM_NUMBER, source: 'env' };
+  }
+  return null;
+}
+
+const smsEnabled = (company) => !!creds(company);
 
 // Normalize to E.164 for US numbers; pass through anything already prefixed.
 function normalizePhone(raw) {
@@ -21,23 +34,49 @@ function normalizePhone(raw) {
   return d ? '+' + d : null;
 }
 
-async function sendSms(to, body) {
+async function sendSms(to, body, company) {
   const number = normalizePhone(to);
   if (!number) throw new Error('That phone number does not look valid');
-  if (!smsEnabled()) throw new Error('Texting is not configured — set the Twilio variables to send automatically');
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const params = new URLSearchParams({ To: number, From: process.env.TWILIO_FROM_NUMBER, Body: body });
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+  const c = creds(company);
+  if (!c) throw new Error('Texting is not connected yet — add your Twilio details under Settings → Texting');
+  const params = new URLSearchParams({ To: number, From: c.from, Body: body });
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/Messages.json`, {
     method: 'POST',
     headers: {
-      Authorization: 'Basic ' + Buffer.from(`${sid}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64'),
+      Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64'),
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: params.toString(),
   });
   const json = await res.json();
-  if (!res.ok) throw new Error(json.message || `Twilio error ${res.status}`);
+  if (!res.ok) throw new Error(twilioError(json, res.status));
   return json;
+}
+
+// Twilio's error codes are famously opaque. Translate the ones that actually happen.
+function twilioError(json, status) {
+  const code = json && json.code;
+  const map = {
+    20003: 'Twilio rejected the credentials. Check the Account SID and Auth Token.',
+    21211: 'That mobile number is not valid.',
+    21606: 'That "from" number cannot send texts. Use a Twilio number you own with SMS enabled.',
+    21608: 'Your Twilio trial can only text verified numbers. Upgrade the account or verify this number in Twilio first.',
+    21610: 'That person replied STOP, so they are unsubscribed. They have to text START to receive messages again.',
+    21614: 'That number cannot receive texts — it looks like a landline.',
+    30007: 'The carrier filtered the message. This usually means A2P 10DLC registration is incomplete.',
+  };
+  return map[code] || (json && json.message) || `Twilio error ${status}`;
+}
+
+// A quick credential check that does not send anything.
+async function verifyCreds({ sid, token, from }) {
+  if (!sid || !token || !from) throw new Error('All three Twilio values are needed');
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}.json`, {
+    headers: { Authorization: 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64') },
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(twilioError(json, res.status));
+  return { account: json.friendly_name || sid, status: json.status };
 }
 
 // The invitation a tenant buyer receives the day their home is sold to them.
@@ -71,4 +110,4 @@ function autoReplyTwiml(companyName) {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${esc(body)}</Message></Response>`;
 }
 
-module.exports = { smsEnabled, sendSms, normalizePhone, inviteMessage, autoReplyTwiml };
+module.exports = { smsEnabled, sendSms, normalizePhone, inviteMessage, autoReplyTwiml, creds, verifyCreds };

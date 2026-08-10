@@ -1,0 +1,78 @@
+SIDEBAR LAYOUT — what moved where
+=================================
+
+The left-hand bar is now grouped under headings instead of one long list.
+
+  Dashboard
+
+  PORTFOLIO
+    Properties
+    TB Loans          money owed TO you by tenant buyers
+    PML Loans         money YOU owe to private money lenders
+    Tenant Buyers
+
+  SCHEDULE
+    Tasks
+    Calendar
+    Reminders
+
+  COMMUNICATION
+    Messages
+      Templates       indented beneath Messages
+      Contacts        indented beneath Messages
+      Invitations     indented beneath Messages
+
+  MONEY
+    Reports
+    Expenses
+    Cash Codes
+
+  TOOLS
+    Calculator        room here for more tools later
+
+  Settings
+  Sign out
+
+
+TB LOANS vs PML LOANS
+---------------------
+You said these looked like duplicates. They are opposite sides of the same house, so
+they are now labelled to make that obvious rather than merged:
+
+  TB Loans   what a tenant buyer owes you. The ledger, posting payments, the
+             amortization schedule, notices, documents, messaging the buyer.
+  PML Loans  what you owe a private lender on that same property. Payments out,
+             balloon dates, lien position, and the spread between the two.
+
+Both pages say so at the top now, and each points at the other.
+
+
+SEARCH ON BOTH
+--------------
+TB Loans: search buyer name, address, city, buyer email or loan number. Filter by
+Active / Past due only / Current only / Paid off. Every column header sorts — click
+once for ascending, again for descending. The count line tells you how many are past
+due. Click any line to open the loan.
+
+PML Loans: search lender name, property or lender contact, with a status filter.
+
+Same search already on Properties: address, city, ZIP, county, trust, trustee, owner
+and buyer name.
+
+
+ON A PHONE
+----------
+The bottom bar is five tabs: Dashboard, Properties, Messages, Calculator, More.
+Everything else is in More, grouped under the same headings as the sidebar.
+
+Which buttons appear in the phone bar is now decided by a marker on each button rather
+than by their position in the list. Previously it was "the first five", which meant
+reordering the sidebar silently changed the phone. It cannot any more.
+
+
+A BUG THIS TURNED UP
+--------------------
+While reorganising I found a broken CSS rule. An earlier edit had accidentally matched
+part of the rule that hides the "More" button on desktop, which destroyed it and also
+mis-scoped the styling for action-button rows. Both repaired. You would have seen a
+stray "More" button on the desktop sidebar and slightly wrong button spacing.

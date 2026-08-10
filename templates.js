@@ -13,7 +13,7 @@ const MERGE_FIELDS = [
   { key: 'first_name',        label: "Buyer's first name",        example: 'Jane' },
   { key: 'buyer_name',        label: "Buyer's full name",         example: 'Jane Buyer' },
   { key: 'property_address',  label: 'Property address',          example: '123 Oak St' },
-  { key: 'company_name',      label: 'Your company name',         example: 'RenewEQ' },
+  { key: 'company_name',      label: 'Your management company name', example: 'RenewEQ Management' },
   { key: 'balance',           label: 'Current loan balance',      example: '$98,450.12' },
   { key: 'monthly_payment',   label: 'Monthly payment',           example: '$840.85' },
   { key: 'amount_due',        label: 'Amount due right now',      example: '$840.85' },
@@ -28,6 +28,12 @@ const MERGE_FIELDS = [
   { key: 'mgmt_company',      label: 'Management company name',   example: 'RenewEQ Management' },
 ];
 
+// Whose name goes on correspondence. The management company is the entity that actually
+// deals with buyers and vendors, so that is the name on every letter, text and notice.
+// The legal entity name stays for internal screens and the books.
+const outboundName = (company) =>
+  (company && (company.mgmt_company_name || company.name)) || 'Your servicer';
+
 const money = (c) => '$' + ((c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const niceDate = (d) => d ? new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 
@@ -37,7 +43,7 @@ function buildMergeValues({ company, buyer, loan, property, status, payoff, base
     first_name: full.trim().split(/\s+/)[0] || 'there',
     buyer_name: full,
     property_address: (property && property.address) || 'your home',
-    company_name: (company && company.name) || 'Your servicer',
+    company_name: outboundName(company),
     balance: loan ? money(loan.principal_balance_cents) : '',
     monthly_payment: loan ? money(loan.payment_cents + loan.escrow_cents) : '',
     amount_due: status ? money(status.owed_now_cents) : '',
@@ -103,7 +109,7 @@ function contactBlock(company) {
 }
 
 function brandedShell({ company, bodyHtml, subject, baseUrl }) {
-  const name = escapeHtml((company && company.name) || 'Your servicer');
+  const name = escapeHtml(outboundName(company));
   const logo = company && company.logo_path
     ? `${baseUrl || ''}/api/company-logo/${company.id}`
     : `${baseUrl || ''}/logo-mark.png`;
@@ -218,6 +224,7 @@ function seedTemplates(companyId) {
 }
 
 module.exports = {
+  outboundName,
   MERGE_FIELDS, buildMergeValues, applyMerge, sanitizeHtml, brandedShell, contactBlock,
   htmlToText, seedTemplates, escapeHtml, STARTERS,
 };
