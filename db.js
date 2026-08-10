@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS loans (
   property_id INTEGER NOT NULL REFERENCES properties(id),
   tenant_user_id INTEGER REFERENCES users(id),
   loan_type TEXT NOT NULL DEFAULT 'land_contract'
-    CHECK (loan_type IN ('land_contract','land_trust_beneficial_interest')),
+    CHECK (loan_type IN ('agreement_for_deed','land_contract','land_trust_beneficial_interest')),
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paid_off','default','cancelled')),
   -- Terms (money in cents)
   sale_price_cents INTEGER NOT NULL,
@@ -173,7 +173,8 @@ CREATE TABLE IF NOT EXISTS documents (
   property_id INTEGER REFERENCES properties(id),
   kind TEXT NOT NULL DEFAULT 'closing' CHECK (kind IN ('closing','statement','other')),
   category TEXT NOT NULL DEFAULT 'other'
-    CHECK (category IN ('loan_docs','insurance','taxes','utilities','correspondence','statement','private','other')),
+    CHECK (category IN ('loan_docs','acquisition','pml_docs','sale_closing','insurance','taxes',
+      'utilities','correspondence','statement','private','other')),
   title TEXT,                 -- optional friendly label, e.g. "2026 Homeowners Policy"
   effective_date TEXT,        -- e.g. policy/tax year date, for sorting updates
   filename TEXT NOT NULL,
@@ -352,6 +353,10 @@ addColumnIfMissing('companies', 'fee_ach_bps', 'INTEGER DEFAULT 80');
 addColumnIfMissing('companies', 'fee_ach_fixed_cents', 'INTEGER DEFAULT 0');
 addColumnIfMissing('companies', 'fee_ach_cap_cents', 'INTEGER DEFAULT 500');
 addColumnIfMissing('companies', 'fee_label', "TEXT DEFAULT 'Processing fee'");
+// Prefilled into every new deal so you are not retyping the same contact each time.
+// Always editable per deal.
+addColumnIfMissing('companies', 'default_buyer_email', 'TEXT');
+addColumnIfMissing('companies', 'default_buyer_phone', 'TEXT');
 addColumnIfMissing('ledger', 'fee_cents', 'INTEGER DEFAULT 0');
 addColumnIfMissing('expenses', 'linked_account_id', 'INTEGER');
 addColumnIfMissing('expenses', 'external_id', 'TEXT');
@@ -363,6 +368,19 @@ addColumnIfMissing('properties', 'beds', 'INTEGER');
 addColumnIfMissing('properties', 'baths', 'REAL');
 addColumnIfMissing('properties', 'sqft', 'INTEGER');
 addColumnIfMissing('properties', 'year_built', 'INTEGER');
+// Late fee and grace live on the property so each deal can differ. The company
+// setting is only a starting suggestion when you add a new property.
+addColumnIfMissing('properties', 'late_fee_cents', 'INTEGER');
+addColumnIfMissing('properties', 'grace_days', 'INTEGER');
+// Lifecycle phase. A property moves through these; selling to a buyer sets 'sold'.
+addColumnIfMissing('properties', 'phase', "TEXT DEFAULT 'acquired'");
+addColumnIfMissing('properties', 'phase_updated_at', 'TEXT');
+// Scheduled lender payments: when they are due and whether to auto-record them.
+addColumnIfMissing('pml_loans', 'payment_day', 'INTEGER');
+addColumnIfMissing('pml_loans', 'autopay_enabled', 'INTEGER DEFAULT 0');
+addColumnIfMissing('pml_loans', 'autopay_method', "TEXT DEFAULT 'bank_transfer'");
+addColumnIfMissing('pml_loans', 'autopay_last_period', 'TEXT');
+addColumnIfMissing('pml_loans', 'autopay_note', 'TEXT');
 addColumnIfMissing('users', 'archived_at', 'TEXT');
 addColumnIfMissing('users', 'archived_reason', 'TEXT');
 addColumnIfMissing('charges', 'category', "TEXT DEFAULT 'other'");
@@ -390,6 +408,22 @@ function backfillCompany() {
 
 // Older databases created property_costs before 'filing' existed as a category.
 // SQLite cannot alter a CHECK constraint, so rebuild the table when we spot the old one.
+// Widen document categories on older databases the same way.
+(function migrateDocCategories() {
+  const t = get("SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'");
+  if (!t || t.sql.includes("'acquisition'")) return;
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(t.sql
+    .replace('CREATE TABLE documents', 'CREATE TABLE documents_new')
+    .replace("CHECK (category IN ('loan_docs','insurance','taxes','utilities','correspondence','statement','private','other'))",
+             "CHECK (category IN ('loan_docs','acquisition','pml_docs','sale_closing','insurance','taxes','utilities','correspondence','statement','private','other'))"));
+  const cols = db.prepare('PRAGMA table_info(documents)').all().map(c => c.name).join(',');
+  db.exec(`INSERT INTO documents_new (${cols}) SELECT ${cols} FROM documents;
+           DROP TABLE documents; ALTER TABLE documents_new RENAME TO documents;`);
+  db.exec('PRAGMA foreign_keys = ON');
+  console.log('Widened document categories for acquisition, PML and sale closing sets');
+})();
+
 (function migrateCostCategories() {
   const t = get("SELECT sql FROM sqlite_master WHERE type='table' AND name='property_costs'");
   if (!t || t.sql.includes("'filing'")) return;
@@ -413,6 +447,23 @@ function backfillCompany() {
     DROP TABLE property_costs_old;
   `);
   console.log('Migrated property_costs to include filing fees');
+})();
+
+// Older databases only allowed two agreement types. SQLite cannot alter a CHECK,
+// so widen it by rebuilding the table when the old constraint is still in place.
+(function migrateAgreementTypes() {
+  const t = get("SELECT sql FROM sqlite_master WHERE type='table' AND name='loans'");
+  if (!t || t.sql.includes("'agreement_for_deed'")) return;
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(t.sql
+    .replace('CREATE TABLE loans', 'CREATE TABLE loans_new')
+    .replace("CHECK (loan_type IN ('land_contract','land_trust_beneficial_interest'))",
+             "CHECK (loan_type IN ('agreement_for_deed','land_contract','land_trust_beneficial_interest'))"));
+  const cols = db.prepare('PRAGMA table_info(loans)').all().map(c => c.name).join(',');
+  db.exec(`INSERT INTO loans_new (${cols}) SELECT ${cols} FROM loans;
+           DROP TABLE loans; ALTER TABLE loans_new RENAME TO loans;`);
+  db.exec('PRAGMA foreign_keys = ON');
+  console.log('Widened loan agreement types to include agreement for deed');
 })();
 
 CREATE_INDEXES();

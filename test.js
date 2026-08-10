@@ -311,6 +311,98 @@ async function main() {
   ok(r.json.totals.count >= 2 && r.json.totals.cash_invested_cents !== 0, 'portfolio returns roll up every property');
   ok(r.json.properties.some(x => x.property_id === p2), 'portfolio includes the sold property');
 
+  console.log('— per-property late fee and deal defaults');
+  r = await req('/api/admin/setup', { method: 'POST', body: JSON.stringify({
+    default_late_fee_cents: 5000, default_grace_days: 5,
+    default_buyer_email: 'prefill@test.com', default_buyer_phone: '(555) 111-2222' }) });
+  ok(r.status === 200, 'company deal defaults saved');
+  r = await req('/api/admin/defaults');
+  ok(r.json.buyer_email === 'prefill@test.com' && r.json.buyer_phone === '(555) 111-2222', 'defaults returned for prefill');
+  ok(r.json.late_fee_cents === 5000, 'company default late fee returned');
+
+  r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '9 Birch Ln' }) });
+  const p3 = r.json.id;
+  r = await req(`/api/admin/properties/${p3}/details`, { method: 'PUT', body: JSON.stringify({ late_fee_cents: 12500, grace_days: 10 }) });
+  ok(r.json.late_fee_cents === 12500 && r.json.grace_days === 10, 'late fee set on the property, not globally');
+  r = await req(`/api/admin/properties/${p3}/sell`, { method: 'POST', body: JSON.stringify({
+    buyer_name: 'Dana Buyer', buyer_email: 'dana@test.com', sale_price_cents: 8000000,
+    principal_cents: 7500000, interest_rate_bps: 850, term_months: 240, first_payment_date: '2026-10-01' }) });
+  const danaLoan = r.json.loan_id;
+  r = await req('/api/admin/loans/' + danaLoan);
+  ok(r.json.loan.late_fee_cents === 12500, 'sale inherits the PROPERTY late fee, not the company default');
+  ok(r.json.loan.grace_days === 10, 'sale inherits the property grace period');
+
+  // a property with nothing set falls back to the company default
+  r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '11 Cedar Ct' }) });
+  const p4 = r.json.id;
+  r = await req(`/api/admin/properties/${p4}/sell`, { method: 'POST', body: JSON.stringify({
+    buyer_name: 'Eli Buyer', buyer_email: 'eli@test.com', sale_price_cents: 6000000,
+    principal_cents: 5500000, interest_rate_bps: 900, term_months: 180, first_payment_date: '2026-10-01' }) });
+  r = await req('/api/admin/loans/' + r.json.loan_id);
+  ok(r.json.loan.late_fee_cents === 5000, 'property with no late fee falls back to company default');
+
+  console.log('— property phases, doc sets, agreement types, lender scheduling');
+  r = await req(`/api/admin/properties/${p2}`);
+  ok(Array.isArray(r.json.phases) && r.json.phases.includes('rehab'), 'property exposes lifecycle phases');
+  ok(r.json.property.phase === 'sold', 'selling moved the property to the sold phase');
+  ok(r.json.doc_folders.acquisition && r.json.doc_folders.pml_docs && r.json.doc_folders.sale_closing,
+    'three admin document sets exist on the property');
+  ok(r.json.doc_folders.acquisition.shared === false, 'acquisition docs are not shared with the buyer');
+  ok(r.json.doc_folders.loan_docs.shared === true, 'buyer loan docs folder is shared');
+
+  r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '3 Phase Way' }) });
+  const p5 = r.json.id;
+  r = await req(`/api/admin/properties/${p5}/phase`, { method: 'POST', body: JSON.stringify({ phase: 'rehab' }) });
+  ok(r.status === 200 && r.json.phase === 'rehab', 'phase can be advanced');
+  r = await req(`/api/admin/properties/${p5}/phase`, { method: 'POST', body: JSON.stringify({ phase: 'nonsense' }) });
+  ok(r.status === 400, 'unknown phase rejected');
+
+  const b64b = Buffer.from('%PDF acquisition').toString('base64');
+  r = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+    filename: 'purchase-hud.pdf', mime: 'application/pdf', data_base64: b64b,
+    property_id: p5, category: 'acquisition', title: 'Purchase settlement statement' }) });
+  ok(r.status === 200 && r.json.visible_to_tenant === 0, 'acquisition docs stay admin-only');
+  r = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+    filename: 'pml-note.pdf', mime: 'application/pdf', data_base64: b64b,
+    property_id: p5, category: 'pml_docs', title: 'Lender note' }) });
+  ok(r.json.visible_to_tenant === 0, 'PML docs stay admin-only');
+  r = await req(`/api/admin/properties/${p5}`);
+  ok(r.json.doc_folders.acquisition.documents.length === 1 && r.json.doc_folders.pml_docs.documents.length === 1,
+    'documents land in the right sets');
+
+  // agreement for deed is now a real, distinct choice
+  r = await req(`/api/admin/properties/${p5}/sell`, { method: 'POST', body: JSON.stringify({
+    buyer_name: 'Fay Buyer', buyer_email: 'fay@test.com', loan_type: 'agreement_for_deed',
+    sale_price_cents: 7000000, principal_cents: 6500000, interest_rate_bps: 900,
+    term_months: 240, first_payment_date: '2026-11-01' }) });
+  ok(r.status === 200, 'sale accepts Agreement for Deed');
+  r = await req('/api/admin/loans/' + r.json.loan_id);
+  ok(r.json.loan.loan_type === 'agreement_for_deed', 'agreement for deed stored as its own type');
+
+  console.log('— lender payment scheduling');
+  r = await req(`/api/admin/pml/${maplePml}/schedule`, { method: 'PUT', body: JSON.stringify({
+    payment_day: 1, autopay_enabled: true, autopay_method: 'bank_transfer', autopay_note: 'auto-draft' }) });
+  ok(r.status === 200 && r.json.autopay_enabled === 1, 'lender payment schedule saved');
+  r = await req('/api/admin/pml-due');
+  ok(Array.isArray(r.json.loans), 'lender payments-due list returns');
+  const before = (await req('/api/admin/pml/' + maplePml)).json.pml.principal_balance_cents;
+  r = await req('/api/admin/pml-auto-record', { method: 'POST', body: '{}' });
+  ok(r.status === 200, 'scheduled lender payments can be recorded');
+  const after = (await req('/api/admin/pml/' + maplePml)).json.pml;
+  ok(after.principal_balance_cents <= before, 'recorded lender payment reduced the balance');
+  r = await req('/api/admin/pml-auto-record', { method: 'POST', body: '{}' });
+  const again = (await req('/api/admin/pml/' + maplePml)).json.pml;
+  ok(again.principal_balance_cents === after.principal_balance_cents, 'lender payment not double-recorded in the same month');
+
+  console.log('— dashboard totals');
+  r = await req('/api/admin/summary');
+  ok(r.json.property_counts && r.json.property_counts.total >= 3, 'dashboard counts properties');
+  ok(r.json.income && typeof r.json.income.ytd_gross_cents === 'number', 'dashboard shows gross income');
+  ok(typeof r.json.income.ytd_net_cents === 'number', 'dashboard shows net income');
+  ok(Array.isArray(r.json.pml_loans), 'dashboard lists active lender loans');
+  ok(r.json.monthly_spread_cents === r.json.tb_total_monthly_cents - r.json.pml_total_monthly_cents,
+    'dashboard spread = buyer payments less lender payments');
+
   console.log('— multi-company isolation');
   r = await req('/api/signup', { method: 'POST', body: JSON.stringify({
     company_name: 'Rival Holdings LLC', name: 'Rival Owner', email: 'rival@test.com', password: 'RivalPass123!' }) }, '');

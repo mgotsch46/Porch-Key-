@@ -52,6 +52,21 @@ aside .badge{background:var(--accent);color:#3D2800;border-radius:20px;padding:1
 main{flex:1;padding:28px;max-width:1280px}
 h1{font-size:24px;margin-bottom:18px;letter-spacing:-.6px;font-weight:700}
 h2{font-size:15.5px;margin-bottom:12px;font-weight:700;letter-spacing:-.2px}
+.phasebar{display:flex;gap:6px;margin-top:16px;flex-wrap:wrap}
+.phasestep{flex:1;min-width:96px;padding:9px 8px;border:1.5px solid var(--line);background:#fff;
+  border-radius:10px;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer;color:var(--mut)}
+.phasestep.done{background:var(--brand-pale);border-color:var(--brand-pale);color:var(--brand)}
+.phasestep.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+.phasestep:hover{border-color:var(--brand)}
+.apphead{display:flex;align-items:center;gap:14px;padding:0 0 18px;margin-bottom:20px;
+  border-bottom:1px solid var(--line)}
+.apphead .mark{height:44px;width:auto;flex-shrink:0}
+.apphead .brandname{font-size:21px;font-weight:700;letter-spacing:-.6px;line-height:1.1;color:var(--brand)}
+.apphead .coname{font-size:13px;color:var(--mut);margin-top:1px}
+.apphead .buyerlink{margin-left:auto;font-size:13px;color:var(--mut);text-decoration:none;
+  border:1px solid var(--line);padding:8px 14px;border-radius:10px;font-weight:600}
+.apphead .buyerlink:hover{border-color:var(--brand);color:var(--brand)}
+@media (max-width:900px){ .apphead{display:none} }
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;border-top:4px solid var(--brand)}
 .stat:nth-child(2){border-top-color:var(--sky)}
@@ -177,7 +192,6 @@ a{color:var(--brand);font-weight:600}
     <div class="me-chip" id="me-chip"></div>
     <button id="nv-dash" class="active" onclick="nav('dash')">Dashboard</button>
     <button id="nv-loans" onclick="nav('loans')">Loans</button>
-    <button id="nv-newdeal" onclick="nav('newdeal')">➕ New Deal</button>
     <button id="nv-pml" onclick="nav('pml')">PML Loans</button>
     <button id="nv-tbs" onclick="nav('tbs')">Tenant Buyers</button>
     <button id="nv-props" onclick="nav('props')">🏠 Properties</button>
@@ -190,14 +204,30 @@ a{color:var(--brand);font-weight:600}
     <button style="margin-top:14px;color:#7FA3B2" onclick="logout()">Sign out</button>
   </aside>
   <main>
+    <header class="apphead">
+      <img src="/logo-mark.png" alt="" class="mark">
+      <div class="names">
+        <div class="brandname">Porch Pay</div>
+        <div class="coname" id="head-co"></div>
+      </div>
+      <a class="buyerlink" id="head-buyer" href="/" target="_blank">Buyer app ↗</a>
+    </header>
     <!-- DASHBOARD -->
     <section id="pg-dash">
       <h1>Dashboard</h1>
       <div class="cards" id="d-stats"></div>
-      <div id="d-integrations" class="note" style="margin-bottom:14px"></div>
-      <div class="card"><h2>Portfolio</h2><div style="overflow-x:auto"><table>
+      <div class="cards" id="d-income"></div>
+      <div class="card"><h2>Active tenant buyer loans <span class="note" style="font-weight:400">money coming in</span></h2>
+        <div style="overflow-x:auto"><table>
         <thead><tr><th>Property</th><th>Tenant Buyer</th><th class="right">Balance</th><th class="right">Monthly</th><th>Next due</th><th class="right">Owed now</th><th>Status</th></tr></thead>
         <tbody id="d-loans"></tbody></table></div></div>
+      <div class="card"><h2>Active private money loans <span class="note" style="font-weight:400">money going out</span></h2>
+        <div style="overflow-x:auto"><table>
+        <thead><tr><th>Lender</th><th>Property</th><th>Lien</th><th class="right">Balance</th><th class="right">Monthly</th><th>Next due</th><th>Scheduled</th></tr></thead>
+        <tbody id="d-pml"></tbody></table></div>
+        <div id="d-spread" class="note" style="margin-top:12px"></div></div>
+      <div class="card"><h2>Properties in progress</h2><div id="d-props"></div></div>
+      <div id="d-integrations" class="note"></div>
     </section>
 
     <!-- LOANS LIST -->
@@ -214,62 +244,14 @@ a{color:var(--brand);font-weight:600}
       <div id="loan-detail" style="margin-top:12px"></div>
     </section>
 
-    <!-- NEW DEAL -->
-    <section id="pg-newdeal" class="hidden">
-      <h1>New Deal</h1>
-      <div class="card">
-        <h2>1 · Upload closing documents (optional but recommended)</h2>
-        <p class="note" style="margin-bottom:10px">Upload the land contract / trust agreement / settlement statement (PDF or photos). Claude reads them and prefills the deal below for your review.</p>
-        <div class="uploadbox" onclick="document.getElementById('nd-files').click()">📎 Click to choose closing documents</div>
-        <input id="nd-files" type="file" multiple accept=".pdf,image/*" class="hidden" onchange="ndFilesChosen()">
-        <div id="nd-filelist" class="note"></div>
-        <div id="nd-extract-err" class="err hidden"></div>
-        <button id="nd-extract-btn" class="primary hidden" onclick="ndExtract()">🤖 Read documents & prefill deal</button>
-        <div id="nd-extract-status" class="note" style="margin-top:8px"></div>
-      </div>
-      <div class="card">
-        <h2>2 · Deal details</h2>
-        <div class="grid2">
-          <div class="field"><label>Buyer name</label><input id="nd-name"></div>
-          <div class="field"><label>Buyer email</label><input id="nd-email" type="email"></div>
-          <div class="field"><label>Buyer cell phone</label><input id="nd-phone"></div>
-          <div class="field"><label>Agreement type</label><select id="nd-type">
-            <option value="land_contract">Land contract / contract for deed</option>
-            <option value="land_trust_beneficial_interest">Beneficial interest — land trust</option>
-          </select></div>
-        </div>
-        <div class="grid3">
-          <div class="field" style="grid-column:span 2"><label>Property address (also buyer's mailing address)</label><input id="nd-addr"></div>
-          <div class="field"><label>City</label><input id="nd-city"></div>
-          <div class="field"><label>State</label><input id="nd-state"></div>
-          <div class="field"><label>ZIP</label><input id="nd-zip"></div>
-          <div class="field"><label>Trust name (if land trust)</label><input id="nd-trust"></div>
-          <div class="field"><label>Trustee</label><input id="nd-trustee"></div>
-          <div class="field"><label>Beneficial interest %</label><input id="nd-bi" type="number" step="0.1"></div>
-        </div>
-        <div class="grid3">
-          <div class="field"><label>Sale price ($)</label><input id="nd-price" type="number" step="0.01" oninput="ndCalc()"></div>
-          <div class="field"><label>Down payment ($)</label><input id="nd-down" type="number" step="0.01" oninput="ndCalc()"></div>
-          <div class="field"><label>Amount financed ($)</label><input id="nd-fin" type="number" step="0.01" oninput="ndCalc(true)"></div>
-          <div class="field"><label>Interest rate (% APR)</label><input id="nd-rate" type="number" step="0.01" oninput="ndCalc()"></div>
-          <div class="field"><label>Term (months)</label><input id="nd-term" type="number" oninput="ndCalc()"></div>
-          <div class="field"><label>Monthly P&I ($)</label><input id="nd-pi" type="number" step="0.01" placeholder="auto"></div>
-          <div class="field"><label>Monthly escrow ($)</label><input id="nd-escrow" type="number" step="0.01" value="0"></div>
-          <div class="field"><label>Late fee ($)</label><input id="nd-late" type="number" step="0.01" value="0"></div>
-          <div class="field"><label>Grace days</label><input id="nd-grace" type="number" value="5"></div>
-          <div class="field"><label>First payment date</label><input id="nd-first" type="date"></div>
-        </div>
-        <div id="nd-err" class="err hidden"></div>
-        <div id="nd-ok" class="okmsg hidden"></div>
-        <button class="primary" onclick="ndCreate()">Create deal — property, buyer login & loan</button>
-      </div>
-    </section>
-
     <!-- PML LOANS -->
     <section id="pg-pml" class="hidden">
       <h1>Private Money Lender Loans</h1>
       <p class="note" style="margin-bottom:12px">Loans you owe against your properties. Never visible to tenant buyers.</p>
       <div class="cards" id="pml-stats"></div>
+      <div class="card" id="pml-due-card" style="display:none">
+        <h2>Due this month</h2><div id="pml-due"></div>
+      </div>
       <button class="primary" style="margin-bottom:14px" onclick="pmlModal()">+ Add PML loan</button>
       <div class="card"><div style="overflow-x:auto"><table>
         <thead><tr><th>Lender</th><th>Property</th><th>Lien</th><th>Type</th><th class="right">Balance</th><th class="right">Rate</th><th class="right">PML pmt</th><th class="right">TB pmt</th><th class="right">Spread</th><th>Status</th></tr></thead>
@@ -383,6 +365,20 @@ a{color:var(--brand);font-weight:600}
         </div>
         <button class="primary" id="co-save" onclick="saveCompany()">Save company</button>
       </div>
+
+      <div class="card">
+        <h2>Deal defaults</h2>
+        <p class="note" style="margin-bottom:12px">Prefilled into every new deal and property so you're not retyping them. Always editable per deal.</p>
+        <div class="grid2">
+          <div class="field"><label>Buyer email to prefill</label><input id="df-email" type="email" placeholder="buyer@example.com"></div>
+          <div class="field"><label>Buyer phone to prefill</label><input id="df-phone" placeholder="(555) 555-5555"></div>
+          <div class="field"><label>Default late fee ($)</label><input id="df-late" type="number" step="0.01"></div>
+          <div class="field"><label>Default grace period (days)</label><input id="df-grace" type="number"></div>
+        </div>
+        <div id="df-ok" class="okmsg hidden"></div>
+        <button class="primary" onclick="saveDefaults()">Save defaults</button>
+        <p class="note" style="margin-top:10px">Late fee and grace are set <b>per property</b> — these are just the starting values when you add a new one.</p>
+      </div>
       <div class="card">
         <h2>Your login</h2>
         <div id="pwd-err" class="err hidden"></div>
@@ -486,7 +482,6 @@ a{color:var(--brand);font-weight:600}
 <div id="more-sheet" onclick="if(event.target===this)toggleMoreSheet()">
   <div class="sheet">
     <h3>More</h3>
-    <button onclick="navSheet('newdeal')">➕ New Deal</button>
     <button onclick="navSheet('pml')">🏦 PML Loans</button>
     <button onclick="navSheet('props')">🏠 Properties</button>
     <button onclick="navSheet('exp')">🧾 Expenses</button>
@@ -503,6 +498,11 @@ a{color:var(--brand);font-weight:600}
 
 <script>
 const ADMIN_ROLES = ['owner','admin','super_admin'];
+const AGREEMENT_LABELS = {
+  agreement_for_deed: 'Agreement for Deed',
+  land_contract: 'Land Contract',
+  land_trust_beneficial_interest: 'Beneficial Interest in a Land Trust',
+};
 const $ = id => document.getElementById(id);
 const fmt = c => '$' + ((c||0)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fdate = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
@@ -535,22 +535,28 @@ async function doLogin(){
 async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
 
 function nav(pg){
-  for(const p of ['dash','loans','loan','newdeal','pml','pmld','tbs','props','propd','invites','exp','msgs','slips','settings']){
+  for(const p of ['dash','loans','loan','pml','pmld','tbs','props','propd','invites','exp','msgs','slips','settings']){
     const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
   }
   if(pg==='dash')loadDash(); if(pg==='loans')loadLoans(); if(pg==='tbs')loadTBs();
   if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();loadLinked();}
   if(pg==='msgs')openMsgs(); if(pg==='slips')loadSlips();
-  if(pg==='newdeal')loadProps();
   if(pg==='pml'){loadProps();loadPML();}
   if(pg==='settings')loadSettings();
   if(pg==='invites')loadInvites();
 }
 
 // ---------- properties ----------
+const DOCSET_ICONS={acquisition:'🏷️',pml_docs:'🏦',sale_closing:'🤝',private:'🔒',
+  loan_docs:'📄',insurance:'🛡️',taxes:'🏛️',utilities:'💡',correspondence:'✉️'};
+async function setPhase(pid,phase){
+  await api(`/api/admin/properties/${pid}/phase`,{method:'POST',body:JSON.stringify({phase})});
+  await loadProps(); openProp(pid);
+}
 const COST_ICONS={purchase:'🏷️',closing:'📑',rehab:'🔨',bog:'👷',insurance:'🛡️',taxes:'🏛️',utilities:'💡',marketing:'📣',legal:'⚖️',other:'•'};
 function newPropModal(){
+  setTimeout(prefillPropDefaults,0);
   modal(`<h2>Add property</h2>
     <div class="field"><label>Street address</label><input id="np-addr"></div>
     <div class="grid3">
@@ -563,13 +569,23 @@ function newPropModal(){
       <div class="field"><label>Beds</label><input id="np-beds" type="number"></div>
       <div class="field"><label>Baths</label><input id="np-baths" type="number" step="0.5"></div>
       <div class="field"><label>Sq ft</label><input id="np-sqft" type="number"></div>
+      <div class="field"><label>Late fee for this property ($)</label><input id="np-late" type="number" step="0.01"></div>
+      <div class="field"><label>Grace period (days)</label><input id="np-grace" type="number"></div>
     </div>
+    <p class="note" style="margin:-4px 0 12px">Late fee and grace are set per property. New properties start from your company defaults; change them here for this house.</p>
     <div class="grid2">
       <div class="field"><label>Land trust name (optional)</label><input id="np-trust"></div>
       <div class="field"><label>Trustee (optional)</label><input id="np-trustee"></div>
     </div>
     <div id="np-err" class="err hidden"></div>
     <button class="primary" onclick="createProp()">Add property</button>`);
+}
+async function prefillPropDefaults(){
+  try{
+    const d=await api('/api/admin/defaults');
+    if($('np-late') && d.late_fee_cents!=null) $('np-late').value=(d.late_fee_cents/100).toFixed(2);
+    if($('np-grace') && d.grace_days!=null) $('np-grace').value=d.grace_days;
+  }catch{}
 }
 async function createProp(){
   try{
@@ -582,7 +598,9 @@ async function createProp(){
       acquired_date:$('np-acq').value||null, purchase_price_cents:price,
       target_sale_price_cents:Math.round((parseFloat($('np-target').value)||0)*100),
       beds:parseInt($('np-beds').value)||null, baths:parseFloat($('np-baths').value)||null,
-      sqft:parseInt($('np-sqft').value)||null })});
+      sqft:parseInt($('np-sqft').value)||null,
+      late_fee_cents:$('np-late').value!==''?Math.round(parseFloat($('np-late').value)*100):null,
+      grace_days:$('np-grace').value!==''?parseInt($('np-grace').value):null })});
     if(price) await api(`/api/admin/properties/${prop.id}/costs`,{method:'POST',body:JSON.stringify({
       category:'purchase', description:'Purchase price', amount_cents:price, cost_date:$('np-acq').value||null })});
     closeModal(); openProp(prop.id);
@@ -627,7 +645,14 @@ async function openProp(id){
       <button class="small" onclick="costModal(${p.id})">+ Add cost</button>
       <button class="small" onclick="propDocModal(${p.id})">+ Upload document</button>
       <button class="small" onclick="pmlModal(${p.id})">+ Add PML loan</button>
+      <button class="small" onclick="propTermsModal(${p.id})">Late fee &amp; grace</button>
     </div>
+    <div class="phasebar">
+      ${(f.phases||[]).map(ph=>`<button class="phasestep ${p.phase===ph?'on':''} ${(f.phases.indexOf(ph)<f.phases.indexOf(p.phase||'acquired'))?'done':''}"
+        onclick="setPhase(${p.id},'${ph}')">${esc((f.phase_labels||{})[ph]||ph)}</button>`).join('')}
+    </div>
+    <p class="note" style="margin-top:10px">Late fee ${p.late_fee_cents!=null?fmt(p.late_fee_cents):'<span class="note">not set — company default applies</span>'}
+      · grace ${p.grace_days!=null?p.grace_days+' days':'company default'}</p>
   </div>
   <div class="grid2">
     <div class="card"><h2>Cost basis</h2>
@@ -671,13 +696,40 @@ async function openProp(id){
       <td class="right">${fmt(c.amount_cents)}</td>
       <td class="right"><button class="small warn" onclick="delCost(${c.id})">✕</button></td></tr>`).join('')
       ||'<tr><td colspan="6" class="note">No costs logged yet.</td></tr>'}</tbody></table></div></div>
-  <div class="card"><h2>Documents</h2>
-    ${f.documents.length?f.documents.map(d=>`<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:14px">
-      <span>📎 <a href="/api/documents/${d.id}/download">${esc(d.title||d.filename)}</a>
-      ${d.visible_to_tenant?'<span class="pill ok">buyer can see</span>':'<span class="pill gray">private</span>'}</span>
-      <span class="note">${fdate((d.created_at||'').slice(0,10))}</span></div>`).join('')
-      :'<p class="note">No documents yet.</p>'}
+  <div class="card"><h2>Documents <button class="small" onclick="propDocModal(${p.id})">+ Upload</button></h2>
+    <p class="note" style="margin-bottom:12px">Three sets of paperwork: what you signed when you bought it, the private money loan, and what you signed when you sold it. Buyer folders are visible in their app.</p>
+    ${Object.entries(f.doc_folders||{}).map(([cat,fo])=>`
+      <div style="border:1px solid ${fo.shared?'var(--line)':'#f0e2d5'};border-radius:10px;padding:12px;margin-bottom:9px;background:${fo.shared?'#fff':'#fffcf8'}">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <b style="font-size:13.5px">${DOCSET_ICONS[cat]||'📁'} ${esc(fo.label)}</b>
+          <span>${fo.shared?'<span class="pill ok">buyer sees this</span>':'<span class="pill amber">yours only</span>'}
+            <button class="small" onclick="propDocModal(${p.id},'${cat}')">+</button></span>
+        </div>
+        ${fo.documents.length?fo.documents.map(d=>`<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13.5px">
+          <span>📎 <a href="/api/documents/${d.id}/download">${esc(d.title||d.filename)}</a></span>
+          <span class="note">${fdate((d.effective_date||d.created_at||'').slice(0,10))}</span></div>`).join('')
+          :'<p class="note" style="margin-top:5px">Empty.</p>'}
+      </div>`).join('')}
   </div>`;
+}
+function propTermsModal(pid){
+  const p=(PROPS||[]).find(x=>x.id===pid)||{};
+  modal(`<h2>Late fee &amp; grace for this property</h2>
+    <p class="note" style="margin-bottom:14px">These apply to the loan when you sell this house. Leave blank to use your company default.</p>
+    <div class="grid2">
+      <div class="field"><label>Late fee ($)</label><input id="pt-late" type="number" step="0.01" value="${p.late_fee_cents!=null?(p.late_fee_cents/100).toFixed(2):''}"></div>
+      <div class="field"><label>Grace period (days)</label><input id="pt-grace" type="number" value="${p.grace_days!=null?p.grace_days:''}"></div>
+    </div>
+    <div id="pt-err" class="err hidden"></div>
+    <button class="primary" onclick="savePropTerms(${pid})">Save</button>`);
+}
+async function savePropTerms(pid){
+  try{
+    await api(`/api/admin/properties/${pid}/details`,{method:'PUT',body:JSON.stringify({
+      late_fee_cents:$('pt-late').value!==''?Math.round(parseFloat($('pt-late').value)*100):null,
+      grace_days:$('pt-grace').value!==''?parseInt($('pt-grace').value):null })});
+    closeModal(); await loadProps(); openProp(pid);
+  }catch(e){ $('pt-err').textContent=e.message; $('pt-err').classList.remove('hidden'); }
 }
 function costModal(pid){
   modal(`<h2>Add a cost</h2>
@@ -709,19 +761,27 @@ async function delCost(id){
   if(!confirm('Remove this cost?'))return;
   await api('/api/admin/costs/'+id,{method:'DELETE'}); openProp(currentPropId);
 }
-function propDocModal(pid){
+function propDocModal(pid,preset){
   modal(`<h2>Upload document</h2>
     <div class="field"><label>File</label><input id="pd-file" type="file" accept=".pdf,image/*,.doc,.docx"></div>
     <div class="grid2">
       <div class="field"><label>Folder</label><select id="pd-cat">
-        <option value="private">🔒 Private (admin only)</option>
-        <option value="loan_docs">📄 Loan Documents</option><option value="insurance">🛡️ Insurance</option>
-        <option value="taxes">🏛️ Taxes</option><option value="utilities">💡 Utilities</option>
-        <option value="correspondence">✉️ Correspondence</option></select></div>
+        <optgroup label="Yours only">
+          <option value="acquisition">🏷️ Acquisition closing docs</option>
+          <option value="pml_docs">🏦 Private money loan docs</option>
+          <option value="sale_closing">🤝 Sale closing docs</option>
+          <option value="private">🔒 Private (other)</option>
+        </optgroup>
+        <optgroup label="Buyer can see">
+          <option value="loan_docs">📄 Loan Documents</option><option value="insurance">🛡️ Insurance</option>
+          <option value="taxes">🏛️ Taxes</option><option value="utilities">💡 Utilities</option>
+          <option value="correspondence">✉️ Correspondence</option>
+        </optgroup></select></div>
       <div class="field"><label>Title (optional)</label><input id="pd-title"></div>
     </div>
     <div id="pd-err" class="err hidden"></div>
     <button class="primary" onclick="uploadPropDoc(${pid})">Upload</button>`);
+  if(preset) $('pd-cat').value=preset;
 }
 async function uploadPropDoc(pid){
   try{
@@ -729,11 +789,21 @@ async function uploadPropDoc(pid){
     const cat=$('pd-cat').value;
     await api('/api/admin/documents',{method:'POST',body:JSON.stringify({
       filename:f.name, mime:f.type, data_base64:await fileToB64(f), property_id:pid,
-      category:cat, title:$('pd-title').value||null, visible_to_tenant: cat!=='private' })});
+      category:cat, title:$('pd-title').value||null,
+      visible_to_tenant: !['private','acquisition','pml_docs','sale_closing'].includes(cat) })});
     closeModal(); openProp(pid);
   }catch(e){ $('pd-err').textContent=e.message; $('pd-err').classList.remove('hidden'); }
 }
+async function prefillBuyer(prefix){
+  try{
+    const d=await api('/api/admin/defaults');
+    const e=$(prefix+'-email'), ph=$(prefix+'-phone');
+    if(e && !e.value && d.buyer_email) e.value=d.buyer_email;
+    if(ph && !ph.value && d.buyer_phone) ph.value=d.buyer_phone;
+  }catch{}
+}
 function sellModal(pid){
+  setTimeout(()=>prefillBuyer('sl'),0);
   modal(`<h2>Sell to a tenant buyer</h2>
     <p class="note" style="margin-bottom:14px">This creates the buyer's login, opens the loan, and prepares a text invitation.</p>
     <div class="grid2">
@@ -741,8 +811,9 @@ function sellModal(pid){
       <div class="field"><label>Buyer email</label><input id="sl-email" type="email"></div>
       <div class="field"><label>Buyer cell phone</label><input id="sl-phone" placeholder="(555) 555-5555"></div>
       <div class="field"><label>Agreement type</label><select id="sl-type">
-        <option value="land_contract">Land contract / contract for deed</option>
-        <option value="land_trust_beneficial_interest">Beneficial interest — land trust</option></select></div>
+        <option value="agreement_for_deed">Agreement for Deed</option>
+        <option value="land_contract">Land Contract</option>
+        <option value="land_trust_beneficial_interest">Beneficial Interest in a Land Trust</option></select></div>
     </div>
     <div class="grid3">
       <div class="field"><label>Sale price ($)</label><input id="sl-price" type="number" step="0.01" oninput="slCalc()"></div>
@@ -851,6 +922,20 @@ async function loadSettings(){
     + chip(s.integrations.paynearme,'PayNearMe','Cash at Walmart, 7-Eleven &amp; more — set PNM_API_KEY and PNM_SITE_ID')
     + chip(s.integrations.ai,'AI document reading','Closing docs &amp; bank statements — set ANTHROPIC_API_KEY');
   $('tb-url').href=location.origin+'/'; $('tb-url').textContent=location.origin+'/';
+  try{
+    const df=await api('/api/admin/defaults');
+    $('df-email').value=df.buyer_email||''; $('df-phone').value=df.buyer_phone||'';
+    $('df-late').value=df.late_fee_cents!=null?(df.late_fee_cents/100).toFixed(2):'';
+    $('df-grace').value=df.grace_days!=null?df.grace_days:'';
+  }catch{}
+}
+async function saveDefaults(){
+  $('df-ok').classList.add('hidden');
+  await api('/api/admin/setup',{method:'POST',body:JSON.stringify({
+    default_buyer_email:$('df-email').value, default_buyer_phone:$('df-phone').value,
+    default_late_fee_cents:$('df-late').value!==''?Math.round(parseFloat($('df-late').value)*100):null,
+    default_grace_days:$('df-grace').value!==''?parseInt($('df-grace').value):null })});
+  $('df-ok').textContent='Saved.'; $('df-ok').classList.remove('hidden');
 }
 async function changeMyPassword(){
   $('pwd-err').classList.add('hidden'); $('pwd-ok').classList.add('hidden');
@@ -903,7 +988,27 @@ async function removeStaff(id){
 
 // ---------- PML ----------
 let currentPmlId=null;
+async function loadPmlDue(){
+  try{
+    const d=await api('/api/admin/pml-due');
+    const unpaid=d.loans.filter(x=>!x.paid_this_period);
+    $('pml-due-card').style.display = unpaid.length ? '' : 'none';
+    $('pml-due').innerHTML = unpaid.map(x=>
+      `<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px">
+        <span><b>${esc(x.lender_name)}</b> <span class="note">${esc(x.address)} · due ${fdate(x.next_due_date)}</span>
+          ${x.autopay_enabled?'<span class="pill ok">scheduled</span>':''}</span>
+        <span style="white-space:nowrap">${fmt(x.payment_cents)}
+          <button class="small" onclick="quickPmlPay(${x.id},${x.payment_cents})">Record</button></span>
+      </div>`).join('');
+  }catch{}
+}
+async function quickPmlPay(id,amount){
+  if(!confirm(`Record a payment of ${fmt(amount)} to this lender?`))return;
+  await api(`/api/admin/pml/${id}/payments`,{method:'POST',body:JSON.stringify({amount_cents:amount})});
+  loadPmlDue(); loadPML(); loadDash();
+}
 async function loadPML(){
+  loadPmlDue();
   const rows=await api('/api/admin/pml');
   const owed=rows.filter(r=>r.status==='active').reduce((s,r)=>s+r.principal_balance_cents,0);
   const spread=rows.filter(r=>r.status==='active').reduce((s,r)=>s+r.monthly_spread_cents,0);
@@ -951,9 +1056,11 @@ async function createPML(){
     closeModal(); loadPML();
   }catch(e){ $('pm-err').textContent=e.message; $('pm-err').classList.remove('hidden'); }
 }
+let PML_CACHE=null;
 async function openPML(id){
   currentPmlId=id;
   const f=await api('/api/admin/pml/'+id);
+  PML_CACHE=f.pml;
   nav('pmld');
   const p=f.pml;
   $('pml-detail').innerHTML=`
@@ -968,7 +1075,11 @@ async function openPML(id){
     <p class="note">${(p.interest_rate_bps/100).toFixed(2)}% · ${p.term_months} mo · ${p.payment_type.replace('_',' ')} · first payment ${fdate(p.first_payment_date)}${p.balloon_date?' · balloon due '+fdate(p.balloon_date):''}${p.lender_contact?' · '+esc(p.lender_contact):''}</p>
     <p class="note">Next payment due: ${fdate(f.next_due_date)} · Original principal ${fmt(p.principal_cents)}${p.notes?' · '+esc(p.notes):''}</p>
     <div style="margin-top:10px"><button class="primary" onclick="pmlPayModal()">Record payment to lender</button>
-      <button class="small" onclick="pmlDrawModal()">Record additional draw</button></div>
+      <button class="small" onclick="pmlDrawModal()">Record additional draw</button>
+      <button class="small" onclick="pmlScheduleModal(${p.id})">⏱️ Payment schedule</button></div>
+    <p class="note" style="margin-top:10px">${p.autopay_enabled
+      ? `<b style="color:var(--brand)">Scheduled</b> — ${fmt(p.payment_cents)} on day ${p.payment_day||'—'} each month by ${esc((p.autopay_method||'bank_transfer').replace('_',' '))}, recorded automatically.${p.autopay_note?' '+esc(p.autopay_note):''}`
+      : 'No schedule set — payments are recorded manually.'}</p>
   </div>
   <div class="card"><h2>Payoff (10-day est.)</h2>
     ${[['Principal',fmt(f.payoff.principal_cents)],['Interest',fmt(f.payoff.interest_cents)],['<b>Total</b>','<b>'+fmt(f.payoff.total_cents)+'</b>']]
@@ -983,6 +1094,38 @@ async function openPML(id){
   ${f.schedule.length?`<div class="card"><h2>Amortization schedule</h2><div style="max-height:300px;overflow:auto"><table>
     <thead><tr><th>#</th><th>Date</th><th class="right">Payment</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Balance</th></tr></thead>
     <tbody>${f.schedule.map(r=>`<tr><td>${r.n}</td><td>${fdate(r.date)}</td><td class="right">${fmt(r.payment_cents)}</td><td class="right">${fmt(r.interest_cents)}</td><td class="right">${fmt(r.principal_cents)}</td><td class="right">${fmt(r.balance_cents)}</td></tr>`).join('')}</tbody></table></div></div>`:''}`;
+}
+function pmlScheduleModal(pid){
+  const p=PML_CACHE||{};
+  modal(`<h2>Lender payment schedule</h2>
+    <div class="okmsg" style="background:var(--accent-pale);color:#8A5A00;margin-bottom:14px">
+      <b>Read this first.</b> Porch Pay does not move money to your lender. You set the transfer up
+      once at your bank or with your lender. This schedule records that payment on the ledger each
+      month so your balances, P&amp;L and returns stay accurate without you keying it in.
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Day of month it goes out</label><input id="ps-day" type="number" min="1" max="28" value="${p.payment_day||''}" placeholder="1"></div>
+      <div class="field"><label>How it is sent</label><select id="ps-method">
+        <option value="bank_transfer">Bank transfer / ACH</option>
+        <option value="bill_pay">Bank bill pay</option>
+        <option value="wire">Wire</option>
+        <option value="check">Check</option>
+        <option value="other">Other</option></select></div>
+    </div>
+    <div class="field"><label><input id="ps-on" type="checkbox" style="width:auto;margin-right:7px" ${p.autopay_enabled?'checked':''}>Record this payment automatically each month</label></div>
+    <div class="field"><label>Note to yourself (optional)</label><input id="ps-note" value="${esc(p.autopay_note||'')}" placeholder="e.g. auto-draft from Chase business checking"></div>
+    <div id="ps-err" class="err hidden"></div>
+    <button class="primary" onclick="savePmlSchedule(${pid})">Save schedule</button>`);
+  if(p.autopay_method) $('ps-method').value=p.autopay_method;
+}
+async function savePmlSchedule(pid){
+  try{
+    await api(`/api/admin/pml/${pid}/schedule`,{method:'PUT',body:JSON.stringify({
+      payment_day:$('ps-day').value?parseInt($('ps-day').value):null,
+      autopay_enabled:$('ps-on').checked, autopay_method:$('ps-method').value,
+      autopay_note:$('ps-note').value })});
+    closeModal(); openPML(pid);
+  }catch(e){ $('ps-err').textContent=e.message; $('ps-err').classList.remove('hidden'); }
 }
 function pmlPayModal(){
   modal(`<h2>Record payment to lender</h2>
@@ -1019,19 +1162,49 @@ async function pmlDraw(){
 // ---------- dashboard ----------
 async function loadDash(){
   const d = await api('/api/admin/summary');
-  if(d.company) $('co-name').textContent = d.company.name;
+  if(d.company){
+    $('co-name').textContent = d.company.name;
+    const hc=$('head-co'); if(hc) hc.textContent = d.company.name;
+  }
   if(d.user){
     const parts=(d.user.name||'').trim().split(/\s+/).filter(Boolean);
     const ini = parts.length ? (parts[0][0]+(parts.length>1?parts[parts.length-1][0]:'')).toUpperCase() : '?';
     $('me-chip').innerHTML =
       `<span class="av">${esc(ini)}</span><span><span class="nm">${esc(d.user.name)}</span><br><span class="rl">${esc(d.user.role)}</span></span>`;
   }
+  const pc=d.property_counts||{total:0,owned:0,sold:0};
   $('d-stats').innerHTML = [
-    ['Active loans', d.active_loans],
-    ['Total balance', fmt(d.total_balance_cents)],
-    ['Past due', d.past_due_count],
-    ['Owed now', fmt(d.owed_now_cents)],
-  ].map(([l,n])=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+    ['Properties', pc.total, `${pc.owned} held · ${pc.sold} sold`],
+    ['Active buyer loans', d.active_loans, fmt(d.total_balance_cents)+' owed to you'],
+    ['Past due', d.past_due_count, d.owed_now_cents?fmt(d.owed_now_cents)+' outstanding':'all current'],
+    ['Owed to lenders', fmt(d.pml_total_balance_cents||0), (d.pml_loans||[]).length+' active'],
+  ].map(([l,n,sub])=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div>
+      ${sub?`<div class="note" style="margin-top:3px;font-size:11.5px">${sub}</div>`:''}</div>`).join('');
+
+  const inc=d.income||{};
+  $('d-income').innerHTML = [
+    ['Gross income '+(inc.year||''), fmt(inc.ytd_gross_cents||0), 'interest + fees collected'],
+    ['Expenses '+(inc.year||''), fmt(inc.ytd_expenses_cents||0), 'lender interest + property costs'],
+    ['Net income '+(inc.year||''), fmt(inc.ytd_net_cents||0), (inc.ytd_net_cents||0)>=0?'profit':'loss'],
+    ['Net, all time', fmt(inc.lifetime_net_cents||0), fmt(inc.lifetime_gross_cents||0)+' gross'],
+  ].map(([l,n,sub],i)=>`<div class="stat"><div class="n" ${i>=2?`style="color:${(i===2?(inc.ytd_net_cents||0):(inc.lifetime_net_cents||0))>=0?'var(--brand)':'var(--red)'}"`:''}>${n}</div>
+      <div class="l">${l}</div><div class="note" style="margin-top:3px;font-size:11.5px">${sub}</div></div>`).join('');
+
+  $('d-pml').innerHTML=(d.pml_loans||[]).map(pl=>
+    `<tr class="click" onclick="openPML(${pl.id})"><td>${esc(pl.lender_name)}</td><td>${esc(pl.address)}</td>
+     <td>${pl.lien_position}</td><td class="right">${fmt(pl.balance_cents)}</td>
+     <td class="right">${fmt(pl.payment_cents)}</td><td>${fdate(pl.next_due_date)}</td>
+     <td>${pl.autopay_enabled?'<span class="pill ok">scheduled</span>':'<span class="pill gray">manual</span>'}</td></tr>`
+  ).join('')||'<tr><td colspan="7" class="note">No lender loans. Add one from a property.</td></tr>';
+
+  const sp=d.monthly_spread_cents||0;
+  $('d-spread').innerHTML=`Buyers pay you ${fmt(d.tb_total_monthly_cents||0)} a month · you pay lenders ${fmt(d.pml_total_monthly_cents||0)} ·
+    <b style="color:${sp>=0?'var(--brand)':'var(--red)'}">${fmt(sp)} monthly spread</b>`;
+
+  $('d-props').innerHTML=(d.properties_in_progress||[]).map(pr=>
+    `<div class="row click" style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer;font-size:14px" onclick="openProp(${pr.id})">
+      <span>${esc(pr.address)}</span><span class="pill amber">${esc((pr.phase||'acquired').replace('_',' '))}</span></div>`
+  ).join('')||'<p class="note">Nothing in progress. Every property is sold and being serviced.</p>';
   $('d-integrations').innerHTML =
     `Integrations: Stripe ${d.integrations.stripe?'<span class="pill ok">connected</span>':'<span class="pill gray">not set — add STRIPE_SECRET_KEY</span>'} ·
      AI document reading ${d.integrations.ai?'<span class="pill ok">enabled</span>':'<span class="pill gray">not set — add ANTHROPIC_API_KEY</span>'}`;
@@ -1054,7 +1227,7 @@ async function loadLoans(){
   const rows = await api('/api/admin/loans');
   $('loans-rows').innerHTML = rows.map(l=>
     `<tr class="click" onclick="openLoan(${l.id})"><td>${l.id}</td><td>${esc(l.address)}</td><td>${esc(l.tenant_name||'(unassigned)')}</td>
-     <td>${l.loan_type==='land_trust_beneficial_interest'?'Land trust BI':'Land contract'}</td>
+     <td>${AGREEMENT_LABELS[l.loan_type]||'Land contract'}</td>
      <td class="right">${fmt(l.principal_balance_cents)}</td><td class="right">${(l.interest_rate_bps/100).toFixed(2)}%</td>
      <td>${l.status==='active'?(l.status_info.is_past_due?'<span class="pill due">Past due</span>':'<span class="pill ok">Current</span>'):`<span class="pill gray">${l.status}</span>`}</td></tr>`
   ).join('') || '<tr><td colspan="7" class="note">No loans yet.</td></tr>';
@@ -1074,7 +1247,7 @@ async function openLoan(id){
   <div class="card">
     <h2>${esc(f.property?f.property.address:'')} — ${esc(f.tenant?f.tenant.name:'(no buyer linked)')}
       ${S.is_past_due?'<span class="pill due">Past due</span>':'<span class="pill ok">Current</span>'}</h2>
-    <p class="note">${L.loan_type==='land_trust_beneficial_interest'?'Beneficial interest in land trust'+(f.property&&f.property.trust_name?' — '+esc(f.property.trust_name)+(f.property.trustee?', trustee: '+esc(f.property.trustee):''):''):'Land contract'} ·
+    <p class="note">${AGREEMENT_LABELS[L.loan_type]||'Land contract'}${L.loan_type==='land_trust_beneficial_interest'&&f.property&&f.property.trust_name?' — '+esc(f.property.trust_name)+(f.property.trustee?', trustee: '+esc(f.property.trustee):''):''} ·
       ${(L.interest_rate_bps/100).toFixed(2)}% · ${L.term_months} mo · started ${fdate(L.first_payment_date)}
       ${L.beneficial_interest_pct?' · BI '+L.beneficial_interest_pct+'%':''}</p>
     <p class="note" style="margin-top:4px">${f.tenant?('📧 '+esc(f.tenant.email)+(f.tenant.phone?' · 📱 '+esc(f.tenant.phone):'')):''} <span id="tb-loc"></span></p>
@@ -1597,7 +1770,7 @@ async function wzNext(){
         fee_label: $('wz-feelabel').value || 'Processing fee',
         finish: true })});
       $('wizard').classList.add('hidden');
-      loadDash(); nav('newdeal');
+      loadDash(); nav('props');
       return;
     }
     wzGo(1);

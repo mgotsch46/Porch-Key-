@@ -359,6 +359,22 @@ app.get('/api/admin/summary', adminOnly, (req, res) => {
       next_due_date: f.status.next_due_date, is_past_due: f.status.is_past_due, payment_cents: l.payment_cents + l.escrow_cents,
     };
   });
+  // Money going OUT to private lenders, so the dashboard shows both sides.
+  const pmlRows = all(`SELECT pl.*, p.address FROM pml_loans pl
+    LEFT JOIN properties p ON p.id=pl.property_id
+    WHERE pl.company_id=? AND pl.status='active' ORDER BY pl.id DESC`, req.companyId);
+  const pmlCards = pmlRows.map(pl => ({
+    id: pl.id, lender_name: pl.lender_name, address: pl.address || '',
+    balance_cents: pl.principal_balance_cents, payment_cents: pl.payment_cents,
+    rate_bps: pl.interest_rate_bps, lien_position: pl.lien_position,
+    payment_type: pl.payment_type, autopay_enabled: !!pl.autopay_enabled,
+    next_due_date: loanEngine.nextDueDate(pl, today()),
+    balloon_date: pl.balloon_date,
+  }));
+  const pmlTotalBalance = pmlCards.reduce((t, x) => t + x.balance_cents, 0);
+  const pmlTotalMonthly = pmlCards.reduce((t, x) => t + x.payment_cents, 0);
+  const tbTotalMonthly = loans.reduce((t, l) => t + l.payment_cents + l.escrow_cents, 0);
+
   const unreadMsgs = get(`SELECT COUNT(*) c FROM messages m JOIN loans l ON l.id=m.loan_id
     WHERE m.read_by_admin=0 AND l.company_id=?`, req.companyId).c;
   const unassigned = get("SELECT COUNT(*) c FROM expenses WHERE status='unassigned' AND company_id=?", req.companyId).c;
@@ -369,12 +385,50 @@ app.get('/api/admin/summary', adminOnly, (req, res) => {
     active_loans: loans.length, total_balance_cents: totalBalance, past_due_count: pastDue,
     owed_now_cents: owedNow, unread_messages: unreadMsgs, unassigned_expenses: unassigned,
     loans: loanCards,
+    pml_loans: pmlCards,
+    property_counts: (() => {
+      const rows = all(`SELECT COALESCE(phase,'acquired') phase, COUNT(*) c FROM properties
+        WHERE company_id=? GROUP BY 1`, req.companyId);
+      const by = {}; let total = 0;
+      for (const r of rows) { by[r.phase] = r.c; total += r.c; }
+      return { total, by_phase: by,
+        owned: total - (by.sold || 0) - (by.paid_off || 0),
+        sold: (by.sold || 0) + (by.paid_off || 0) };
+    })(),
+    income: (() => {
+      const y = today().slice(0, 4);
+      const ytd = reports.profitAndLoss(req.companyId, `${y}-01-01`, today());
+      const life = reports.profitAndLoss(req.companyId, null, null);
+      return {
+        ytd_gross_cents: ytd.revenue.total_cents,
+        ytd_expenses_cents: ytd.expenses.total_cents,
+        ytd_net_cents: ytd.net_operating_income_cents,
+        lifetime_gross_cents: life.revenue.total_cents,
+        lifetime_net_cents: life.net_operating_income_cents,
+        year: y,
+      };
+    })(),
+    pml_total_balance_cents: pmlTotalBalance,
+    pml_total_monthly_cents: pmlTotalMonthly,
+    tb_total_monthly_cents: tbTotalMonthly,
+    monthly_spread_cents: tbTotalMonthly - pmlTotalMonthly,
+    properties_in_progress: all(`SELECT id, address, phase FROM properties
+      WHERE company_id=? AND COALESCE(phase,'acquired') NOT IN ('sold','paid_off') ORDER BY id DESC`, req.companyId),
     integrations: { stripe: pay.stripeEnabled(), ai: ai.aiEnabled(), paynearme: pay.pnmEnabled(), sms: sms.smsEnabled() },
     pending_invitations: get("SELECT COUNT(*) c FROM invitations WHERE company_id=? AND status IN ('pending','failed')", req.companyId).c,
   });
 });
 
 // ---------- company & staff management ----------
+app.get('/api/admin/defaults', adminOnly, (req, res) => {
+  const c = get('SELECT * FROM companies WHERE id=?', req.companyId);
+  res.json({
+    buyer_email: c.default_buyer_email || '',
+    buyer_phone: c.default_buyer_phone || '',
+    late_fee_cents: c.default_late_fee_cents || 0,
+    grace_days: c.default_grace_days ?? 5,
+  });
+});
 app.get('/api/admin/company', adminOnly, (req, res) => {
   const company = get('SELECT * FROM companies WHERE id=?', req.companyId);
   const staff = all(`SELECT id, name, email, role, archived_at, created_at FROM users
@@ -442,6 +496,10 @@ app.post('/api/admin/setup', adminOnly, (req, res, next) => {
       b.default_late_fee_cents ?? c.default_late_fee_cents, b.default_grace_days ?? c.default_grace_days,
       b.pass_fees_to_buyer === undefined ? c.pass_fees_to_buyer : (b.pass_fees_to_buyer ? 1 : 0),
       b.fee_label || c.fee_label, req.companyId);
+    if (b.default_buyer_email !== undefined || b.default_buyer_phone !== undefined) {
+      run('UPDATE companies SET default_buyer_email=?, default_buyer_phone=? WHERE id=?',
+        b.default_buyer_email ?? c.default_buyer_email, b.default_buyer_phone ?? c.default_buyer_phone, req.companyId);
+    }
     if (b.finish) run('UPDATE companies SET setup_complete=1 WHERE id=?', req.companyId);
     res.json({ ok: true });
   } catch (e) { next(e); }
@@ -629,9 +687,26 @@ app.get('/api/admin/properties/:id', adminOnly, (req, res) => {
     tenant,
     pml_loans: pml,
     pml_balance_cents: pml.filter(p => p.status === 'active').reduce((t, p) => t + p.principal_balance_cents, 0),
-    documents: all(`SELECT id, filename, category, title, visible_to_tenant, created_at
-      FROM documents WHERE property_id=? OR loan_id=? ORDER BY id DESC`, prop.id, loan ? loan.id : -1),
+    phases: PHASES, phase_labels: PHASE_LABELS,
+    doc_folders: (() => {
+      const docs = all(`SELECT id, filename, category, title, effective_date, visible_to_tenant, created_at
+        FROM documents WHERE property_id=? OR loan_id=? ORDER BY id DESC`, prop.id, loan ? loan.id : -1);
+      const folders = {};
+      for (const c of [...ADMIN_CATEGORIES, ...SHARED_CATEGORIES]) {
+        folders[c] = { label: CATEGORY_LABELS[c], shared: SHARED_CATEGORIES.includes(c), documents: [] };
+      }
+      for (const d of docs) (folders[d.category] || folders.private).documents.push(d);
+      return folders;
+    })(),
   });
+});
+
+app.post('/api/admin/properties/:id/phase', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  if (!PHASES.includes(req.body.phase)) return res.status(400).json({ error: 'Unknown phase' });
+  run("UPDATE properties SET phase=?, phase_updated_at=datetime('now') WHERE id=?", req.body.phase, p.id);
+  res.json({ ok: true, phase: req.body.phase });
 });
 
 app.put('/api/admin/properties/:id/details', adminOnly, (req, res) => {
@@ -639,11 +714,12 @@ app.put('/api/admin/properties/:id/details', adminOnly, (req, res) => {
   if (!p) return res.status(404).json({ error: 'Not found' });
   const b = req.body || {};
   run(`UPDATE properties SET status=?, acquired_date=?, purchase_price_cents=?,
-        target_sale_price_cents=?, beds=?, baths=?, sqft=?, year_built=?, notes=? WHERE id=?`,
+        target_sale_price_cents=?, beds=?, baths=?, sqft=?, year_built=?, notes=?,
+        late_fee_cents=?, grace_days=? WHERE id=?`,
     b.status || p.status, b.acquired_date ?? p.acquired_date,
     b.purchase_price_cents ?? p.purchase_price_cents, b.target_sale_price_cents ?? p.target_sale_price_cents,
     b.beds ?? p.beds, b.baths ?? p.baths, b.sqft ?? p.sqft, b.year_built ?? p.year_built,
-    b.notes ?? p.notes, p.id);
+    b.notes ?? p.notes, b.late_fee_cents ?? p.late_fee_cents, b.grace_days ?? p.grace_days, p.id);
   res.json(get('SELECT * FROM properties WHERE id=?', p.id));
 });
 
@@ -700,11 +776,11 @@ app.post('/api/admin/properties/:id/sell', adminOnly, async (req, res, next) => 
       req.companyId, prop.id, u.lastInsertRowid, b.loan_type || 'land_contract',
       b.sale_price_cents, b.down_payment_cents || 0, b.principal_cents, b.interest_rate_bps,
       b.term_months, payment, b.escrow_cents || 0,
-      b.late_fee_cents ?? co.default_late_fee_cents ?? 0,
-      b.grace_days ?? co.default_grace_days ?? 5,
+      b.late_fee_cents ?? prop.late_fee_cents ?? co.default_late_fee_cents ?? 0,
+      b.grace_days ?? prop.grace_days ?? co.default_grace_days ?? 5,
       b.first_payment_date, Number(String(b.first_payment_date).slice(8, 10)),
       b.principal_cents, b.beneficial_interest_pct || null);
-    run("UPDATE properties SET status='sold' WHERE id=?", prop.id);
+    run("UPDATE properties SET status='sold', phase='sold', phase_updated_at=datetime('now') WHERE id=?", prop.id);
 
     const inv = run(`INSERT INTO invitations (company_id, loan_id, user_id, phone, temp_password, channel)
       VALUES (?,?,?,?,?,?)`, req.companyId, l.lastInsertRowid, u.lastInsertRowid,
@@ -933,11 +1009,22 @@ app.delete('/api/admin/charges/:id', adminOnly, (req, res) => {
 
 // ---------- admin: documents & AI ----------
 // Shared folders both the admin and the tenant buyer can see, plus the admin-only vault.
+// Folders the buyer can see once the house is theirs.
 const SHARED_CATEGORIES = ['loan_docs', 'insurance', 'taxes', 'utilities', 'correspondence'];
+// Folders only you see — the paperwork from your side of the deal.
+const ADMIN_CATEGORIES = ['acquisition', 'pml_docs', 'sale_closing', 'private'];
 const CATEGORY_LABELS = {
-  loan_docs: 'Loan Documents', insurance: 'Insurance', taxes: 'Taxes',
-  utilities: 'Utilities', correspondence: 'Correspondence',
+  acquisition: 'Acquisition closing docs', pml_docs: 'Private money loan docs',
+  sale_closing: 'Sale closing docs', loan_docs: 'Loan Documents', insurance: 'Insurance',
+  taxes: 'Taxes', utilities: 'Utilities', correspondence: 'Correspondence',
   private: 'Private (admin only)', statement: 'Statements', other: 'Other',
+};
+
+// Property lifecycle. Selling to a buyer moves it to 'sold' automatically.
+const PHASES = ['acquired', 'rehab', 'ready', 'listed', 'sold', 'paid_off'];
+const PHASE_LABELS = {
+  acquired: 'Acquired', rehab: 'In rehab', ready: 'Ready to sell',
+  listed: 'Listed', sold: 'Sold — servicing', paid_off: 'Paid off',
 };
 
 app.post('/api/admin/documents', adminOnly, (req, res) => {
@@ -1183,6 +1270,75 @@ app.post('/api/admin/pml/:id/payments', adminOnly, (req, res) => {
     newBal, Math.max(0, interestOwed - toInterest), newBal, pml.id);
   res.json({ to_interest_cents: toInterest, to_principal_cents: toPrincipal, balance_cents: newBal });
 });
+// Scheduling for lender payments. This does NOT move money — see the note in the UI.
+// It tracks when each payment is due, reminds you, and can auto-record a payment you
+// have already set up to go out from your bank so the ledger stays accurate.
+app.put('/api/admin/pml/:id/schedule', adminOnly, (req, res) => {
+  const pml = get('SELECT * FROM pml_loans WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!pml) return res.status(404).json({ error: 'Not found' });
+  const b = req.body || {};
+  run(`UPDATE pml_loans SET payment_day=?, autopay_enabled=?, autopay_method=?, autopay_note=? WHERE id=?`,
+    b.payment_day ?? pml.payment_day, b.autopay_enabled ? 1 : 0,
+    b.autopay_method || pml.autopay_method || 'bank_transfer',
+    b.autopay_note ?? pml.autopay_note, pml.id);
+  res.json(get('SELECT * FROM pml_loans WHERE id=?', pml.id));
+});
+
+// What is due to lenders, and what is overdue to be recorded.
+app.get('/api/admin/pml-due', adminOnly, (req, res) => {
+  const rows = all(`SELECT pl.*, p.address FROM pml_loans pl LEFT JOIN properties p ON p.id=pl.property_id
+    WHERE pl.company_id=? AND pl.status='active'`, req.companyId);
+  const period = today().slice(0, 7);
+  const out = rows.map(pl => {
+    const paidThisPeriod = get(`SELECT COUNT(*) c FROM pml_ledger
+      WHERE pml_loan_id=? AND type='payment' AND substr(entry_date,1,7)=?`, pl.id, period).c > 0;
+    const due = loanEngine.nextDueDate(pl, today());
+    return {
+      id: pl.id, lender_name: pl.lender_name, address: pl.address || '',
+      payment_cents: pl.payment_cents, next_due_date: due,
+      paid_this_period: paidThisPeriod, autopay_enabled: !!pl.autopay_enabled,
+      autopay_method: pl.autopay_method, payment_day: pl.payment_day,
+      balance_cents: pl.principal_balance_cents,
+    };
+  });
+  res.json({ period, loans: out, unpaid_count: out.filter(x => !x.paid_this_period).length });
+});
+
+// Records payments for lenders you have flagged as autopay — the transfer itself is set up
+// at your bank; this keeps the ledger and your reports in step with it.
+function runPmlAutoRecord() {
+  const period = today().slice(0, 7);
+  const day = new Date().getUTCDate();
+  const rows = all(`SELECT * FROM pml_loans WHERE status='active' AND autopay_enabled=1`);
+  for (const pl of rows) {
+    try {
+      if (pl.autopay_last_period === period) continue;
+      const dueDay = pl.payment_day || Number(String(pl.first_payment_date).slice(8, 10)) || 1;
+      if (day < dueDay) continue;
+      const already = get(`SELECT COUNT(*) c FROM pml_ledger WHERE pml_loan_id=? AND type='payment'
+        AND substr(entry_date,1,7)=?`, pl.id, period).c;
+      if (already) { run('UPDATE pml_loans SET autopay_last_period=? WHERE id=?', period, pl.id); continue; }
+      const r = pl.interest_rate_bps / 10000 / 12;
+      const interestOwed = pl.interest_due_cents || Math.round(pl.principal_balance_cents * r);
+      const amount = pl.payment_cents;
+      const toInterest = Math.min(amount, interestOwed);
+      const toPrincipal = Math.min(amount - toInterest, pl.principal_balance_cents);
+      const newBal = pl.principal_balance_cents - toPrincipal;
+      run(`INSERT INTO pml_ledger (pml_loan_id, entry_date, type, amount_cents, to_interest_cents,
+            to_principal_cents, principal_balance_after_cents, memo)
+           VALUES (?,?,?,?,?,?,?,?)`, pl.id, today(), 'payment', amount, toInterest, toPrincipal,
+        newBal, `Scheduled payment ${period}`);
+      run(`UPDATE pml_loans SET principal_balance_cents=?, interest_due_cents=?, autopay_last_period=?,
+            status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
+        newBal, Math.max(0, interestOwed - toInterest), period, newBal, pl.id);
+      console.log(`Recorded scheduled lender payment for ${pl.lender_name} ${period}`);
+    } catch (e) { console.error('PML auto-record failed for', pl.id, e.message); }
+  }
+}
+setInterval(runPmlAutoRecord, 6 * 60 * 60 * 1000);
+setTimeout(runPmlAutoRecord, 25000);
+app.post('/api/admin/pml-auto-record', adminOnly, (req, res) => { runPmlAutoRecord(); res.json({ ok: true }); });
+
 app.post('/api/admin/pml/:id/draw', adminOnly, (req, res) => {
   const pml = get('SELECT * FROM pml_loans WHERE id=? AND company_id=?', req.params.id, req.companyId);
   if (!pml) return res.status(404).json({ error: 'Not found' });
