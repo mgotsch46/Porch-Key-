@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="theme-color" content="#0F7B5A">
+<meta name="theme-color" content="#54A32F">
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="icon" type="image/svg+xml" href="/icon.svg">
@@ -16,16 +16,16 @@
 <title>PorchPay</title>
 <style>
 :root{
-  --brand:#0F7B5A;        /* deep confident green */
-  --brand-lt:#16A374;     /* bright green */
-  --brand-pale:#E6F6EF;
+  --brand:#54A32F;        /* deep confident green */
+  --brand-lt:#6FBF45;     /* bright green */
+  --brand-pale:#EFF8E7;
   --accent:#FFB020;       /* bright amber */
   --accent-pale:#FFF4DE;
   --sky:#2D9CDB;
-  --ink:#0E2119;
-  --mut:#5F7871;
-  --line:#E2EDE8;
-  --bg:#F4FAF7;
+  --ink:#16220D;
+  --mut:#6B7A5F;
+  --line:#E6EEDD;
+  --bg:#F7FBF3;
   --card:#FFFFFF;
   --red:#D64545;
   --red-pale:#FDECEC;
@@ -47,7 +47,7 @@ button,input,select,textarea{font-family:inherit}
   color:#fff;padding:calc(env(safe-area-inset-top) + 16px) 20px 18px;
   position:sticky;top:0;z-index:20;
   display:flex;justify-content:space-between;align-items:center;
-  box-shadow:0 2px 12px rgba(15,123,90,.18);
+  box-shadow:0 2px 12px rgba(84,163,47,.18);
 }
 .topbar .brand{font-size:19px;font-weight:700;letter-spacing:-.4px;display:flex;align-items:center;gap:7px}
 .topbar .gear{background:rgba(255,255,255,.18);border:none;color:#fff;width:40px;height:40px;
@@ -57,9 +57,9 @@ main{padding:18px 16px;max-width:560px;margin:0 auto}
 
 /* ---------- hero balance ---------- */
 .hero{
-  background:linear-gradient(150deg,var(--brand) 0%,#0C6349 100%);
+  background:linear-gradient(150deg,var(--brand) 0%,#3E7D22 100%);
   border-radius:24px;padding:26px 24px;color:#fff;margin-bottom:16px;
-  box-shadow:0 8px 24px rgba(15,123,90,.22);position:relative;overflow:hidden;
+  box-shadow:0 8px 24px rgba(84,163,47,.22);position:relative;overflow:hidden;
 }
 .hero::after{content:'';position:absolute;right:-40px;top:-40px;width:160px;height:160px;
   background:rgba(255,255,255,.07);border-radius:50%}
@@ -93,7 +93,7 @@ main{padding:18px 16px;max-width:560px;margin:0 auto}
 /* ---------- big alert ---------- */
 .alert{border-radius:var(--r);padding:18px 20px;margin-bottom:14px;display:flex;gap:14px;align-items:flex-start}
 .alert.due{background:var(--red-pale);border:1.5px solid #F5C6C6}
-.alert.ok{background:var(--brand-pale);border:1.5px solid #C3E8D8}
+.alert.ok{background:var(--brand-pale);border:1.5px solid #CDE8B8}
 .alert .ico{font-size:26px;line-height:1}
 .alert .t{font-weight:700;font-size:15.5px;margin-bottom:2px}
 .alert .d{font-size:14px;color:var(--mut)}
@@ -103,7 +103,7 @@ main{padding:18px 16px;max-width:560px;margin:0 auto}
   font-size:17px;font-weight:700;cursor:pointer;letter-spacing:-.2px;text-align:center;
   text-decoration:none;transition:transform .08s}
 .btn:active{transform:scale(.985)}
-.btn.primary{background:var(--brand);color:#fff;box-shadow:0 4px 14px rgba(15,123,90,.28)}
+.btn.primary{background:var(--brand);color:#fff;box-shadow:0 4px 14px rgba(84,163,47,.28)}
 .btn.accent{background:var(--accent);color:#3D2800;box-shadow:0 4px 14px rgba(255,176,32,.34)}
 .btn.ghost{background:#fff;color:var(--brand);border:2px solid var(--brand)}
 .btn.quiet{background:var(--brand-pale);color:var(--brand)}
@@ -171,6 +171,18 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--brand)}
 .nav .dot{position:absolute;top:8px;right:50%;margin-right:-20px;width:9px;height:9px;
   background:var(--red);border-radius:50%}
 
+/* ---------- profile ---------- */
+.profile{border-top:4px solid var(--brand)}
+.profile-head{display:flex;align-items:center;gap:14px;padding-bottom:16px;
+  border-bottom:1px solid var(--line);margin-bottom:4px}
+.avatar{width:56px;height:56px;border-radius:50%;flex-shrink:0;
+  background:linear-gradient(140deg,var(--brand) 0%,var(--brand-lt) 100%);
+  color:#fff;display:flex;align-items:center;justify-content:center;
+  font-size:20px;font-weight:700;letter-spacing:-.5px;
+  box-shadow:0 3px 10px rgba(84,163,47,.32)}
+.profile .nm{font-size:17px;font-weight:700;letter-spacing:-.3px}
+.profile .em{font-size:14px;color:var(--mut);margin-top:2px;word-break:break-all}
+
 /* ---------- misc ---------- */
 .note{font-size:13.5px;color:var(--mut);line-height:1.55}
 .err{background:var(--red-pale);color:var(--red);padding:14px;border-radius:14px;
@@ -211,9 +223,8 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
 <div id="v-login">
   <main class="stack">
     <div class="center" style="margin-bottom:32px">
-      <div style="font-size:56px;line-height:1">🏡</div>
-      <h1 class="big" style="margin-top:10px">PorchPay</h1>
-      <p class="note">Every payment, one step closer to home.</p>
+      <img src="/logo-full.png" alt="Porch Pay" style="width:230px;max-width:72%;height:auto">
+      <p class="note" style="margin-top:10px">Every payment, one step closer to home.</p>
     </div>
     <div class="card">
       <div id="login-err" class="err hidden"></div>
@@ -282,7 +293,7 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
 <!-- ══════════ MAIN APP ══════════ -->
 <div id="v-app" class="hidden">
   <div class="topbar">
-    <div class="brand">🏡 <span id="hdr">PorchPay</span></div>
+    <div class="brand"><img src="/logo-mark-white.png" alt="" style="height:26px;width:auto;display:block"><span id="hdr">Porch Pay</span></div>
     <button class="gear" onclick="go('more')" aria-label="Settings">⚙️</button>
   </div>
   <main>
@@ -418,11 +429,16 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
 
     <!-- ───── MORE / SETTINGS ───── -->
     <section id="tab-more" class="hidden">
-      <div class="card">
-        <h2>Account</h2>
-        <div class="row"><span class="k">Name</span><span class="v" id="s-name"></span></div>
-        <div class="row"><span class="k">Email</span><span class="v" id="s-email"></span></div>
+      <div class="card profile">
+        <div class="profile-head">
+          <div class="avatar" id="s-initials">—</div>
+          <div class="who">
+            <div class="nm" id="s-name">—</div>
+            <div class="em" id="s-email"></div>
+          </div>
+        </div>
         <div class="row"><span class="k">Terms accepted</span><span class="v" id="s-terms"></span></div>
+        <div class="row"><span class="k">Account type</span><span class="v">Tenant buyer</span></div>
       </div>
 
       <div class="card">
@@ -533,14 +549,14 @@ async function enter(){
 }
 
 // ---------- navigation ----------
-const TITLES={home:'PorchPay',pay:'Make a Payment',loan:'My Loan',docs:'Documents',activity:'Payment History',msgs:'Messages',more:'Settings'};
+const TITLES={home:'Porch Pay',pay:'Make a Payment',loan:'My Loan',docs:'Documents',activity:'Payment History',msgs:'Messages',more:'Settings'};
 function go(t){
   tab=t;
   for(const k of ['home','pay','loan','docs','activity','msgs','more']){
     const s=$('tab-'+k); if(s) s.classList.toggle('hidden',k!==t);
     const b=$('nb-'+k); if(b) b.classList.toggle('on',k===t);
   }
-  $('hdr').textContent = TITLES[t]||'PorchPay';
+  $('hdr').textContent = TITLES[t]||'Porch Pay';
   if(t==='msgs') pollMsgs();
   if(t==='docs') loadDocs();
   window.scrollTo(0,0);
@@ -636,7 +652,14 @@ function render(){
   if(slips.length) $('open-slips').innerHTML=slips.map(s=>slipHtml(s)).join('');
 
   // settings
-  if(ME){ $('s-name').textContent=ME.name||''; $('s-email').textContent=ME.email||''; }
+  if(ME){
+    $('s-name').textContent=ME.name||'';
+    $('s-email').textContent=ME.email||'';
+    const parts=(ME.name||'').trim().split(/\s+/).filter(Boolean);
+    $('s-initials').textContent = parts.length
+      ? (parts[0][0]+(parts.length>1?parts[parts.length-1][0]:'')).toUpperCase()
+      : (ME.email||'?')[0].toUpperCase();
+  }
   $('s-terms').textContent = DATA.terms_accepted_at ? fdate(String(DATA.terms_accepted_at).slice(0,10)) : '—';
   locOn=!!DATA.location_consent_at; locUi(); if(locOn) sendPing();
   runCalc();

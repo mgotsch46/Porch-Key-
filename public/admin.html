@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="icon" type="image/svg+xml" href="/icon.svg">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<title>PorchPay Admin — Loan Servicing</title>
+<title>Porch Pay Admin — Loan Servicing</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -15,18 +15,18 @@
 :root{
   --nav:#0E3A4D;         /* deep teal navy */
   --nav2:#16536B;
-  --brand:#0F7B5A;       /* green */
-  --brand-lt:#16A374;
-  --brand-pale:#E6F6EF;
+  --brand:#54A32F;       /* green */
+  --brand-lt:#6FBF45;
+  --brand-pale:#EFF8E7;
   --accent:#FFB020;      /* bright amber */
   --accent-pale:#FFF4DE;
   --sky:#2D9CDB;
-  --ink:#10231C;
-  --mut:#5F7871;
-  --line:#E2EDE8;
-  --bg:#F4FAF7;
+  --ink:#16220D;
+  --mut:#6B7A5F;
+  --line:#E6EEDD;
+  --bg:#F7FBF3;
   --card:#fff;
-  --green:#0F7B5A;
+  --green:#54A32F;
   --red:#D64545;
   --red-pale:#FDECEC;
   --amber:#B7791F;
@@ -41,6 +41,13 @@ aside .co{padding:0 20px 14px;font-size:12px;color:#9FC4D2;margin-top:-8px}
 aside button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:none;color:#C5DBE4;padding:12px 20px;font-size:14.5px;font-family:inherit;cursor:pointer;border-left:3px solid transparent}
 aside button:hover{background:rgba(255,255,255,.06);color:#fff}
 aside button.active{background:var(--nav2);color:#fff;border-left-color:var(--accent);font-weight:600}
+aside .me-chip{display:flex;align-items:center;gap:9px;margin:0 12px 14px;padding:9px 11px;
+  background:rgba(255,255,255,.07);border-radius:11px;border-left:3px solid var(--brand)}
+aside .me-chip .av{width:32px;height:32px;border-radius:50%;flex-shrink:0;
+  background:linear-gradient(140deg,var(--brand) 0%,var(--brand-lt) 100%);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
+aside .me-chip .nm{font-size:13px;font-weight:600;color:#fff;line-height:1.25}
+aside .me-chip .rl{font-size:11px;color:#9FC4D2;text-transform:capitalize}
 aside .badge{background:var(--accent);color:#3D2800;border-radius:20px;padding:1px 8px;font-size:11px;font-weight:700;margin-left:auto}
 main{flex:1;padding:28px;max-width:1280px}
 h1{font-size:24px;margin-bottom:18px;letter-spacing:-.6px;font-weight:700}
@@ -63,7 +70,7 @@ tr.click{cursor:pointer} tr.click:hover{background:var(--brand-pale)}
 .pill.due{background:var(--red-pale);color:var(--red)}
 .pill.gray{background:#EDF2F0;color:var(--mut)}
 .pill.amber{background:var(--accent-pale);color:#8A5A00}
-button.primary{background:var(--brand);color:#fff;border:none;border-radius:11px;padding:12px 20px;font-size:14.5px;font-weight:700;font-family:inherit;cursor:pointer;box-shadow:0 2px 8px rgba(15,123,90,.24)}
+button.primary{background:var(--brand);color:#fff;border:none;border-radius:11px;padding:12px 20px;font-size:14.5px;font-weight:700;font-family:inherit;cursor:pointer;box-shadow:0 2px 8px rgba(84,163,47,.24)}
 button.primary:hover{background:var(--brand-lt)}
 button.accent{background:var(--accent);color:#3D2800;border:none;border-radius:11px;padding:12px 20px;font-size:14.5px;font-weight:700;font-family:inherit;cursor:pointer}
 button.small{background:#EDF2F0;color:var(--ink);border:none;border-radius:9px;padding:7px 14px;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;margin-left:5px}
@@ -106,7 +113,7 @@ a{color:var(--brand);font-weight:600}
 
 <div id="v-login" class="hidden" style="max-width:380px;margin:80px auto;padding:0 16px">
   <div class="card">
-    <div style="text-align:center;margin-bottom:18px"><div style="font-size:40px">🏡</div><h1 style="font-size:22px;margin-top:6px">PorchPay Admin</h1><p class="note">Loan servicing portal</p></div>
+    <div style="text-align:center;margin-bottom:18px"><img src="/logo-full.png" alt="Porch Pay" style="width:190px;max-width:80%;height:auto"><p class="note" style="margin-top:8px">Loan servicing portal</p></div>
     <div id="login-err" class="err hidden"></div>
     <div class="field"><label>Email</label><input id="li-email" type="email"></div>
     <div class="field"><label>Password</label><input id="li-pw" type="password" onkeydown="if(event.key==='Enter')doLogin()"></div>
@@ -116,8 +123,9 @@ a{color:var(--brand);font-weight:600}
 
 <div id="v-app" class="layout hidden">
   <aside>
-    <div class="logo">🏡 PorchPay <span style="font-weight:400;font-size:12px;opacity:.7">Admin</span></div>
+    <div class="logo"><img src="/logo-mark-white.png" alt="" style="height:22px;width:auto;vertical-align:-4px;margin-right:7px">Porch Pay <span style="font-weight:400;font-size:12px;opacity:.7">Admin</span></div>
     <div class="co" id="co-name"></div>
+    <div class="me-chip" id="me-chip"></div>
     <button id="nv-dash" class="active" onclick="nav('dash')">Dashboard</button>
     <button id="nv-loans" onclick="nav('loans')">Loans</button>
     <button id="nv-newdeal" onclick="nav('newdeal')">➕ New Deal</button>
@@ -558,6 +566,12 @@ async function pmlDraw(){
 async function loadDash(){
   const d = await api('/api/admin/summary');
   if(d.company) $('co-name').textContent = d.company.name;
+  if(d.user){
+    const parts=(d.user.name||'').trim().split(/\s+/).filter(Boolean);
+    const ini = parts.length ? (parts[0][0]+(parts.length>1?parts[parts.length-1][0]:'')).toUpperCase() : '?';
+    $('me-chip').innerHTML =
+      `<span class="av">${esc(ini)}</span><span><span class="nm">${esc(d.user.name)}</span><br><span class="rl">${esc(d.user.role)}</span></span>`;
+  }
   $('d-stats').innerHTML = [
     ['Active loans', d.active_loans],
     ['Total balance', fmt(d.total_balance_cents)],

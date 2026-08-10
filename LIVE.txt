@@ -1,0 +1,78 @@
+PorchPay is LIVE
+================
+
+Admin portal (you)
+    https://porchpay-production.up.railway.app/admin
+
+    Email:    marisa@reneweqllc.com
+    Password: PorchPay-7EF94CBD!
+
+    The app will force you to set a new password on first sign-in.
+
+
+Buyer app (your tenant buyers)
+    https://porchpay-production.up.railway.app/
+
+    Buyers can add this to their phone home screen — it installs like
+    a native app. You create their logins in the admin portal.
+
+
+Public pages (needed for app store submission)
+    /privacy          Privacy Policy
+    /terms            Terms of Use
+    /support          Support page  <-- put your real contact info here
+    /delete-account   Account deletion
+
+
+FIRST THINGS TO DO
+------------------
+1. Sign in and change your password.
+2. Settings -> confirm the company name (currently "RenewEQ").
+3. New Deal -> create your first property, buyer and loan.
+4. Edit public/support.html with your real phone and email, then push.
+
+
+WHAT'S RUNNING
+--------------
+GitHub:   github.com/mgotsch46/Porch-Key-  (branch: main)
+Railway:  project "Porch Key", service "porchpay", region sfo
+Volume:   mounted at /data — loans and documents survive redeploys
+Signups:  CLOSED (only your company exists). Set SIGNUPS_OPEN=true
+          in Railway when you want other investors to self-register.
+
+
+TO UPDATE THE APP LATER
+-----------------------
+Edit files in C:\Users\mgots\Downloads\PorchPay-repo then:
+
+    cd /d "C:\Users\mgots\Downloads\PorchPay-repo"
+    git add -A
+    git commit -m "describe what changed"
+    git push
+
+Railway rebuilds automatically. Your data is untouched.
+
+
+STILL TO CONNECT (whenever you're ready)
+----------------------------------------
+Stripe — card, bank transfer, Cash App Pay
+    1. dashboard.stripe.com -> Developers -> API keys -> secret key
+    2. Railway -> porchpay -> Variables -> add STRIPE_SECRET_KEY
+    3. Stripe -> Webhooks -> Add endpoint:
+       https://porchpay-production.up.railway.app/api/stripe/webhook
+       event: checkout.session.completed
+    4. Add the signing secret as STRIPE_WEBHOOK_SECRET
+    5. Stripe -> Settings -> Payment methods -> enable Cash App Pay
+       and ACH Direct Debit
+
+PayNearMe — cash at Walmart / 7-Eleven / CVS
+    Apply at paynearme.com. Once approved add PNM_API_KEY, PNM_SITE_ID
+    and PNM_WEBHOOK_SECRET, and give them this callback URL:
+       https://porchpay-production.up.railway.app/api/paynearme/webhook
+    Until then cash codes work manually — the buyer generates a code,
+    you mark it paid in the admin portal.
+
+Anthropic — AI reading of closing docs and bank statements
+    console.anthropic.com -> API key -> add as ANTHROPIC_API_KEY
+
+Full details in DEPLOY.md and APP-STORE-CHECKLIST.md.

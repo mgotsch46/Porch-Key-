@@ -1,0 +1,65 @@
+PorchPay — one command to finish
+================================
+
+That error means the terminal was in the wrong folder. My fault — I left
+two similarly named folders in Downloads. The correct one is this one:
+
+    C:\Users\mgots\Downloads\PorchPay-repo        <-- THIS ONE (capital P, K, "-repo")
+    C:\Users\mgots\Downloads\porchpay             <-- leftover, please delete
+
+Use the command below and the folder can't be wrong, because it changes
+directory for you.
+
+
+COPY AND PASTE THIS WHOLE LINE
+------------------------------
+Press the Windows key, type  cmd , press Enter, then paste:
+
+    cd /d "C:\Users\mgots\Downloads\PorchPay-repo" && git push -u origin main
+
+A browser window pops up to sign in to GitHub. Approve it. Done.
+
+
+If you're in PowerShell instead of cmd, paste this version:
+
+    cd "C:\Users\mgots\Downloads\PorchPay-repo"; git push -u origin main
+
+
+How to tell it worked
+---------------------
+You'll see something like:
+
+    Enumerating objects: 33, done.
+    ...
+    To https://github.com/mgotsch46/Porch-Key-.git
+     * [new branch]      main -> main
+
+Then tell me and I'll finish the Railway deploy.
+
+
+Troubleshooting
+---------------
+"git is not recognized as an internal or external command"
+    Git isn't installed. https://git-scm.com/download/win
+    Install with all defaults, close the terminal, open a new one, retry.
+
+"Authentication failed" or it asks for a password
+    Don't type your GitHub password — it won't work.
+    Choose the browser sign-in option if offered. If it keeps failing,
+    install Git for Windows (link above), which includes the credential
+    manager that handles this properly.
+
+"Updates were rejected"
+    Run:  git push -u origin main --force
+    (Safe — the repo was empty.)
+
+
+Already done for you on Railway
+-------------------------------
+  - Service "Porch-Key-" in project "Porch Key"
+  - Persistent volume mounted at /data (loans survive redeploys)
+  - Environment variables set
+
+Your first admin login (the app forces a change on first sign-in):
+    Email:    marisa@reneweqllc.com
+    Password: PorchPay-7EF94CBD!

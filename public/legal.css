@@ -1,7 +1,7 @@
 /* Shared styling for the public legal + support pages (PorchPay) */
 :root{
-  --ink:#10231c; --mut:#5d7269; --line:#dfe9e4;
-  --brand:#0F7B5A; --brand-ink:#0a5540; --accent:#FFB020; --bg:#F6FBF8; --card:#fff;
+  --ink:#10231c; --mut:#5d7269; --line:#E6EEDD;
+  --brand:#54A32F; --brand-ink:#3E7D22; --accent:#FFB020; --bg:#F7FBF3; --card:#fff;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{
@@ -20,7 +20,7 @@ h2:first-child{margin-top:0}
 p,li{font-size:15px;margin-bottom:10px}
 ul,ol{padding-left:22px}
 .updated{font-size:13px;color:var(--mut);margin-bottom:18px}
-.callout{background:#EAF7F1;border-left:4px solid var(--brand);padding:14px 16px;border-radius:0 10px 10px 0;margin:16px 0;font-size:14.5px}
+.callout{background:#EFF8E7;border-left:4px solid var(--brand);padding:14px 16px;border-radius:0 10px 10px 0;margin:16px 0;font-size:14.5px}
 .warn{background:#FFF6E5;border-left-color:var(--accent)}
 a{color:var(--brand);font-weight:600}
 table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
