@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delete Your Account — PorchPay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/legal.css">
+</head>
+<body>
+<header><div class="wrap">
+  <div class="logo">🏡 PorchPay</div>
+  <p>Delete your account</p>
+</div></header>
+<main>
+<div class="card">
+  <h1>Delete your PorchPay account</h1>
+  <p class="updated">This page satisfies Google Play's requirement for a web-accessible account deletion route.
+  You can also delete your account inside the app under Settings → Delete account.</p>
+
+  <h2>What gets deleted</h2>
+  <ul>
+    <li>Your login and password</li>
+    <li>Your name, email address, and phone number</li>
+    <li>Your location history, if you ever turned location sharing on</li>
+    <li>Your consent records</li>
+    <li>The text of messages you sent</li>
+  </ul>
+
+  <h2>What is kept, and why</h2>
+  <div class="callout warn">
+    <p style="margin:0">Your loan's payment ledger is retained in de-identified form. Lending and loan servicing
+    records carry legal retention requirements, so your Servicer must keep a record of what was paid and when.
+    <b>Deleting your app account does not cancel your loan or change what you owe.</b> Your obligations under
+    your contract continue.</p>
+  </div>
+
+  <h2>Delete now</h2>
+  <p>Sign in to confirm it's you, then confirm deletion. This cannot be undone.</p>
+  <div id="msg"></div>
+  <div id="step1">
+    <div style="margin-bottom:12px"><input id="email" type="email" placeholder="Email address"
+      style="width:100%;padding:13px;border:1.5px solid var(--line);border-radius:10px;font-size:16px;font-family:inherit"></div>
+    <div style="margin-bottom:12px"><input id="pw" type="password" placeholder="Password"
+      style="width:100%;padding:13px;border:1.5px solid var(--line);border-radius:10px;font-size:16px;font-family:inherit"></div>
+    <button class="btn" onclick="signIn()">Sign in to continue</button>
+  </div>
+  <div id="step2" style="display:none">
+    <p>Signed in as <b id="who"></b>. Type <b>DELETE</b> below to confirm.</p>
+    <div style="margin-bottom:12px"><input id="confirm" placeholder="DELETE"
+      style="width:100%;padding:13px;border:1.5px solid var(--line);border-radius:10px;font-size:16px;font-family:inherit"></div>
+    <button class="btn danger" onclick="doDelete()">Permanently delete my account</button>
+  </div>
+</div>
+</main>
+<footer>
+  <a href="/">PorchPay</a> · <a href="/terms">Terms of Use</a> · <a href="/privacy">Privacy</a> ·
+  <a href="/support">Support</a> · <a href="/delete-account">Delete account</a>
+</footer>
+<script>
+const $ = id => document.getElementById(id);
+function note(text, ok) {
+  $('msg').innerHTML = `<div class="callout ${ok?'':'warn'}" style="margin-bottom:16px">${text}</div>`;
+}
+async function api(path, opts={}) {
+  const res = await fetch(path, { headers:{'Content-Type':'application/json'}, credentials:'same-origin', ...opts });
+  const json = await res.json().catch(()=>({}));
+  if (!res.ok) throw new Error(json.error || 'Something went wrong');
+  return json;
+}
+async function signIn() {
+  try {
+    const me = await api('/api/login', { method:'POST', body: JSON.stringify({ email:$('email').value, password:$('pw').value }) });
+    $('who').textContent = me.email;
+    $('step1').style.display = 'none';
+    $('step2').style.display = '';
+    note('');
+  } catch(e) { note(e.message); }
+}
+async function doDelete() {
+  try {
+    const r = await api('/api/account/delete', { method:'POST', body: JSON.stringify({ confirm: $('confirm').value }) });
+    $('step2').style.display = 'none';
+    note('✅ ' + r.message + ' You may close this page.', true);
+  } catch(e) { note(e.message); }
+}
+(async () => { try { const me = await api('/api/me'); $('who').textContent = me.email;
+  $('step1').style.display='none'; $('step2').style.display=''; } catch {} })();
+</script>
+</body>
+</html>

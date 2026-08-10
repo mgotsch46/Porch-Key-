@@ -1,0 +1,339 @@
+// End-to-end API test. Run: DATA_DIR=/tmp/testdata node test.js (server must NOT be running on 3001)
+process.env.DATA_DIR = process.env.DATA_DIR || '/tmp/testdata-' + Date.now();
+process.env.PORT = 3001;
+process.env.ADMIN_EMAIL = 'admin@test.com';
+process.env.ADMIN_PASSWORD = 'TestAdmin123!';
+require('./server.js');
+
+const BASE = 'http://localhost:3001';
+let adminCookie = '', tbCookie = '';
+let pass = 0, fail = 0;
+function ok(cond, name) { if (cond) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗ FAIL:', name); } }
+
+async function req(path, opts = {}, cookie = adminCookie) {
+  const res = await fetch(BASE + path, {
+    headers: { 'Content-Type': 'application/json', Cookie: cookie }, ...opts,
+  });
+  const setC = res.headers.get('set-cookie');
+  const json = await res.json().catch(() => ({}));
+  return { status: res.status, json, cookie: setC ? setC.split(';')[0] : null };
+}
+
+async function main() {
+  await new Promise(r => setTimeout(r, 800));
+  console.log('— auth');
+  let r = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'admin@test.com', password: 'TestAdmin123!' }) }, '');
+  ok(r.status === 200 && r.json.role === 'owner', 'owner login');
+  adminCookie = r.cookie;
+  r = await req('/api/change-password', { method: 'POST', body: JSON.stringify({ password: 'TestAdmin123!' }) });
+  ok(r.status === 200, 'change password');
+
+  console.log('— deal setup');
+  r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '123 Oak St', city: 'Columbus', state: 'OH', zip: '43004', trust_name: 'Oak Street Trust', trustee: 'ABC Trustee LLC' }) });
+  ok(r.status === 200 && r.json.id, 'create property');
+  const propId = r.json.id;
+  r = await req('/api/admin/tenants', { method: 'POST', body: JSON.stringify({ name: 'Jane Buyer', email: 'jane@test.com', phone: '555-0100' }) });
+  ok(r.status === 200 && r.json.temp_password, 'create tenant buyer w/ temp password');
+  const tbId = r.json.id, tempPw = r.json.temp_password;
+
+  // Loan: $100,000 @ 9.5% for 360 months => payment should be ~$840.85
+  r = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+    property_id: propId, tenant_user_id: tbId, loan_type: 'land_trust_beneficial_interest',
+    sale_price_cents: 12000000, down_payment_cents: 2000000, principal_cents: 10000000,
+    interest_rate_bps: 950, term_months: 360, escrow_cents: 25000, late_fee_cents: 5000,
+    grace_days: 5, first_payment_date: '2026-06-01', beneficial_interest_pct: 90 }) });
+  ok(r.status === 200 && r.json.loan, 'create loan');
+  const loanId = r.json.loan.id;
+  const pmt = r.json.loan.payment_cents;
+  ok(Math.abs(pmt - 84085) <= 2, `auto payment calc ~ $840.85 (got $${(pmt/100).toFixed(2)})`);
+
+  console.log('— loan detail & schedule');
+  r = await req('/api/admin/loans/' + loanId);
+  ok(r.json.schedule.length === 360, 'amortization schedule 360 rows');
+  const firstRow = r.json.schedule[0];
+  ok(Math.abs(firstRow.interest_cents - Math.round(10000000 * 0.095 / 12)) <= 1, 'first month interest = balance * rate/12');
+  ok(r.json.status.payments_due >= 2, 'payments due counted (loan started 2026-06)');
+  ok(r.json.status.is_past_due, 'loan shows past due before any payments');
+
+  console.log('— recurring & one-time charges');
+  r = await req(`/api/admin/loans/${loanId}/charges`, { method: 'POST', body: JSON.stringify({ description: 'Servicing fee', category: 'servicing_fee', amount_cents: 2500, recurring: true, start_date: '2026-06-01' }) });
+  ok(r.status === 200, 'add recurring servicing fee');
+  r = await req(`/api/admin/loans/${loanId}/charges`, { method: 'POST', body: JSON.stringify({ description: 'Repair bill', amount_cents: 15000, recurring: false }) });
+  ok(r.status === 200, 'add one-time charge');
+  r = await req('/api/admin/loans/' + loanId);
+  ok(r.json.loan.fees_due_cents >= 15000 + 2500 * 2, `fees accrued incl recurring months (fees_due=$${(r.json.loan.fees_due_cents/100).toFixed(2)})`);
+
+  console.log('— payments & allocation');
+  const owed = r.json.status.owed_now_cents;
+  r = await req(`/api/admin/loans/${loanId}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 100000, method: 'cash', memo: 'test payment' }) });
+  ok(r.status === 200 && r.json.alloc, 'record manual payment');
+  ok(r.json.alloc.to_fees_cents > 0, 'allocation pays fees first');
+  ok(r.json.alloc.to_interest_cents > 0, 'allocation pays interest');
+  r = await req('/api/admin/loans/' + loanId);
+  const led = r.json.ledger.filter(l => l.type === 'payment');
+  ok(led.length === 1 && led[0].amount_cents === 100000, 'ledger entry recorded');
+
+  console.log('— notices (late + legal, read receipts)');
+  r = await req('/api/admin/notice-sweep', { method: 'POST', body: '{}' });
+  ok(r.status === 200, 'run notice sweep');
+  r = await req(`/api/admin/loans/${loanId}/notices`);
+  const lateN = r.json.find(n => n.type === 'late_notice');
+  const legalN = r.json.find(n => n.type === 'legal_notice');
+  ok(!!lateN, 'late notice auto-sent');
+  ok(!!legalN, 'legal notice auto-escalated (>15 days past due)');
+  ok(!lateN.read_at, 'notice unread initially');
+
+  console.log('— tenant buyer side');
+  r = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'jane@test.com', password: tempPw }) }, '');
+  ok(r.status === 200 && r.json.must_change_password, 'TB login with temp password');
+  tbCookie = r.cookie;
+  r = await req('/api/change-password', { method: 'POST', body: JSON.stringify({ password: 'JanePass123!' }) }, tbCookie);
+  ok(r.status === 200, 'TB sets own password');
+
+  console.log('— consent gate (App Store / Play requirement)');
+  r = await req('/api/tenant/loan', {}, tbCookie);
+  ok(r.status === 451, 'loan data blocked until terms accepted');
+  r = await req('/api/tenant/messages', { method: 'POST', body: JSON.stringify({ body: 'hi' }) }, tbCookie);
+  ok(r.status === 451, 'messaging blocked until terms accepted');
+  r = await req('/api/tenant/pay/cash-slip', { method: 'POST', body: JSON.stringify({ amount_cents: 5000 }) }, tbCookie);
+  ok(r.status === 451, 'payments blocked until terms accepted');
+  r = await req('/api/tenant/accept-terms', { method: 'POST', body: JSON.stringify({ accept_terms: true }) }, tbCookie);
+  ok(r.status === 400, 'must accept BOTH terms and privacy');
+  r = await req('/api/tenant/accept-terms', { method: 'POST', body: JSON.stringify({ accept_terms: true, accept_privacy: true }) }, tbCookie);
+  ok(r.status === 200, 'TB accepts terms + privacy');
+  r = await req('/api/tenant/consents', {}, tbCookie);
+  ok(r.json.terms_accepted_at && r.json.history.some(h => h.kind === 'messaging'), 'consent audit trail recorded');
+
+  r = await req('/api/tenant/loan', {}, tbCookie);
+  ok(r.status === 200 && r.json.loan.id === loanId, 'TB sees own loan');
+  ok(r.json.loan.principal_balance_cents <= 10000000, 'TB sees current balance');
+  // $1,000 payment: $225 fees + $775 toward $791.67 interest => nothing to principal (correct waterfall)
+  ok(r.json.loan.interest_due_cents > 0, 'interest shortfall carried forward when payment < fees+interest');
+  ok(r.json.charges.some(c => c.category === 'servicing_fee'), 'TB sees recurring cost breakdown');
+  ok(r.json.payoff.total_cents > 0, 'TB payoff quote');
+  r = await req('/api/tenant/notices', {}, tbCookie);
+  ok(r.json.length >= 2, 'TB sees notices');
+  const nid = r.json[0].id;
+  r = await req(`/api/tenant/notices/${nid}/read`, { method: 'POST', body: '{}' }, tbCookie);
+  ok(r.status === 200, 'TB opens notice');
+  r = await req(`/api/admin/loans/${loanId}/notices`);
+  ok(r.json.find(n => n.id === nid).read_at, 'admin sees read receipt ✓✓');
+
+  console.log('— messaging');
+  r = await req('/api/tenant/messages', { method: 'POST', body: JSON.stringify({ body: 'Hi, I paid part of it!' }) }, tbCookie);
+  ok(r.status === 200, 'TB sends message');
+  r = await req('/api/admin/messages');
+  ok(r.json.length === 1 && r.json[0].unread >= 1, 'admin sees unread thread');
+  r = await req(`/api/admin/loans/${loanId}/messages`, { method: 'POST', body: JSON.stringify({ body: 'Got it — thanks!' }) });
+  ok(r.status === 200, 'admin replies');
+  r = await req('/api/tenant/messages', {}, tbCookie);
+  ok(r.json.length >= 3, 'TB sees full thread (incl notice ping)');
+
+  console.log('— cash at retail');
+  r = await req('/api/tenant/pay/cash-slip', { method: 'POST', body: JSON.stringify({ amount_cents: 110000 }) }, tbCookie);
+  ok(r.status === 200 && r.json.slip_code.startsWith('CP-'), 'TB generates cash payment code');
+  const slipId = r.json.id;
+  r = await req('/api/admin/cash-slips');
+  ok(r.json.some(s => s.id === slipId && s.status === 'open'), 'admin sees open slip');
+  r = await req(`/api/admin/cash-slips/${slipId}/mark-paid`, { method: 'POST', body: '{}' });
+  ok(r.status === 200, 'admin marks slip paid');
+  r = await req('/api/tenant/loan', {}, tbCookie);
+  ok(r.json.ledger.filter(l => l.type === 'payment').length === 2, 'cash payment posted to ledger');
+
+  console.log('— expenses');
+  r = await req('/api/admin/expenses', { method: 'POST', body: JSON.stringify({ description: 'Home Depot materials', amount_cents: 23456, category: 'materials' }) });
+  ok(r.status === 200 && r.json.status === 'unassigned', 'manual expense starts unassigned');
+  r = await req(`/api/admin/expenses/${r.json.id}`, { method: 'PUT', body: JSON.stringify({ property_id: propId, status: 'assigned' }) });
+  ok(r.json.status === 'assigned', 'expense assigned to property');
+
+  console.log('— document center');
+  const b64 = Buffer.from('%PDF-1.4 fake policy').toString('base64');
+  r = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+    filename: 'policy2026.pdf', mime: 'application/pdf', data_base64: b64, loan_id: loanId,
+    category: 'insurance', title: '2026 Homeowners Policy', effective_date: '2026-01-01', visible_to_tenant: true }) });
+  ok(r.status === 200 && r.json.visible_to_tenant === 1, 'upload shared insurance doc');
+  const insDocId = r.json.id;
+  r = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+    filename: 'profit-analysis.pdf', mime: 'application/pdf', data_base64: b64, loan_id: loanId,
+    category: 'private', title: 'Deal analysis', visible_to_tenant: true }) });
+  ok(r.json.visible_to_tenant === 0, 'private category forces admin-only even if flag set');
+  const privDocId = r.json.id;
+  r = await req(`/api/admin/loans/${loanId}/documents`);
+  ok(r.json.insurance.documents.length === 1, 'admin sees insurance folder');
+  ok(r.json.private.documents.length === 1 && !r.json.private.shared, 'admin sees private vault');
+  ok(['loan_docs','insurance','taxes','utilities','correspondence','private'].every(c => r.json[c]), 'all folders present as placeholders');
+  r = await req('/api/tenant/documents', {}, tbCookie);
+  ok(r.json.length === 5, 'TB sees 5 shared folders (placeholders included)');
+  ok(r.json.find(f => f.category === 'insurance').documents.length === 1, 'TB sees shared insurance doc');
+  ok(!r.json.some(f => f.documents.some(d => d.id === privDocId)), 'TB never sees private docs');
+  r = await req(`/api/documents/${privDocId}/download`, {}, tbCookie);
+  ok(r.status === 403, 'TB blocked from downloading private doc');
+  r = await req(`/api/admin/documents/${insDocId}`, { method: 'PUT', body: JSON.stringify({ category: 'private' }) });
+  ok(r.json.visible_to_tenant === 0, 'moving doc to private revokes buyer access');
+  r = await req('/api/tenant/documents', {}, tbCookie);
+  ok(r.json.find(f => f.category === 'insurance').documents.length === 0, 'TB no longer sees moved doc');
+  r = await req(`/api/admin/documents/${privDocId}`, { method: 'DELETE' });
+  ok(r.status === 200, 'delete document');
+
+  console.log('— PML loans');
+  r = await req('/api/admin/pml', { method: 'POST', body: JSON.stringify({
+    property_id: propId, lender_name: 'Smith Capital LLC', lender_contact: 'bob@smithcap.com',
+    lien_position: 1, principal_cents: 7000000, interest_rate_bps: 1200, term_months: 120,
+    payment_type: 'interest_only', first_payment_date: '2026-06-01' }) });
+  ok(r.status === 200 && r.json.id, 'create PML loan');
+  const pmlId = r.json.id;
+  ok(r.json.payment_cents === Math.round(7000000 * 0.12 / 12), `interest-only payment auto-calc ($${(r.json.payment_cents/100).toFixed(2)})`);
+  r = await req('/api/admin/pml/' + pmlId);
+  ok(r.json.tb_loan && r.json.tb_loan.id === loanId, 'PML links to TB loan on same property');
+  ok(r.json.monthly_spread_cents === (pmt + 25000) - 70000, `monthly spread = TB payment − PML payment ($${(r.json.monthly_spread_cents/100).toFixed(2)})`);
+  r = await req(`/api/admin/pml/${pmlId}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 80000 }) });
+  ok(r.json.to_interest_cents === 70000 && r.json.to_principal_cents === 10000, 'PML payment: interest first, rest to principal');
+  ok(r.json.balance_cents === 6990000, 'PML balance reduced');
+  r = await req(`/api/admin/pml/${pmlId}/draw`, { method: 'POST', body: JSON.stringify({ amount_cents: 500000, memo: 'rehab draw' }) });
+  ok(r.json.balance_cents === 7490000, 'PML draw increases balance');
+
+  console.log('— location (opt-in)');
+  r = await req('/api/tenant/location', { method: 'POST', body: JSON.stringify({ lat: 40.1, lng: -83.0 }) }, tbCookie);
+  ok(r.status === 403, 'location rejected without consent');
+  r = await req('/api/tenant/location/consent', { method: 'POST', body: JSON.stringify({ consent: true }) }, tbCookie);
+  ok(r.status === 200, 'TB grants location consent');
+  r = await req('/api/tenant/location', { method: 'POST', body: JSON.stringify({ lat: 40.1, lng: -83.0, accuracy_m: 25 }) }, tbCookie);
+  ok(r.status === 200, 'location ping accepted after consent');
+  r = await req(`/api/admin/tenants/${tbId}/location`);
+  ok(r.json.consent_at && r.json.last_ping && r.json.last_ping.lat === 40.1, 'admin sees consented last location');
+  r = await req('/api/tenant/location/consent', { method: 'POST', body: JSON.stringify({ consent: false }) }, tbCookie);
+  r = await req(`/api/admin/tenants/${tbId}/location`);
+  ok(!r.json.consent_at && !r.json.last_ping, 'revoking consent deletes location history');
+
+  console.log('— multi-company isolation');
+  r = await req('/api/signup', { method: 'POST', body: JSON.stringify({
+    company_name: 'Rival Holdings LLC', name: 'Rival Owner', email: 'rival@test.com', password: 'RivalPass123!' }) }, '');
+  ok(r.status === 200 && r.json.role === 'owner', 'second company self-signup');
+  const rivalCookie = r.cookie;
+  r = await req('/api/admin/summary', {}, rivalCookie);
+  ok(r.json.active_loans === 0 && r.json.loans.length === 0, 'new company sees zero loans (no leakage)');
+  r = await req('/api/admin/loans', {}, rivalCookie);
+  ok(r.json.length === 0, 'rival sees no loans list');
+  r = await req('/api/admin/properties', {}, rivalCookie);
+  ok(r.json.length === 0, 'rival sees no properties');
+  r = await req('/api/admin/tenants', {}, rivalCookie);
+  ok(r.json.length === 0, 'rival sees no tenant buyers');
+  r = await req('/api/admin/loans/' + loanId, {}, rivalCookie);
+  ok(r.status === 404, 'rival blocked from company A loan by direct ID');
+  r = await req(`/api/admin/loans/${loanId}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 5000 }) }, rivalCookie);
+  ok(r.status === 404, 'rival cannot post payment to company A loan');
+  r = await req(`/api/admin/loans/${loanId}/documents`, {}, rivalCookie);
+  ok(r.status === 404, 'rival cannot list company A documents');
+  r = await req('/api/admin/pml/' + pmlId, {}, rivalCookie);
+  ok(r.status === 404, 'rival cannot read company A PML loan');
+  r = await req('/api/admin/pml', {}, rivalCookie);
+  ok(r.json.length === 0, 'rival PML list empty');
+  r = await req('/api/admin/expenses', {}, rivalCookie);
+  ok(r.json.length === 0, 'rival sees no expenses');
+  r = await req('/api/admin/messages', {}, rivalCookie);
+  ok(r.json.length === 0, 'rival sees no message threads');
+  r = await req('/api/admin/cash-slips', {}, rivalCookie);
+  ok(r.json.length === 0, 'rival sees no cash slips');
+  r = await req(`/api/admin/tenants/${tbId}/location`, {}, rivalCookie);
+  ok(r.status === 404, 'rival cannot read company A buyer location');
+  r = await req(`/api/admin/loans/${loanId}/notices`, {}, rivalCookie);
+  ok(r.status === 404, 'rival cannot read company A notices');
+  // cross-company write attempt: rival property + company A loan
+  r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '9 Rival Rd' }) }, rivalCookie);
+  const rivalProp = r.json.id;
+  r = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+    property_id: propId, sale_price_cents: 1000, principal_cents: 1000,
+    interest_rate_bps: 500, term_months: 12, first_payment_date: '2026-01-01' }) }, rivalCookie);
+  ok(r.status === 404, 'rival cannot attach loan to company A property');
+  r = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+    property_id: rivalProp, tenant_user_id: tbId, sale_price_cents: 1000, principal_cents: 1000,
+    interest_rate_bps: 500, term_months: 12, first_payment_date: '2026-01-01' }) }, rivalCookie);
+  ok(r.status === 404, 'rival cannot attach company A buyer to its own loan');
+
+  console.log('— owner / staff roles');
+  r = await req('/api/admin/staff', { method: 'POST', body: JSON.stringify({ name: 'Book Keeper', email: 'book@test.com' }) });
+  ok(r.status === 200 && r.json.temp_password, 'owner invites staff admin');
+  const staffCookie = (await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'book@test.com', password: r.json.temp_password }) }, '')).cookie;
+  r = await req('/api/admin/summary', {}, staffCookie);
+  ok(r.status === 200 && r.json.loans.length > 0, 'staff sees company loans');
+  r = await req('/api/admin/staff', { method: 'POST', body: JSON.stringify({ name: 'X', email: 'x@test.com' }) }, staffCookie);
+  ok(r.status === 403, 'staff cannot invite other staff (owner only)');
+  r = await req('/api/admin/company', { method: 'PUT', body: JSON.stringify({ name: 'Hacked' }) }, staffCookie);
+  ok(r.status === 403, 'staff cannot rename company');
+
+  console.log('— archive & delete users');
+  r = await req('/api/admin/tenants', { method: 'POST', body: JSON.stringify({ name: 'Archie Buyer', email: 'archie@test.com' }) });
+  const archId = r.json.id, archPw = r.json.temp_password;
+  r = await req(`/api/admin/tenants/${archId}/archive`, { method: 'POST', body: JSON.stringify({ reason: 'Loan paid off' }) });
+  ok(r.status === 200, 'admin archives a buyer');
+  r = await req('/api/admin/tenants');
+  ok(!r.json.some(t => t.id === archId), 'archived buyer hidden from active list');
+  r = await req('/api/admin/tenants?archived=1');
+  ok(r.json.some(t => t.id === archId && t.archived_reason === 'Loan paid off'), 'archived buyer listed with reason');
+  r = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'archie@test.com', password: archPw }) }, '');
+  ok(r.status === 403, 'archived buyer cannot sign in');
+  r = await req(`/api/admin/tenants/${archId}/restore`, { method: 'POST', body: '{}' });
+  ok(r.status === 200, 'admin restores buyer');
+  r = await req('/api/admin/tenants');
+  ok(r.json.some(t => t.id === archId), 'restored buyer back in active list');
+  r = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'archie@test.com', password: archPw }) }, '');
+  ok(r.status === 200, 'restored buyer can sign in again');
+  r = await req(`/api/admin/tenants/${archId}`, { method: 'DELETE', body: JSON.stringify({ confirm: 'oops' }) });
+  ok(r.status === 400, 'admin delete requires typed confirmation');
+  r = await req(`/api/admin/tenants/${archId}`, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+  ok(r.status === 200, 'admin deletes a buyer');
+  r = await req('/api/admin/tenants');
+  ok(!r.json.some(t => t.id === archId), 'deleted buyer gone from list');
+  r = await req(`/api/admin/tenants/${archId}/archive`, { method: 'POST', body: '{}' });
+  ok(r.status === 404, 'deleted buyer cannot be acted on again');
+  // archive is company-scoped
+  r = await req(`/api/admin/tenants/${tbId}/archive`, { method: 'POST', body: '{}' }, rivalCookie);
+  ok(r.status === 404, 'rival cannot archive company A buyer');
+  r = await req(`/api/admin/tenants/${tbId}`, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) }, rivalCookie);
+  ok(r.status === 404, 'rival cannot delete company A buyer');
+
+  console.log('— security');
+  r = await req('/api/admin/pml', {}, tbCookie);
+  ok(r.status === 403, 'TB cannot see PML loans');
+  r = await req('/api/admin/summary', {}, tbCookie);
+  ok(r.status === 403, 'TB blocked from admin routes');
+  r = await req('/api/tenant/loan', {}, '');
+  ok(r.status === 401, 'anonymous blocked');
+
+  console.log('— account data export & deletion');
+  const expRes = await fetch(BASE + '/api/account/export', { headers: { Cookie: tbCookie } });
+  const expJson = await expRes.json();
+  ok(expRes.status === 200 && expJson.account && expJson.payment_history, 'TB can export their data');
+  ok(!JSON.stringify(expJson).includes('Rival'), 'export contains only their own data');
+  r = await req('/api/account/delete', { method: 'POST', body: JSON.stringify({ confirm: 'nope' }) }, tbCookie);
+  ok(r.status === 400, 'deletion requires typed confirmation');
+  // The buyer has sent messages, made payments and has notices — deletion must still work.
+  r = await req('/api/account/delete', { method: 'POST', body: JSON.stringify({ confirm: 'DELETE' }) }, tbCookie);
+  ok(r.status === 200, 'buyer with messages + payments + notices can delete account');
+  r = await req('/api/me', {}, tbCookie);
+  ok(r.status === 401, 'deleted account session is dead');
+  r = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'jane@test.com', password: 'JanePass123!' }) }, '');
+  ok(r.status === 401, 'deleted account cannot sign back in');
+  r = await req('/api/admin/loans/' + loanId);
+  ok(r.status === 200 && r.json.ledger.length > 0, 'loan ledger survives buyer deletion (legal retention)');
+  ok(r.json.loan.tenant_user_id === null, 'loan detached from deleted buyer');
+  r = await req('/api/admin/tenants');
+  ok(!r.json.some(t => t.email === 'jane@test.com'), 'deleted buyer gone from admin list');
+  r = await req(`/api/admin/loans/${loanId}/messages`);
+  ok(r.json.every(m => m.sender_role !== 'tenant' || m.body === '[message removed at user request]'),
+    'buyer message content anonymized');
+  // Staff removal must survive their recorded activity too
+  r = await req('/api/admin/staff', { method: 'POST', body: JSON.stringify({ name: 'Temp Staff', email: 'temp@test.com' }) });
+  const tempStaff = r.json;
+  const tsCookie = (await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'temp@test.com', password: tempStaff.temp_password }) }, '')).cookie;
+  await req('/api/change-password', { method: 'POST', body: JSON.stringify({ password: 'TempStaff123!' }) }, tsCookie);
+  await req(`/api/admin/loans/${loanId}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 25000, method: 'cash' }) }, tsCookie);
+  r = await req('/api/admin/staff/' + tempStaff.id, { method: 'DELETE' });
+  ok(r.status === 200, 'staff who recorded payments can be removed');
+  r = await req('/api/admin/company');
+  ok(!r.json.staff.some(u => u.email === 'temp@test.com'), 'removed staff gone from team list');
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+}
+main().catch(e => { console.error(e); process.exit(1); });

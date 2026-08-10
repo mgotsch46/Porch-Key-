@@ -1,0 +1,15 @@
+{
+  "name": "loan-servicing-app",
+  "version": "1.0.0",
+  "description": "Loan servicing platform for tenant buyers: communication, payments, and loan details",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

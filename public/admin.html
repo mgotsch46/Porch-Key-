@@ -1,0 +1,1030 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0E3A4D">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<title>PorchPay Admin — Loan Servicing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --nav:#0E3A4D;         /* deep teal navy */
+  --nav2:#16536B;
+  --brand:#0F7B5A;       /* green */
+  --brand-lt:#16A374;
+  --brand-pale:#E6F6EF;
+  --accent:#FFB020;      /* bright amber */
+  --accent-pale:#FFF4DE;
+  --sky:#2D9CDB;
+  --ink:#10231C;
+  --mut:#5F7871;
+  --line:#E2EDE8;
+  --bg:#F4FAF7;
+  --card:#fff;
+  --green:#0F7B5A;
+  --red:#D64545;
+  --red-pale:#FDECEC;
+  --amber:#B7791F;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Space Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:var(--ink);font-size:15px}
+.hidden{display:none!important}
+.layout{display:flex;min-height:100vh}
+aside{width:236px;background:var(--nav);color:#fff;padding:22px 0;flex-shrink:0;position:sticky;top:0;height:100vh;overflow-y:auto}
+aside .logo{padding:0 20px 18px;font-weight:700;font-size:17px;border-bottom:1px solid rgba(255,255,255,.12);margin-bottom:14px;letter-spacing:-.3px}
+aside .co{padding:0 20px 14px;font-size:12px;color:#9FC4D2;margin-top:-8px}
+aside button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:none;color:#C5DBE4;padding:12px 20px;font-size:14.5px;font-family:inherit;cursor:pointer;border-left:3px solid transparent}
+aside button:hover{background:rgba(255,255,255,.06);color:#fff}
+aside button.active{background:var(--nav2);color:#fff;border-left-color:var(--accent);font-weight:600}
+aside .badge{background:var(--accent);color:#3D2800;border-radius:20px;padding:1px 8px;font-size:11px;font-weight:700;margin-left:auto}
+main{flex:1;padding:28px;max-width:1280px}
+h1{font-size:24px;margin-bottom:18px;letter-spacing:-.6px;font-weight:700}
+h2{font-size:15.5px;margin-bottom:12px;font-weight:700;letter-spacing:-.2px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;border-top:4px solid var(--brand)}
+.stat:nth-child(2){border-top-color:var(--sky)}
+.stat:nth-child(3){border-top-color:var(--accent)}
+.stat:nth-child(4){border-top-color:var(--red)}
+.stat .n{font-size:26px;font-weight:700;letter-spacing:-.8px}
+.stat .l{font-size:11.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.8px;font-weight:600;margin-top:2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin-bottom:16px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;color:var(--mut);font-weight:700;padding:10px 8px;border-bottom:2px solid var(--line);white-space:nowrap;font-size:11.5px;text-transform:uppercase;letter-spacing:.5px}
+td{padding:12px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr.click{cursor:pointer} tr.click:hover{background:var(--brand-pale)}
+.right{text-align:right}
+.pill{display:inline-block;padding:3px 11px;border-radius:20px;font-size:11.5px;font-weight:700}
+.pill.ok{background:var(--brand-pale);color:var(--brand)}
+.pill.due{background:var(--red-pale);color:var(--red)}
+.pill.gray{background:#EDF2F0;color:var(--mut)}
+.pill.amber{background:var(--accent-pale);color:#8A5A00}
+button.primary{background:var(--brand);color:#fff;border:none;border-radius:11px;padding:12px 20px;font-size:14.5px;font-weight:700;font-family:inherit;cursor:pointer;box-shadow:0 2px 8px rgba(15,123,90,.24)}
+button.primary:hover{background:var(--brand-lt)}
+button.accent{background:var(--accent);color:#3D2800;border:none;border-radius:11px;padding:12px 20px;font-size:14.5px;font-weight:700;font-family:inherit;cursor:pointer}
+button.small{background:#EDF2F0;color:var(--ink);border:none;border-radius:9px;padding:7px 14px;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;margin-left:5px}
+button.small:hover{background:var(--brand-pale);color:var(--brand)}
+button.small.warn{background:var(--red-pale);color:var(--red)}
+button.primary:disabled{opacity:.5}
+input,select,textarea{padding:11px 13px;border:1.5px solid var(--line);border-radius:10px;font-size:14.5px;width:100%;background:#fff;font-family:inherit;color:var(--ink)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+.field{margin-bottom:13px}
+.field label{display:block;font-size:12.5px;font-weight:700;margin-bottom:5px;color:var(--ink)}
+.err{background:var(--red-pale);color:var(--red);padding:12px;border-radius:11px;font-size:14px;margin-bottom:14px;font-weight:600}
+.okmsg{background:var(--brand-pale);color:var(--brand);padding:12px;border-radius:11px;font-size:14px;margin-bottom:14px;font-weight:600}
+.note{font-size:13px;color:var(--mut);line-height:1.55}
+.msg{max-width:70%;padding:11px 15px;border-radius:16px;margin-bottom:8px;font-size:14px}
+.msg.me{background:var(--brand);color:#fff;margin-left:auto;border-bottom-right-radius:5px}
+.msg.them{background:#EDF2F0;border-bottom-left-radius:5px}
+.msg .t{font-size:10.5px;opacity:.72;margin-top:3px}
+.modal-bg{position:fixed;inset:0;background:rgba(10,35,28,.55);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
+.modal{background:#fff;border-radius:18px;padding:26px;width:100%;max-width:660px;max-height:92vh;overflow:auto}
+.tabs-inline{display:flex;gap:7px;margin-bottom:16px;flex-wrap:wrap}
+.tabs-inline button{background:#EDF2F0;border:none;border-radius:10px;padding:8px 16px;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer;color:var(--mut)}
+.tabs-inline button.active{background:var(--brand);color:#fff}
+.uploadbox{border:2px dashed #B9D3C8;border-radius:14px;padding:26px;text-align:center;color:var(--mut);font-size:14px;cursor:pointer;margin-bottom:14px;background:var(--brand-pale)}
+.uploadbox:hover{border-color:var(--brand);color:var(--brand)}
+a{color:var(--brand);font-weight:600}
+@media (max-width:900px){
+  .layout{flex-direction:column}
+  aside{width:100%;height:auto;position:relative;display:flex;overflow-x:auto;padding:8px;gap:4px}
+  aside .logo,aside .co{display:none}
+  aside button{white-space:nowrap;padding:10px 14px;border-left:none;border-bottom:3px solid transparent;width:auto}
+  aside button.active{border-left:none;border-bottom-color:var(--accent)}
+  main{padding:16px}
+  .grid2,.grid3{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<div id="v-login" class="hidden" style="max-width:380px;margin:80px auto;padding:0 16px">
+  <div class="card">
+    <div style="text-align:center;margin-bottom:18px"><div style="font-size:40px">🏡</div><h1 style="font-size:22px;margin-top:6px">PorchPay Admin</h1><p class="note">Loan servicing portal</p></div>
+    <div id="login-err" class="err hidden"></div>
+    <div class="field"><label>Email</label><input id="li-email" type="email"></div>
+    <div class="field"><label>Password</label><input id="li-pw" type="password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <button class="primary" style="width:100%" onclick="doLogin()">Sign in</button>
+  </div>
+</div>
+
+<div id="v-app" class="layout hidden">
+  <aside>
+    <div class="logo">🏡 PorchPay <span style="font-weight:400;font-size:12px;opacity:.7">Admin</span></div>
+    <div class="co" id="co-name"></div>
+    <button id="nv-dash" class="active" onclick="nav('dash')">Dashboard</button>
+    <button id="nv-loans" onclick="nav('loans')">Loans</button>
+    <button id="nv-newdeal" onclick="nav('newdeal')">➕ New Deal</button>
+    <button id="nv-pml" onclick="nav('pml')">PML Loans</button>
+    <button id="nv-tbs" onclick="nav('tbs')">Tenant Buyers</button>
+    <button id="nv-props" onclick="nav('props')">Properties</button>
+    <button id="nv-exp" onclick="nav('exp')">Expenses <span id="exp-badge" class="badge hidden"></span></button>
+    <button id="nv-msgs" onclick="nav('msgs')">Messages <span id="msg-badge" class="badge hidden"></span></button>
+    <button id="nv-slips" onclick="nav('slips')">Cash Codes</button>
+    <button id="nv-settings" onclick="nav('settings')">⚙️ Settings</button>
+    <button style="margin-top:14px;color:#7FA3B2" onclick="logout()">Sign out</button>
+  </aside>
+  <main>
+    <!-- DASHBOARD -->
+    <section id="pg-dash">
+      <h1>Dashboard</h1>
+      <div class="cards" id="d-stats"></div>
+      <div id="d-integrations" class="note" style="margin-bottom:14px"></div>
+      <div class="card"><h2>Portfolio</h2><div style="overflow-x:auto"><table>
+        <thead><tr><th>Property</th><th>Tenant Buyer</th><th class="right">Balance</th><th class="right">Monthly</th><th>Next due</th><th class="right">Owed now</th><th>Status</th></tr></thead>
+        <tbody id="d-loans"></tbody></table></div></div>
+    </section>
+
+    <!-- LOANS LIST -->
+    <section id="pg-loans" class="hidden">
+      <h1>Loans</h1>
+      <div class="card"><div style="overflow-x:auto"><table>
+        <thead><tr><th>#</th><th>Property</th><th>Tenant Buyer</th><th>Type</th><th class="right">Balance</th><th class="right">Rate</th><th>Status</th></tr></thead>
+        <tbody id="loans-rows"></tbody></table></div></div>
+    </section>
+
+    <!-- LOAN DETAIL -->
+    <section id="pg-loan" class="hidden">
+      <button class="small" onclick="nav('loans')">← All loans</button>
+      <div id="loan-detail" style="margin-top:12px"></div>
+    </section>
+
+    <!-- NEW DEAL -->
+    <section id="pg-newdeal" class="hidden">
+      <h1>New Deal</h1>
+      <div class="card">
+        <h2>1 · Upload closing documents (optional but recommended)</h2>
+        <p class="note" style="margin-bottom:10px">Upload the land contract / trust agreement / settlement statement (PDF or photos). Claude reads them and prefills the deal below for your review.</p>
+        <div class="uploadbox" onclick="document.getElementById('nd-files').click()">📎 Click to choose closing documents</div>
+        <input id="nd-files" type="file" multiple accept=".pdf,image/*" class="hidden" onchange="ndFilesChosen()">
+        <div id="nd-filelist" class="note"></div>
+        <div id="nd-extract-err" class="err hidden"></div>
+        <button id="nd-extract-btn" class="primary hidden" onclick="ndExtract()">🤖 Read documents & prefill deal</button>
+        <div id="nd-extract-status" class="note" style="margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <h2>2 · Deal details</h2>
+        <div class="grid2">
+          <div class="field"><label>Buyer name</label><input id="nd-name"></div>
+          <div class="field"><label>Buyer email</label><input id="nd-email" type="email"></div>
+          <div class="field"><label>Buyer cell phone</label><input id="nd-phone"></div>
+          <div class="field"><label>Agreement type</label><select id="nd-type">
+            <option value="land_contract">Land contract / contract for deed</option>
+            <option value="land_trust_beneficial_interest">Beneficial interest — land trust</option>
+          </select></div>
+        </div>
+        <div class="grid3">
+          <div class="field" style="grid-column:span 2"><label>Property address (also buyer's mailing address)</label><input id="nd-addr"></div>
+          <div class="field"><label>City</label><input id="nd-city"></div>
+          <div class="field"><label>State</label><input id="nd-state"></div>
+          <div class="field"><label>ZIP</label><input id="nd-zip"></div>
+          <div class="field"><label>Trust name (if land trust)</label><input id="nd-trust"></div>
+          <div class="field"><label>Trustee</label><input id="nd-trustee"></div>
+          <div class="field"><label>Beneficial interest %</label><input id="nd-bi" type="number" step="0.1"></div>
+        </div>
+        <div class="grid3">
+          <div class="field"><label>Sale price ($)</label><input id="nd-price" type="number" step="0.01" oninput="ndCalc()"></div>
+          <div class="field"><label>Down payment ($)</label><input id="nd-down" type="number" step="0.01" oninput="ndCalc()"></div>
+          <div class="field"><label>Amount financed ($)</label><input id="nd-fin" type="number" step="0.01" oninput="ndCalc(true)"></div>
+          <div class="field"><label>Interest rate (% APR)</label><input id="nd-rate" type="number" step="0.01" oninput="ndCalc()"></div>
+          <div class="field"><label>Term (months)</label><input id="nd-term" type="number" oninput="ndCalc()"></div>
+          <div class="field"><label>Monthly P&I ($)</label><input id="nd-pi" type="number" step="0.01" placeholder="auto"></div>
+          <div class="field"><label>Monthly escrow ($)</label><input id="nd-escrow" type="number" step="0.01" value="0"></div>
+          <div class="field"><label>Late fee ($)</label><input id="nd-late" type="number" step="0.01" value="0"></div>
+          <div class="field"><label>Grace days</label><input id="nd-grace" type="number" value="5"></div>
+          <div class="field"><label>First payment date</label><input id="nd-first" type="date"></div>
+        </div>
+        <div id="nd-err" class="err hidden"></div>
+        <div id="nd-ok" class="okmsg hidden"></div>
+        <button class="primary" onclick="ndCreate()">Create deal — property, buyer login & loan</button>
+      </div>
+    </section>
+
+    <!-- PML LOANS -->
+    <section id="pg-pml" class="hidden">
+      <h1>Private Money Lender Loans</h1>
+      <p class="note" style="margin-bottom:12px">Loans you owe against your properties. Never visible to tenant buyers.</p>
+      <div class="cards" id="pml-stats"></div>
+      <button class="primary" style="margin-bottom:14px" onclick="pmlModal()">+ Add PML loan</button>
+      <div class="card"><div style="overflow-x:auto"><table>
+        <thead><tr><th>Lender</th><th>Property</th><th>Lien</th><th>Type</th><th class="right">Balance</th><th class="right">Rate</th><th class="right">PML pmt</th><th class="right">TB pmt</th><th class="right">Spread</th><th>Status</th></tr></thead>
+        <tbody id="pml-rows"></tbody></table></div></div>
+    </section>
+
+    <!-- PML DETAIL -->
+    <section id="pg-pmld" class="hidden">
+      <button class="small" onclick="nav('pml')">← All PML loans</button>
+      <div id="pml-detail" style="margin-top:12px"></div>
+    </section>
+
+    <!-- TENANT BUYERS -->
+    <section id="pg-tbs" class="hidden">
+      <h1>Tenant Buyers</h1>
+      <div class="card">
+        <div class="tabs-inline">
+          <button id="tbf-active" class="active" onclick="tbArchived=false;loadTBs()">Active</button>
+          <button id="tbf-arch" onclick="tbArchived=true;loadTBs()">Archived</button>
+        </div>
+        <table>
+        <thead><tr><th>Name</th><th>Email</th><th>Cell</th><th>Property / Loan</th><th></th></tr></thead>
+        <tbody id="tb-rows"></tbody></table>
+        <div id="tb-temp" class="okmsg hidden" style="margin-top:10px"></div>
+      </div>
+    </section>
+
+    <!-- PROPERTIES -->
+    <section id="pg-props" class="hidden">
+      <h1>Properties</h1>
+      <div class="card"><table>
+        <thead><tr><th>Address</th><th>Trust / Trustee</th><th class="right">Expenses to date</th></tr></thead>
+        <tbody id="prop-rows"></tbody></table></div>
+    </section>
+
+    <!-- EXPENSES -->
+    <section id="pg-exp" class="hidden">
+      <h1>Property Expenses</h1>
+      <div class="card">
+        <h2>Import a bank / credit card statement</h2>
+        <p class="note" style="margin-bottom:10px">Upload a statement (PDF or CSV). Claude extracts every expense; you then assign each one to a property or ignore it.</p>
+        <div class="uploadbox" onclick="document.getElementById('st-file').click()">🏦 Click to choose a statement</div>
+        <input id="st-file" type="file" accept=".pdf,.csv,image/*" class="hidden" onchange="importStatement()">
+        <div id="st-status" class="note"></div>
+      </div>
+      <div class="card">
+        <div class="tabs-inline">
+          <button id="ef-unassigned" class="active" onclick="expFilter='unassigned';loadExpenses()">To review</button>
+          <button id="ef-assigned" onclick="expFilter='assigned';loadExpenses()">Assigned</button>
+          <button id="ef-ignored" onclick="expFilter='ignored';loadExpenses()">Ignored</button>
+        </div>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>Date</th><th>Description</th><th class="right">Amount</th><th>Category</th><th style="min-width:220px">Property</th><th></th></tr></thead>
+          <tbody id="exp-rows"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- MESSAGES -->
+    <section id="pg-msgs" class="hidden">
+      <h1>Messages</h1>
+      <div id="msg-threads" class="card"></div>
+      <div id="msg-thread" class="hidden">
+        <button class="small" onclick="openMsgs()">← All conversations</button>
+        <div class="card" style="margin-top:12px">
+          <h2 id="mt-title"></h2>
+          <div id="mt-list" style="max-height:420px;overflow:auto;padding:6px 0"></div>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <input id="mt-input" placeholder="Write a message…" style="flex:1" onkeydown="if(event.key==='Enter')sendAdminMsg()">
+            <button class="primary" onclick="sendAdminMsg()">Send</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="pg-settings" class="hidden">
+      <h1>Settings</h1>
+      <div class="card">
+        <h2>Company</h2>
+        <div id="set-err" class="err hidden"></div>
+        <div id="set-ok" class="okmsg hidden"></div>
+        <div class="grid3">
+          <div class="field"><label>Company name</label><input id="co-input"></div>
+          <div class="field"><label>Contact email</label><input id="co-email"></div>
+          <div class="field"><label>Contact phone</label><input id="co-phone"></div>
+        </div>
+        <button class="primary" id="co-save" onclick="saveCompany()">Save company</button>
+      </div>
+      <div class="card">
+        <h2>Team <button class="small" id="staff-add-btn" onclick="staffModal()">+ Invite admin</button></h2>
+        <p class="note" style="margin-bottom:10px">Owners can invite additional admins (bookkeeper, assistant). Admins have full access to loans and buyers but cannot manage the team or company details.</p>
+        <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody id="staff-rows"></tbody></table>
+        <div id="staff-temp" class="okmsg hidden" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <h2>Integrations</h2>
+        <div id="set-integrations"></div>
+        <p class="note" style="margin-top:10px">Integrations are configured with environment variables on the server. See the README for setup.</p>
+      </div>
+      <div class="card">
+        <h2>Buyer app</h2>
+        <p class="note">Your tenant buyers use <b>PorchPay</b> at <a id="tb-url" href="/" target="_blank">this address</a> — they can add it to their phone home screen. Public pages: <a href="/privacy" target="_blank">Privacy</a> · <a href="/terms" target="_blank">Terms</a> · <a href="/support" target="_blank">Support</a></p>
+      </div>
+    </section>
+
+    <!-- CASH SLIPS -->
+    <section id="pg-slips" class="hidden">
+      <h1>Cash Payment Codes</h1>
+      <p class="note" style="margin-bottom:12px">Codes buyers generated to pay cash at a retailer. When connected to PayNearMe these post automatically; until then, mark a code paid when the cash arrives.</p>
+      <div class="card"><div style="overflow-x:auto"><table>
+        <thead><tr><th>Code</th><th>Buyer</th><th>Property</th><th class="right">Amount</th><th>Status</th><th>Created</th><th></th></tr></thead>
+        <tbody id="slip-rows"></tbody></table></div></div>
+    </section>
+  </main>
+</div>
+
+<!-- generic modal -->
+<div id="modal" class="modal-bg hidden" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modal-content"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = c => '$' + ((c||0)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fdate = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let currentLoanId=null, msgLoanId=null, expFilter='unassigned', ndUploadedIds=[], PROPS=[];
+
+async function api(path,opts={}){
+  const res = await fetch(path,{headers:{'Content-Type':'application/json'},credentials:'same-origin',...opts});
+  const json = await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(json.error||'Request failed');
+  return json;
+}
+async function boot(){
+  try{
+    const me = await api('/api/me');
+    if(me.role!=='admin'){ location.href='/'; return; }
+    $('v-login').classList.add('hidden'); $('v-app').classList.remove('hidden');
+    loadDash();
+  }catch{ $('v-login').classList.remove('hidden'); }
+}
+async function doLogin(){
+  $('login-err').classList.add('hidden');
+  try{
+    const me = await api('/api/login',{method:'POST',body:JSON.stringify({email:$('li-email').value,password:$('li-pw').value})});
+    if(me.role!=='admin'){ location.href='/'; return; }
+    location.reload();
+  }catch(e){ $('login-err').textContent=e.message; $('login-err').classList.remove('hidden'); }
+}
+async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
+
+function nav(pg){
+  for(const p of ['dash','loans','loan','newdeal','pml','pmld','tbs','props','exp','msgs','slips','settings']){
+    const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
+    const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
+  }
+  if(pg==='dash')loadDash(); if(pg==='loans')loadLoans(); if(pg==='tbs')loadTBs();
+  if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();}
+  if(pg==='msgs')openMsgs(); if(pg==='slips')loadSlips();
+  if(pg==='newdeal')loadProps();
+  if(pg==='pml'){loadProps();loadPML();}
+  if(pg==='settings')loadSettings();
+}
+
+// ---------- settings ----------
+let IS_OWNER=false;
+async function loadSettings(){
+  const d=await api('/api/admin/company');
+  IS_OWNER=d.is_owner;
+  $('co-input').value=d.company.name||''; $('co-email').value=d.company.contact_email||''; $('co-phone').value=d.company.contact_phone||'';
+  for(const el of ['co-input','co-email','co-phone']) $(el).disabled=!IS_OWNER;
+  $('co-save').style.display=IS_OWNER?'':'none';
+  $('staff-add-btn').style.display=IS_OWNER?'':'none';
+  $('staff-rows').innerHTML=d.staff.map(u=>
+    `<tr><td>${esc(u.name)}${u.archived_at?' <span class="pill gray">archived</span>':''}</td><td>${esc(u.email)}</td>
+     <td>${u.role==='owner'?'<span class="pill ok">owner</span>':'<span class="pill gray">admin</span>'}</td>
+     <td class="right" style="white-space:nowrap">${IS_OWNER&&u.role==='admin'
+       ? (u.archived_at
+          ? `<button class="small" onclick="staffRestore(${u.id})">Restore</button>`
+          : `<button class="small" onclick="staffArchive(${u.id})">Archive</button>`)
+         + `<button class="small warn" onclick="removeStaff(${u.id})">Delete</button>`
+       : ''}</td></tr>`).join('');
+  const s=await api('/api/admin/summary');
+  const chip=(on,label,hint)=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px">
+    <span>${label}<br><span class="note">${hint}</span></span>
+    <span>${on?'<span class="pill ok">connected</span>':'<span class="pill gray">not configured</span>'}</span></div>`;
+  $('set-integrations').innerHTML =
+    chip(s.integrations.stripe,'Stripe','Card, bank transfer &amp; Cash App Pay — set STRIPE_SECRET_KEY')
+    + chip(s.integrations.paynearme,'PayNearMe','Cash at Walmart, 7-Eleven &amp; more — set PNM_API_KEY and PNM_SITE_ID')
+    + chip(s.integrations.ai,'AI document reading','Closing docs &amp; bank statements — set ANTHROPIC_API_KEY');
+  $('tb-url').href=location.origin+'/'; $('tb-url').textContent=location.origin+'/';
+}
+async function saveCompany(){
+  $('set-err').classList.add('hidden'); $('set-ok').classList.add('hidden');
+  try{
+    await api('/api/admin/company',{method:'PUT',body:JSON.stringify({
+      name:$('co-input').value, contact_email:$('co-email').value, contact_phone:$('co-phone').value })});
+    $('set-ok').textContent='Saved.'; $('set-ok').classList.remove('hidden'); loadDash();
+  }catch(e){ $('set-err').textContent=e.message; $('set-err').classList.remove('hidden'); }
+}
+function staffModal(){
+  modal(`<h2>Invite an admin</h2>
+    <p class="note" style="margin-bottom:14px">They'll get full access to loans, buyers and documents for your company — but cannot manage the team or company details.</p>
+    <div class="field"><label>Name</label><input id="st-name"></div>
+    <div class="field"><label>Email</label><input id="st-email" type="email"></div>
+    <div id="st-err" class="err hidden"></div>
+    <button class="primary" onclick="addStaff()">Create login</button>`);
+}
+async function addStaff(){
+  try{
+    const r=await api('/api/admin/staff',{method:'POST',body:JSON.stringify({name:$('st-name').value,email:$('st-email').value})});
+    closeModal(); loadSettings();
+    $('staff-temp').innerHTML=`Login created for <b>${esc(r.email)}</b> — temporary password: <code>${esc(r.temp_password)}</code>. They'll set their own on first sign-in.`;
+    $('staff-temp').classList.remove('hidden');
+  }catch(e){ $('st-err').textContent=e.message; $('st-err').classList.remove('hidden'); }
+}
+async function staffArchive(id){
+  if(!confirm('Archive this admin? They can no longer sign in, but nothing is deleted and you can restore them any time.'))return;
+  await api(`/api/admin/staff/${id}/archive`,{method:'POST',body:'{}'}); loadSettings();
+}
+async function staffRestore(id){
+  await api(`/api/admin/staff/${id}/restore`,{method:'POST',body:'{}'}); loadSettings();
+}
+async function removeStaff(id){
+  if(!confirm('Permanently delete this admin?\n\nTheir name, email and login are erased. Payments and documents they recorded are kept.\n\nThis cannot be undone — archive instead if you might restore them.'))return;
+  await api('/api/admin/staff/'+id,{method:'DELETE'}); loadSettings();
+}
+
+// ---------- PML ----------
+let currentPmlId=null;
+async function loadPML(){
+  const rows=await api('/api/admin/pml');
+  const owed=rows.filter(r=>r.status==='active').reduce((s,r)=>s+r.principal_balance_cents,0);
+  const spread=rows.filter(r=>r.status==='active').reduce((s,r)=>s+r.monthly_spread_cents,0);
+  $('pml-stats').innerHTML=[['Active PML loans',rows.filter(r=>r.status==='active').length],
+    ['Total owed to lenders',fmt(owed)],['Monthly spread',fmt(spread)]]
+    .map(([l,n])=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+  $('pml-rows').innerHTML=rows.map(r=>
+    `<tr class="click" onclick="openPML(${r.id})"><td>${esc(r.lender_name)}</td><td>${esc(r.address||'')}</td>
+     <td>${r.lien_position}</td><td>${r.payment_type.replace('_',' ')}</td>
+     <td class="right">${fmt(r.principal_balance_cents)}</td><td class="right">${(r.interest_rate_bps/100).toFixed(2)}%</td>
+     <td class="right">${fmt(r.payment_cents)}</td><td class="right">${fmt(r.tb_payment_cents)}</td>
+     <td class="right" style="color:${r.monthly_spread_cents>=0?'var(--green)':'var(--red)'}">${fmt(r.monthly_spread_cents)}</td>
+     <td>${r.status==='active'?'<span class="pill ok">active</span>':`<span class="pill gray">${r.status}</span>`}</td></tr>`
+  ).join('')||'<tr><td colspan="10" class="note">No PML loans yet.</td></tr>';
+}
+function pmlModal(){
+  modal(`<h2>Add PML loan</h2>
+    <div class="grid2">
+      <div class="field"><label>Lender name</label><input id="pm-lender"></div>
+      <div class="field"><label>Lender contact (email/phone)</label><input id="pm-contact"></div>
+      <div class="field"><label>Property</label><select id="pm-prop">${PROPS.map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('')}</select></div>
+      <div class="field"><label>Lien position</label><select id="pm-lien"><option value="1">1st</option><option value="2">2nd</option><option value="3">3rd</option></select></div>
+      <div class="field"><label>Principal ($)</label><input id="pm-principal" type="number" step="0.01"></div>
+      <div class="field"><label>Interest rate (% APR)</label><input id="pm-rate" type="number" step="0.01"></div>
+      <div class="field"><label>Term (months)</label><input id="pm-term" type="number"></div>
+      <div class="field"><label>Payment type</label><select id="pm-type">
+        <option value="amortized">Amortized</option><option value="interest_only">Interest only</option><option value="balloon">Balloon</option></select></div>
+      <div class="field"><label>Monthly payment ($ — blank = auto)</label><input id="pm-pmt" type="number" step="0.01"></div>
+      <div class="field"><label>First payment date</label><input id="pm-first" type="date"></div>
+      <div class="field"><label>Balloon due date (if any)</label><input id="pm-balloon" type="date"></div>
+      <div class="field"><label>Notes</label><input id="pm-notes"></div>
+    </div>
+    <div id="pm-err" class="err hidden"></div>
+    <button class="primary" onclick="createPML()">Add PML loan</button>`);
+}
+async function createPML(){
+  try{
+    await api('/api/admin/pml',{method:'POST',body:JSON.stringify({
+      property_id:Number($('pm-prop').value), lender_name:$('pm-lender').value, lender_contact:$('pm-contact').value,
+      lien_position:Number($('pm-lien').value), principal_cents:Math.round(parseFloat($('pm-principal').value)*100),
+      interest_rate_bps:Math.round(parseFloat($('pm-rate').value)*100), term_months:parseInt($('pm-term').value),
+      payment_type:$('pm-type').value, payment_cents:$('pm-pmt').value?Math.round(parseFloat($('pm-pmt').value)*100):null,
+      first_payment_date:$('pm-first').value, balloon_date:$('pm-balloon').value||null, notes:$('pm-notes').value })});
+    closeModal(); loadPML();
+  }catch(e){ $('pm-err').textContent=e.message; $('pm-err').classList.remove('hidden'); }
+}
+async function openPML(id){
+  currentPmlId=id;
+  const f=await api('/api/admin/pml/'+id);
+  nav('pmld');
+  const p=f.pml;
+  $('pml-detail').innerHTML=`
+  <div class="cards">
+    <div class="stat"><div class="n">${fmt(p.principal_balance_cents)}</div><div class="l">Owed to lender</div></div>
+    <div class="stat"><div class="n">${fmt(p.payment_cents)}</div><div class="l">PML payment</div></div>
+    <div class="stat"><div class="n" style="color:${f.monthly_spread_cents>=0?'var(--green)':'var(--red)'}">${fmt(f.monthly_spread_cents)}</div><div class="l">Monthly spread</div></div>
+    <div class="stat"><div class="n" style="color:${f.equity_spread_cents>=0?'var(--green)':'var(--red)'}">${fmt(f.equity_spread_cents)}</div><div class="l">Balance spread (TB − PML)</div></div>
+  </div>
+  <div class="card">
+    <h2>${esc(p.lender_name)} — ${esc(f.property?f.property.address:'')} <span class="pill gray">lien ${p.lien_position}</span></h2>
+    <p class="note">${(p.interest_rate_bps/100).toFixed(2)}% · ${p.term_months} mo · ${p.payment_type.replace('_',' ')} · first payment ${fdate(p.first_payment_date)}${p.balloon_date?' · balloon due '+fdate(p.balloon_date):''}${p.lender_contact?' · '+esc(p.lender_contact):''}</p>
+    <p class="note">Next payment due: ${fdate(f.next_due_date)} · Original principal ${fmt(p.principal_cents)}${p.notes?' · '+esc(p.notes):''}</p>
+    <div style="margin-top:10px"><button class="primary" onclick="pmlPayModal()">Record payment to lender</button>
+      <button class="small" onclick="pmlDrawModal()">Record additional draw</button></div>
+  </div>
+  <div class="card"><h2>Payoff (10-day est.)</h2>
+    ${[['Principal',fmt(f.payoff.principal_cents)],['Interest',fmt(f.payoff.interest_cents)],['<b>Total</b>','<b>'+fmt(f.payoff.total_cents)+'</b>']]
+      .map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13.5px"><span class="note">${k}</span><span>${v}</span></div>`).join('')}
+  </div>
+  <div class="card"><h2>Ledger</h2><div style="overflow-x:auto;max-height:400px"><table>
+    <thead><tr><th>Date</th><th>Type</th><th class="right">Amount</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Balance after</th><th>Memo</th></tr></thead>
+    <tbody>${f.ledger.slice().reverse().map(e=>`<tr><td>${fdate(e.entry_date)}</td><td>${e.type}</td>
+      <td class="right">${fmt(e.amount_cents)}</td><td class="right">${e.to_interest_cents?fmt(e.to_interest_cents):''}</td>
+      <td class="right">${e.to_principal_cents?fmt(e.to_principal_cents):''}</td><td class="right">${e.principal_balance_after_cents!=null?fmt(e.principal_balance_after_cents):''}</td>
+      <td class="note">${esc(e.memo||'')}</td></tr>`).join('')||'<tr><td colspan="7" class="note">No entries yet.</td></tr>'}</tbody></table></div></div>
+  ${f.schedule.length?`<div class="card"><h2>Amortization schedule</h2><div style="max-height:300px;overflow:auto"><table>
+    <thead><tr><th>#</th><th>Date</th><th class="right">Payment</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Balance</th></tr></thead>
+    <tbody>${f.schedule.map(r=>`<tr><td>${r.n}</td><td>${fdate(r.date)}</td><td class="right">${fmt(r.payment_cents)}</td><td class="right">${fmt(r.interest_cents)}</td><td class="right">${fmt(r.principal_cents)}</td><td class="right">${fmt(r.balance_cents)}</td></tr>`).join('')}</tbody></table></div></div>`:''}`;
+}
+function pmlPayModal(){
+  modal(`<h2>Record payment to lender</h2>
+    <div class="grid2">
+      <div class="field"><label>Amount ($)</label><input id="pp-amt" type="number" step="0.01"></div>
+      <div class="field"><label>Date</label><input id="pp-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+    </div>
+    <div class="field"><label>Memo</label><input id="pp-memo"></div>
+    <div id="pp-err" class="err hidden"></div>
+    <button class="primary" onclick="pmlPay()">Post payment</button>`);
+}
+async function pmlPay(){
+  try{
+    await api(`/api/admin/pml/${currentPmlId}/payments`,{method:'POST',body:JSON.stringify({
+      amount_cents:Math.round(parseFloat($('pp-amt').value)*100), entry_date:$('pp-date').value, memo:$('pp-memo').value })});
+    closeModal(); openPML(currentPmlId);
+  }catch(e){ $('pp-err').textContent=e.message; $('pp-err').classList.remove('hidden'); }
+}
+function pmlDrawModal(){
+  modal(`<h2>Record additional draw</h2>
+    <div class="field"><label>Amount ($)</label><input id="pd-amt" type="number" step="0.01"></div>
+    <div class="field"><label>Memo</label><input id="pd-memo" placeholder="e.g. rehab draw #2"></div>
+    <div id="pd-err" class="err hidden"></div>
+    <button class="primary" onclick="pmlDraw()">Add draw</button>`);
+}
+async function pmlDraw(){
+  try{
+    await api(`/api/admin/pml/${currentPmlId}/draw`,{method:'POST',body:JSON.stringify({
+      amount_cents:Math.round(parseFloat($('pd-amt').value)*100), memo:$('pd-memo').value })});
+    closeModal(); openPML(currentPmlId);
+  }catch(e){ $('pd-err').textContent=e.message; $('pd-err').classList.remove('hidden'); }
+}
+
+// ---------- dashboard ----------
+async function loadDash(){
+  const d = await api('/api/admin/summary');
+  if(d.company) $('co-name').textContent = d.company.name;
+  $('d-stats').innerHTML = [
+    ['Active loans', d.active_loans],
+    ['Total balance', fmt(d.total_balance_cents)],
+    ['Past due', d.past_due_count],
+    ['Owed now', fmt(d.owed_now_cents)],
+  ].map(([l,n])=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+  $('d-integrations').innerHTML =
+    `Integrations: Stripe ${d.integrations.stripe?'<span class="pill ok">connected</span>':'<span class="pill gray">not set — add STRIPE_SECRET_KEY</span>'} ·
+     AI document reading ${d.integrations.ai?'<span class="pill ok">enabled</span>':'<span class="pill gray">not set — add ANTHROPIC_API_KEY</span>'}`;
+  $('msg-badge').classList.toggle('hidden', !d.unread_messages);
+  $('msg-badge').textContent = d.unread_messages;
+  $('exp-badge').classList.toggle('hidden', !d.unassigned_expenses);
+  $('exp-badge').textContent = d.unassigned_expenses;
+  $('d-loans').innerHTML = d.loans.map(l=>
+    `<tr class="click" onclick="openLoan(${l.id})"><td>${esc(l.address)}</td><td>${esc(l.tenant)}</td>
+     <td class="right">${fmt(l.balance_cents)}</td><td class="right">${fmt(l.payment_cents)}</td>
+     <td>${fdate(l.next_due_date)}</td><td class="right">${l.owed_now_cents?fmt(l.owed_now_cents):'—'}</td>
+     <td>${l.is_past_due?'<span class="pill due">Past due</span>':'<span class="pill ok">Current</span>'}</td></tr>`
+  ).join('') || '<tr><td colspan="7" class="note">No active loans yet — start with ➕ New Deal.</td></tr>';
+}
+
+// ---------- loans ----------
+async function loadLoans(){
+  const rows = await api('/api/admin/loans');
+  $('loans-rows').innerHTML = rows.map(l=>
+    `<tr class="click" onclick="openLoan(${l.id})"><td>${l.id}</td><td>${esc(l.address)}</td><td>${esc(l.tenant_name||'(unassigned)')}</td>
+     <td>${l.loan_type==='land_trust_beneficial_interest'?'Land trust BI':'Land contract'}</td>
+     <td class="right">${fmt(l.principal_balance_cents)}</td><td class="right">${(l.interest_rate_bps/100).toFixed(2)}%</td>
+     <td>${l.status==='active'?(l.status_info.is_past_due?'<span class="pill due">Past due</span>':'<span class="pill ok">Current</span>'):`<span class="pill gray">${l.status}</span>`}</td></tr>`
+  ).join('') || '<tr><td colspan="7" class="note">No loans yet.</td></tr>';
+}
+async function openLoan(id){
+  currentLoanId=id;
+  const f = await api('/api/admin/loans/'+id);
+  nav('loan');
+  const L=f.loan, S=f.status;
+  $('loan-detail').innerHTML = `
+  <div class="cards">
+    <div class="stat"><div class="n">${fmt(L.principal_balance_cents)}</div><div class="l">Principal balance</div></div>
+    <div class="stat"><div class="n">${fmt(L.payment_cents+L.escrow_cents)}</div><div class="l">Monthly payment</div></div>
+    <div class="stat"><div class="n">${S.owed_now_cents?fmt(S.owed_now_cents):'$0.00'}</div><div class="l">Owed now</div></div>
+    <div class="stat"><div class="n">${fdate(S.next_due_date)}</div><div class="l">Next due</div></div>
+  </div>
+  <div class="card">
+    <h2>${esc(f.property?f.property.address:'')} — ${esc(f.tenant?f.tenant.name:'(no buyer linked)')}
+      ${S.is_past_due?'<span class="pill due">Past due</span>':'<span class="pill ok">Current</span>'}</h2>
+    <p class="note">${L.loan_type==='land_trust_beneficial_interest'?'Beneficial interest in land trust'+(f.property&&f.property.trust_name?' — '+esc(f.property.trust_name)+(f.property.trustee?', trustee: '+esc(f.property.trustee):''):''):'Land contract'} ·
+      ${(L.interest_rate_bps/100).toFixed(2)}% · ${L.term_months} mo · started ${fdate(L.first_payment_date)}
+      ${L.beneficial_interest_pct?' · BI '+L.beneficial_interest_pct+'%':''}</p>
+    <p class="note" style="margin-top:4px">${f.tenant?('📧 '+esc(f.tenant.email)+(f.tenant.phone?' · 📱 '+esc(f.tenant.phone):'')):''} <span id="tb-loc"></span></p>
+    <div style="margin-top:10px">
+      <button class="primary" onclick="recordPaymentModal()">Record payment</button>
+      <button class="small" onclick="lateFee()">Assess late fee (${fmt(L.late_fee_cents)})</button>
+      <button class="small" onclick="chargeModal()">Add charge</button>
+      <button class="small" onclick="docModal()">Upload document</button>
+      <button class="small" onclick="msgLoanId=${L.id};nav('msgs');openThread(${L.id},'${esc(f.property?f.property.address:'')}')">Message buyer</button>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h2>Payoff (10-day est.)</h2>
+      ${[['Principal',fmt(f.payoff.principal_cents)],['Interest',fmt(f.payoff.interest_cents)],['Fees',fmt(f.payoff.fees_cents)],['Escrow credit','-'+fmt(f.payoff.escrow_credit_cents)],['<b>Total</b>','<b>'+fmt(f.payoff.total_cents)+'</b>']].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13.5px"><span class="note">${k}</span><span>${v}</span></div>`).join('')}
+    </div>
+    <div class="card"><h2>Recurring & one-time charges</h2>
+      ${f.charges.length?f.charges.map(c=>`<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13.5px"><span>${esc(c.description)} ${c.recurring?'<span class="pill amber">monthly</span>':'<span class="pill gray">one-time</span>'}</span><span>${fmt(c.amount_cents)} <button class="small warn" onclick="delCharge(${c.id})">✕</button></span></div>`).join(''):'<p class="note">None.</p>'}
+      <div class="note" style="margin-top:6px">Escrow balance: ${fmt(L.escrow_balance_cents)} · Fees due: ${fmt(L.fees_due_cents)}</div>
+    </div>
+  </div>
+  <div class="card"><h2>Notices <button class="small" onclick="customNoticeModal()">Send custom notice</button></h2>
+    <p class="note" style="margin-bottom:8px">Late and legal notices go out automatically when a payment is past grace and nothing has been confirmed received. ✓✓ = buyer opened it (read receipt).</p>
+    <div id="notices-admin"></div>
+  </div>
+  <div class="card"><h2>Document Center <button class="small" onclick="docModal()">+ Upload document</button></h2>
+    <p class="note" style="margin-bottom:10px">Shared folders are visible to the tenant buyer in their app. The private vault is admin-only.</p>
+    <div id="doc-center"></div>
+  </div>
+  <div class="card"><h2>Ledger</h2><div style="overflow-x:auto;max-height:420px"><table>
+    <thead><tr><th>Date</th><th>Type</th><th>Method</th><th class="right">Amount</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Escrow</th><th class="right">Fees</th><th class="right">Balance after</th><th>Memo</th></tr></thead>
+    <tbody>${f.ledger.slice().reverse().map(e=>`<tr><td>${fdate(e.entry_date)}</td><td>${e.type==='late_fee'?'Late fee':e.type}</td><td>${e.method||''}</td>
+      <td class="right" style="color:${e.amount_cents<0?'var(--red)':'var(--green)'}">${fmt(Math.abs(e.amount_cents))}</td>
+      <td class="right">${e.to_interest_cents?fmt(e.to_interest_cents):''}</td><td class="right">${e.to_principal_cents?fmt(e.to_principal_cents):''}</td>
+      <td class="right">${e.to_escrow_cents?fmt(e.to_escrow_cents):''}</td><td class="right">${e.to_fees_cents?fmt(e.to_fees_cents):''}</td>
+      <td class="right">${e.principal_balance_after_cents!=null?fmt(e.principal_balance_after_cents):''}</td><td class="note">${esc(e.memo||'')}</td></tr>`).join('')||'<tr><td colspan="10" class="note">No entries yet.</td></tr>'}</tbody>
+    </table></div></div>
+  <div class="card"><h2>Amortization schedule</h2><div style="max-height:300px;overflow:auto"><table>
+    <thead><tr><th>#</th><th>Date</th><th class="right">Payment</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Balance</th></tr></thead>
+    <tbody>${f.schedule.map(r=>`<tr><td>${r.n}</td><td>${fdate(r.date)}</td><td class="right">${fmt(r.payment_cents)}</td><td class="right">${fmt(r.interest_cents)}</td><td class="right">${fmt(r.principal_cents)}</td><td class="right">${fmt(r.balance_cents)}</td></tr>`).join('')}</tbody></table></div></div>`;
+  loadNoticesAdmin();
+  loadDocCenter();
+  if (f.tenant) loadTBLocation(f.tenant.id);
+}
+async function loadTBLocation(tbId){
+  try{
+    const r = await api(`/api/admin/tenants/${tbId}/location`);
+    if (!r.consent_at) { $('tb-loc').innerHTML = '· 📍 <span class="note">location sharing not enabled</span>'; return; }
+    if (!r.last_ping) { $('tb-loc').innerHTML = '· 📍 <span class="note">consented, no location yet</span>'; return; }
+    const p = r.last_ping;
+    $('tb-loc').innerHTML = `· 📍 <a href="https://maps.google.com/?q=${p.lat},${p.lng}" target="_blank">last location</a> <span class="note">${new Date(p.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</span>`;
+  }catch{}
+}
+async function loadNoticesAdmin(){
+  const rows = await api(`/api/admin/loans/${currentLoanId}/notices`);
+  $('notices-admin').innerHTML = rows.length ? rows.map(n=>`
+    <div style="padding:8px 0;border-bottom:1px solid #eef0f4;font-size:13.5px">
+      <div style="display:flex;justify-content:space-between">
+        <span><b>${esc(n.subject)}</b> <span class="pill ${n.type==='legal_notice'?'due':n.type==='late_notice'?'amber':'gray'}">${n.type.replace('_',' ')}</span></span>
+        <span class="note">Sent ${new Date((n.sent_at||n.created_at)+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
+          ${n.read_at?`· <span style="color:var(--green)">✓✓ Read ${new Date(n.read_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</span>`:'· <span style="color:var(--amber)">Unread</span>'}</span>
+      </div>
+      <details style="margin-top:4px"><summary class="note" style="cursor:pointer">View text</summary><div class="note" style="white-space:pre-wrap;margin-top:6px">${esc(n.body)}</div></details>
+    </div>`).join('') : '<p class="note">No notices sent.</p>';
+}
+function customNoticeModal(){
+  modal(`<h2>Send a custom notice</h2>
+    <div class="field"><label>Subject</label><input id="cn-subj"></div>
+    <div class="field"><label>Notice text</label><textarea id="cn-body" rows="8"></textarea></div>
+    <div id="cn-err" class="err hidden"></div>
+    <button class="primary" onclick="sendCustomNotice()">Send notice</button>`);
+}
+async function sendCustomNotice(){
+  try{
+    await api(`/api/admin/loans/${currentLoanId}/notices`,{method:'POST',body:JSON.stringify({subject:$('cn-subj').value,body:$('cn-body').value})});
+    closeModal(); loadNoticesAdmin();
+  }catch(e){ $('cn-err').textContent=e.message; $('cn-err').classList.remove('hidden'); }
+}
+function modal(html){ $('modal-content').innerHTML=html; $('modal').classList.remove('hidden'); }
+function closeModal(){ $('modal').classList.add('hidden'); }
+function recordPaymentModal(){
+  modal(`<h2>Record a payment</h2>
+    <div class="field"><label>Amount ($)</label><input id="rp-amt" type="number" step="0.01"></div>
+    <div class="grid2">
+      <div class="field"><label>Method</label><select id="rp-method">
+        <option value="cash">Cash (in person)</option><option value="cash_retail">Cash — retail code</option>
+        <option value="check">Check</option><option value="cashapp_manual">Cash App (direct)</option>
+        <option value="zelle">Zelle</option><option value="other">Other</option></select></div>
+      <div class="field"><label>Date</label><input id="rp-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+    </div>
+    <div class="field"><label>Memo</label><input id="rp-memo"></div>
+    <div id="rp-err" class="err hidden"></div>
+    <button class="primary" onclick="recordPayment()">Post payment</button>`);
+}
+async function recordPayment(){
+  try{
+    await api(`/api/admin/loans/${currentLoanId}/payments`,{method:'POST',body:JSON.stringify({
+      amount_cents: Math.round(parseFloat($('rp-amt').value)*100), method: $('rp-method').value,
+      entry_date: $('rp-date').value, memo: $('rp-memo').value })});
+    closeModal(); openLoan(currentLoanId);
+  }catch(e){ $('rp-err').textContent=e.message; $('rp-err').classList.remove('hidden'); }
+}
+async function lateFee(){
+  if(!confirm('Assess the configured late fee on this loan?'))return;
+  await api(`/api/admin/loans/${currentLoanId}/latefee`,{method:'POST',body:'{}'});
+  openLoan(currentLoanId);
+}
+function chargeModal(){
+  modal(`<h2>Add a charge</h2>
+    <div class="field"><label>Description</label><input id="ch-desc" placeholder="e.g. Property insurance, HOA, repair reimbursement"></div>
+    <div class="grid2">
+      <div class="field"><label>Amount ($)</label><input id="ch-amt" type="number" step="0.01"></div>
+      <div class="field"><label>Category</label><select id="ch-cat">
+        <option value="taxes">Taxes</option><option value="insurance">Insurance</option>
+        <option value="utilities">Utilities</option><option value="servicing_fee">Servicing fee</option>
+        <option value="hoa">HOA</option><option value="other" selected>Other</option></select></div>
+      <div class="field"><label>Type</label><select id="ch-rec"><option value="0">One-time (billed now)</option><option value="1">Recurring monthly</option></select></div>
+      <div class="field"><label>Start date (recurring)</label><input id="ch-start" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div class="field"><label>End date (optional)</label><input id="ch-end" type="date"></div>
+    </div>
+    <div id="ch-err" class="err hidden"></div>
+    <button class="primary" onclick="addCharge()">Add charge</button>`);
+}
+async function addCharge(){
+  try{
+    await api(`/api/admin/loans/${currentLoanId}/charges`,{method:'POST',body:JSON.stringify({
+      description:$('ch-desc').value, category:$('ch-cat').value, amount_cents:Math.round(parseFloat($('ch-amt').value)*100),
+      recurring:$('ch-rec').value==='1', start_date:$('ch-start').value||null, end_date:$('ch-end').value||null })});
+    closeModal(); openLoan(currentLoanId);
+  }catch(e){ $('ch-err').textContent=e.message; $('ch-err').classList.remove('hidden'); }
+}
+async function delCharge(id){ if(!confirm('Remove this charge (stops future billing)?'))return; await api('/api/admin/charges/'+id,{method:'DELETE'}); openLoan(currentLoanId); }
+const DOC_ICONS={loan_docs:'📄',insurance:'🛡️',taxes:'🏛️',utilities:'💡',correspondence:'✉️',private:'🔒'};
+async function loadDocCenter(){
+  const folders=await api(`/api/admin/loans/${currentLoanId}/documents`);
+  $('doc-center').innerHTML=Object.entries(folders).map(([cat,f])=>`
+    <div style="border:1px solid ${cat==='private'?'#f0d9d5':'#e6e9ee'};border-radius:10px;padding:12px;margin-bottom:10px;background:${cat==='private'?'#fffaf9':'#fff'}">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b style="font-size:14px">${DOC_ICONS[cat]||'📁'} ${esc(f.label)}</b>
+        <span>${f.shared?'<span class="pill ok">shared with buyer</span>':'<span class="pill due">admin only</span>'}
+          <button class="small" onclick="docModal('${cat}')">+ Add</button></span>
+      </div>
+      ${f.documents.length?f.documents.map(d=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f2f4f7;font-size:13.5px">
+          <span>📎 <a href="/api/documents/${d.id}/download">${esc(d.title||d.filename)}</a>
+            ${d.title?`<span class="note"> — ${esc(d.filename)}</span>`:''}</span>
+          <span class="note" style="white-space:nowrap">${fdate((d.effective_date||d.created_at||'').slice(0,10))}
+            <button class="small" onclick="moveDoc(${d.id})">Move</button>
+            <button class="small warn" onclick="deleteDoc(${d.id})">✕</button></span>
+        </div>`).join('')
+        :'<p class="note" style="margin-top:6px">No documents yet — upload the latest policy, bill, or notice here.</p>'}
+    </div>`).join('');
+}
+function docModal(preset){
+  modal(`<h2>Upload document</h2>
+    <div class="field"><label>File</label><input id="dm-file" type="file" accept=".pdf,image/*,.doc,.docx"></div>
+    <div class="grid2">
+      <div class="field"><label>Folder</label><select id="dm-cat" onchange="dmCatChange()">
+        <option value="loan_docs">📄 Loan Documents</option>
+        <option value="insurance">🛡️ Insurance</option>
+        <option value="taxes">🏛️ Taxes</option>
+        <option value="utilities">💡 Utilities</option>
+        <option value="correspondence">✉️ Correspondence</option>
+        <option value="private">🔒 Private (admin only)</option></select></div>
+      <div class="field"><label>Effective date (optional)</label><input id="dm-date" type="date"></div>
+    </div>
+    <div class="field"><label>Title (optional)</label><input id="dm-title" placeholder="e.g. 2026 Homeowners Policy"></div>
+    <div class="field" id="dm-vis-wrap"><label><input id="dm-vis" type="checkbox" checked style="width:auto;margin-right:6px">Visible to buyer in their app</label></div>
+    <div id="dm-err" class="err hidden"></div>
+    <button class="primary" onclick="uploadLoanDoc()">Upload</button>`);
+  if(preset) $('dm-cat').value=preset;
+  dmCatChange();
+}
+function dmCatChange(){
+  const priv=$('dm-cat').value==='private';
+  $('dm-vis-wrap').style.display=priv?'none':'';
+  if(priv) $('dm-vis').checked=false; else $('dm-vis').checked=true;
+}
+function moveDoc(id){
+  modal(`<h2>Move document</h2>
+    <div class="field"><label>Folder</label><select id="mv-cat">
+      <option value="loan_docs">📄 Loan Documents</option><option value="insurance">🛡️ Insurance</option>
+      <option value="taxes">🏛️ Taxes</option><option value="utilities">💡 Utilities</option>
+      <option value="correspondence">✉️ Correspondence</option><option value="private">🔒 Private (admin only)</option></select></div>
+    <div class="field"><label><input id="mv-vis" type="checkbox" checked style="width:auto;margin-right:6px">Visible to buyer (ignored for private)</label></div>
+    <button class="primary" onclick="saveMoveDoc(${id})">Move</button>`);
+}
+async function saveMoveDoc(id){
+  await api('/api/admin/documents/'+id,{method:'PUT',body:JSON.stringify({category:$('mv-cat').value,visible_to_tenant:$('mv-vis').checked})});
+  closeModal(); loadDocCenter();
+}
+async function deleteDoc(id){
+  if(!confirm('Delete this document permanently?'))return;
+  await api('/api/admin/documents/'+id,{method:'DELETE'});
+  loadDocCenter();
+}
+function fileToB64(file){ return new Promise((ok,err)=>{ const r=new FileReader(); r.onload=()=>ok(r.result.split(',')[1]); r.onerror=err; r.readAsDataURL(file); }); }
+async function uploadLoanDoc(){
+  try{
+    const f=$('dm-file').files[0]; if(!f)throw new Error('Choose a file');
+    const data=await fileToB64(f);
+    await api('/api/admin/documents',{method:'POST',body:JSON.stringify({
+      filename:f.name, mime:f.type, data_base64:data, kind:'closing', loan_id:currentLoanId,
+      category:$('dm-cat').value, title:$('dm-title').value||null, effective_date:$('dm-date').value||null,
+      visible_to_tenant:$('dm-vis').checked })});
+    closeModal(); loadDocCenter();
+  }catch(e){ $('dm-err').textContent=e.message; $('dm-err').classList.remove('hidden'); }
+}
+
+// ---------- new deal ----------
+function ndFilesChosen(){
+  const files=[...$('nd-files').files];
+  $('nd-filelist').textContent = files.map(f=>f.name).join(' · ');
+  $('nd-extract-btn').classList.toggle('hidden', !files.length);
+}
+async function ndExtract(){
+  $('nd-extract-err').classList.add('hidden');
+  $('nd-extract-status').textContent='Uploading & reading documents… this can take up to a minute.';
+  try{
+    ndUploadedIds=[];
+    for(const f of [...$('nd-files').files]){
+      const data=await fileToB64(f);
+      const doc=await api('/api/admin/documents',{method:'POST',body:JSON.stringify({filename:f.name,mime:f.type,data_base64:data,kind:'closing'})});
+      ndUploadedIds.push(doc.id);
+    }
+    const x=await api('/api/admin/ai/extract-loan',{method:'POST',body:JSON.stringify({document_ids:ndUploadedIds})});
+    const set=(id,v)=>{ if(v!=null&&v!=='') $(id).value=v; };
+    set('nd-name',x.buyer_name); set('nd-email',x.buyer_email); set('nd-phone',x.buyer_phone);
+    set('nd-addr',x.property_address); set('nd-city',x.city); set('nd-state',x.state); set('nd-zip',x.zip);
+    if(x.loan_type) $('nd-type').value=x.loan_type;
+    set('nd-trust',x.trust_name); set('nd-trustee',x.trustee); set('nd-bi',x.beneficial_interest_pct);
+    set('nd-price',x.sale_price); set('nd-down',x.down_payment); set('nd-fin',x.amount_financed);
+    set('nd-rate',x.interest_rate_pct); set('nd-term',x.term_months); set('nd-pi',x.monthly_payment_pi);
+    set('nd-escrow',x.monthly_escrow); set('nd-late',x.late_fee); set('nd-grace',x.grace_days); set('nd-first',x.first_payment_date);
+    ndCalc();
+    $('nd-extract-status').innerHTML='✅ Documents read — <b>review every field below before creating the deal.</b>'+(x.notes?' Notes: '+esc(x.notes):'');
+  }catch(e){
+    $('nd-extract-status').textContent='';
+    $('nd-extract-err').textContent=e.message; $('nd-extract-err').classList.remove('hidden');
+  }
+}
+function ndCalc(finEdited){
+  const price=parseFloat($('nd-price').value)||0, down=parseFloat($('nd-down').value)||0;
+  if(!finEdited && price) $('nd-fin').value=(price-down).toFixed(2);
+}
+async function ndCreate(){
+  $('nd-err').classList.add('hidden'); $('nd-ok').classList.add('hidden');
+  try{
+    const name=$('nd-name').value.trim(), email=$('nd-email').value.trim();
+    if(!name||!email) throw new Error('Buyer name and email are required');
+    if(!$('nd-addr').value.trim()) throw new Error('Property address is required');
+    if(!$('nd-fin').value||!$('nd-rate').value||!$('nd-term').value||!$('nd-first').value)
+      throw new Error('Amount financed, rate, term, and first payment date are required');
+    const prop=await api('/api/admin/properties',{method:'POST',body:JSON.stringify({
+      address:$('nd-addr').value, city:$('nd-city').value, state:$('nd-state').value, zip:$('nd-zip').value,
+      trust_name:$('nd-trust').value||null, trustee:$('nd-trustee').value||null })});
+    const tb=await api('/api/admin/tenants',{method:'POST',body:JSON.stringify({name,email,phone:$('nd-phone').value})});
+    const loan=await api('/api/admin/loans',{method:'POST',body:JSON.stringify({
+      property_id:prop.id, tenant_user_id:tb.id, loan_type:$('nd-type').value,
+      sale_price_cents:Math.round(parseFloat($('nd-price').value||$('nd-fin').value)*100),
+      down_payment_cents:Math.round(parseFloat($('nd-down').value||0)*100),
+      principal_cents:Math.round(parseFloat($('nd-fin').value)*100),
+      interest_rate_bps:Math.round(parseFloat($('nd-rate').value)*100),
+      term_months:parseInt($('nd-term').value),
+      payment_cents:$('nd-pi').value?Math.round(parseFloat($('nd-pi').value)*100):undefined,
+      escrow_cents:Math.round(parseFloat($('nd-escrow').value||0)*100),
+      late_fee_cents:Math.round(parseFloat($('nd-late').value||0)*100),
+      grace_days:parseInt($('nd-grace').value||5),
+      first_payment_date:$('nd-first').value,
+      beneficial_interest_pct:$('nd-bi').value?parseFloat($('nd-bi').value):null })});
+    // link uploaded docs to the new loan
+    for(const id of ndUploadedIds){ /* docs already stored; attach via loan update not needed for MVP */ }
+    $('nd-ok').innerHTML=`✅ Deal created. <b>Buyer login:</b> ${esc(email)} · <b>Temporary password:</b> <code>${esc(tb.temp_password)}</code> — share this with the buyer; they'll set their own password on first sign-in.`;
+    $('nd-ok').classList.remove('hidden');
+    window.scrollTo(0,document.body.scrollHeight);
+  }catch(e){ $('nd-err').textContent=e.message; $('nd-err').classList.remove('hidden'); }
+}
+
+// ---------- TBs / properties ----------
+let tbArchived=false;
+async function loadTBs(){
+  $('tbf-active').classList.toggle('active',!tbArchived);
+  $('tbf-arch').classList.toggle('active',tbArchived);
+  const rows=await api('/api/admin/tenants'+(tbArchived?'?archived=1':''));
+  $('tb-rows').innerHTML=rows.map(t=>
+    `<tr><td>${esc(t.name)}${t.terms_accepted_at?'':' <span class="pill amber">terms pending</span>'}
+       ${t.archived_at?` <span class="pill gray">archived</span>`:''}
+       ${t.archived_reason?`<br><span class="note">${esc(t.archived_reason)}</span>`:''}</td>
+     <td>${esc(t.email)}</td><td>${esc(t.phone||'')}</td>
+     <td>${t.loan?`<a href="#" onclick="openLoan(${t.loan.id});return false">${esc(t.loan.address||('Loan #'+t.loan.id))}</a>`:'<span class="note">none</span>'}</td>
+     <td class="right" style="white-space:nowrap">${t.archived_at
+        ? `<button class="small" onclick="restoreTB(${t.id})">Restore</button>`
+        : `<button class="small" onclick="resetTB(${t.id})">Reset password</button>
+           <button class="small" onclick="archiveTB(${t.id},'${esc(t.name)}')">Archive</button>`}
+       <button class="small warn" onclick="deleteTB(${t.id},'${esc(t.name)}')">Delete</button></td></tr>`
+  ).join('')||`<tr><td colspan="5" class="note">${tbArchived?'No archived buyers.':'No tenant buyers yet.'}</td></tr>`;
+}
+function archiveTB(id,name){
+  modal(`<h2>Archive ${esc(name)}</h2>
+    <p class="note" style="margin-bottom:14px">Archiving hides this buyer from your active list and blocks them from signing in.
+      <b>Nothing is deleted</b> — their loan, ledger, documents and messages stay intact, and you can restore them any time.
+      Good for a paid-off buyer or one who has moved on.</p>
+    <div class="field"><label>Reason (optional)</label><input id="ar-reason" placeholder="e.g. Loan paid off March 2026"></div>
+    <div id="ar-err" class="err hidden"></div>
+    <button class="primary" onclick="doArchiveTB(${id})">Archive buyer</button>`);
+}
+async function doArchiveTB(id){
+  try{ await api(`/api/admin/tenants/${id}/archive`,{method:'POST',body:JSON.stringify({reason:$('ar-reason').value})});
+    closeModal(); loadTBs(); }
+  catch(e){ $('ar-err').textContent=e.message; $('ar-err').classList.remove('hidden'); }
+}
+async function restoreTB(id){
+  if(!confirm('Restore this buyer? They will be able to sign in again.'))return;
+  await api(`/api/admin/tenants/${id}/restore`,{method:'POST',body:'{}'}); loadTBs();
+}
+function deleteTB(id,name){
+  modal(`<h2 style="color:var(--red)">Delete ${esc(name)}</h2>
+    <p class="note" style="margin-bottom:12px"><b>This cannot be undone.</b> It permanently erases their name, email,
+      phone, login, consent records and location history, and removes them from the loan.</p>
+    <p class="note" style="margin-bottom:14px">The loan's payment ledger is kept, because lending records carry legal
+      retention duties. If you only want them out of your active list, <b>archive them instead</b> — that keeps everything and is reversible.</p>
+    <div class="field"><label>Type DELETE to confirm</label><input id="dl-confirm" placeholder="DELETE"></div>
+    <div id="dl-err" class="err hidden"></div>
+    <button class="primary" style="background:var(--red)" onclick="doDeleteTB(${id})">Permanently delete</button>`);
+}
+async function doDeleteTB(id){
+  try{ await api(`/api/admin/tenants/${id}`,{method:'DELETE',body:JSON.stringify({confirm:$('dl-confirm').value})});
+    closeModal(); loadTBs(); loadDash(); }
+  catch(e){ $('dl-err').textContent=e.message; $('dl-err').classList.remove('hidden'); }
+}
+async function resetTB(id){
+  if(!confirm('Issue a new temporary password?'))return;
+  const r=await api(`/api/admin/tenants/${id}/reset-password`,{method:'POST',body:'{}'});
+  $('tb-temp').innerHTML=`New temporary password: <code>${esc(r.temp_password)}</code> — share it with the buyer.`;
+  $('tb-temp').classList.remove('hidden');
+}
+async function loadProps(){
+  PROPS=await api('/api/admin/properties');
+  if($('prop-rows')) $('prop-rows').innerHTML=PROPS.map(p=>
+    `<tr><td>${esc(p.address)}${p.city?', '+esc(p.city):''}</td><td class="note">${esc(p.trust_name||'')}${p.trustee?' / '+esc(p.trustee):''}</td><td class="right">${fmt(p.expense_total_cents)}</td></tr>`
+  ).join('')||'<tr><td colspan="3" class="note">No properties yet.</td></tr>';
+}
+
+// ---------- expenses ----------
+async function importStatement(){
+  const f=$('st-file').files[0]; if(!f)return;
+  $('st-status').textContent='Uploading & reading statement… this can take a minute for long statements.';
+  try{
+    const data=await fileToB64(f);
+    const doc=await api('/api/admin/documents',{method:'POST',body:JSON.stringify({filename:f.name,mime:f.type,data_base64:data,kind:'statement'})});
+    const r=await api('/api/admin/ai/extract-transactions',{method:'POST',body:JSON.stringify({document_id:doc.id})});
+    $('st-status').textContent=`✅ Imported ${r.imported} transactions — review them below.`;
+    expFilter='unassigned'; loadExpenses(); loadDash();
+  }catch(e){ $('st-status').textContent='⚠️ '+e.message; }
+}
+async function loadExpenses(){
+  for(const k of ['unassigned','assigned','ignored']) $('ef-'+k).classList.toggle('active',expFilter===k);
+  const rows=await api('/api/admin/expenses?status='+expFilter);
+  const opts=`<option value="">— choose property —</option>`+PROPS.map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('');
+  $('exp-rows').innerHTML=rows.map(e=>
+    `<tr><td>${fdate(e.txn_date)}</td><td>${esc(e.description)}</td><td class="right">${fmt(e.amount_cents)}</td>
+     <td>${esc(e.category||'')}</td>
+     <td>${expFilter==='unassigned'?`<select id="exsel-${e.id}">${opts.replace(`value="${e.property_id}"`,`value="${e.property_id}" selected`)}</select>`:esc(e.address||'')}</td>
+     <td class="right" style="white-space:nowrap">${expFilter==='unassigned'?`<button class="small" onclick="assignExp(${e.id})">Assign</button><button class="small warn" onclick="ignoreExp(${e.id})">Ignore</button>`:''}</td></tr>`
+  ).join('')||`<tr><td colspan="6" class="note">Nothing here.</td></tr>`;
+}
+async function assignExp(id){
+  const sel=$('exsel-'+id); if(!sel.value){alert('Choose a property');return;}
+  await api('/api/admin/expenses/'+id,{method:'PUT',body:JSON.stringify({property_id:Number(sel.value),status:'assigned'})});
+  loadExpenses(); loadDash();
+}
+async function ignoreExp(id){
+  await api('/api/admin/expenses/'+id,{method:'PUT',body:JSON.stringify({status:'ignored'})});
+  loadExpenses(); loadDash();
+}
+
+// ---------- messages ----------
+async function openMsgs(){
+  $('msg-thread').classList.add('hidden'); $('msg-threads').classList.remove('hidden');
+  const th=await api('/api/admin/messages');
+  $('msg-threads').innerHTML='<h2>Conversations</h2>'+(th.length?th.map(t=>
+    `<div class="click" style="padding:10px 4px;border-bottom:1px solid #eef0f4;cursor:pointer;display:flex;justify-content:space-between" onclick="openThread(${t.loan_id},'${esc(t.address||'')}')">
+      <span><b>${esc(t.tenant_name||'Buyer')}</b> — <span class="note">${esc(t.address||'')}</span><br><span class="note">${esc((t.last_message||'').slice(0,80))}</span></span>
+      <span>${t.unread?`<span class="badge">${t.unread}</span>`:''}</span></div>`).join('')
+    :'<p class="note">No conversations yet.</p>');
+}
+async function openThread(loanId,title){
+  msgLoanId=loanId;
+  $('msg-threads').classList.add('hidden'); $('msg-thread').classList.remove('hidden');
+  $('mt-title').textContent=title||'Conversation';
+  const msgs=await api(`/api/admin/loans/${loanId}/messages`);
+  $('mt-list').innerHTML=msgs.map(m=>
+    `<div class="msg ${m.sender_role==='admin'?'me':'them'}">${esc(m.body)}<div class="t">${m.sender_role==='admin'?'You':esc(m.sender_name)} · ${new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div></div>`
+  ).join('')||'<p class="note">No messages yet.</p>';
+  $('mt-list').scrollTop=$('mt-list').scrollHeight;
+  loadDash();
+}
+async function sendAdminMsg(){
+  const v=$('mt-input').value.trim(); if(!v)return;
+  $('mt-input').value='';
+  await api(`/api/admin/loans/${msgLoanId}/messages`,{method:'POST',body:JSON.stringify({body:v})});
+  openThread(msgLoanId,$('mt-title').textContent);
+}
+
+// ---------- cash slips ----------
+async function loadSlips(){
+  const rows=await api('/api/admin/cash-slips');
+  $('slip-rows').innerHTML=rows.map(s=>
+    `<tr><td><code>${esc(s.slip_code)}</code></td><td>${esc(s.tenant_name||'')}</td><td>${esc(s.address||'')}</td>
+     <td class="right">${fmt(s.amount_cents)}</td>
+     <td>${s.status==='open'?'<span class="pill amber">open</span>':s.status==='paid'?'<span class="pill ok">paid</span>':`<span class="pill gray">${s.status}</span>`}</td>
+     <td>${fdate((s.created_at||'').slice(0,10))}</td>
+     <td class="right">${s.status==='open'?`<button class="small" onclick="markSlip(${s.id})">Mark paid</button>`:''}</td></tr>`
+  ).join('')||'<tr><td colspan="7" class="note">No cash codes yet.</td></tr>';
+}
+async function markSlip(id){
+  if(!confirm('Confirm cash was received — this posts the payment to the ledger.'))return;
+  await api(`/api/admin/cash-slips/${id}/mark-paid`,{method:'POST',body:'{}'});
+  loadSlips();
+}
+boot();
+</script>
+</body>
+</html>

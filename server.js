@@ -1,0 +1,1090 @@
+// Loan Servicing App — Express server
+// Tenant buyer app served at "/", admin portal at "/admin".
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { db, get, all, run, hashPassword, verifyPassword } = require('./db');
+const loanEngine = require('./loan');
+const pay = require('./payments');
+const ai = require('./ai');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+// ---------- auth ----------
+function secret() {
+  let s = get("SELECT value FROM settings WHERE key='secret'");
+  if (!s) {
+    const v = crypto.randomBytes(32).toString('hex');
+    run("INSERT INTO settings (key,value) VALUES ('secret',?)", v);
+    return v;
+  }
+  return s.value;
+}
+const SECRET = process.env.APP_SECRET || secret();
+
+function sign(payload) {
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', SECRET).update(data).digest('base64url');
+  return `${data}.${sig}`;
+}
+function verifyToken(token) {
+  if (!token) return null;
+  const [data, sig] = token.split('.');
+  if (!data || !sig) return null;
+  const expected = crypto.createHmac('sha256', SECRET).update(data).digest('base64url');
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  const payload = JSON.parse(Buffer.from(data, 'base64url').toString());
+  if (payload.exp < Date.now()) return null;
+  return payload;
+}
+function getCookie(req, name) {
+  const raw = req.headers.cookie || '';
+  for (const part of raw.split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === name) return decodeURIComponent(v.join('='));
+  }
+  return null;
+}
+// Current published version of the buyer Terms + Privacy Policy. Bump this string
+// whenever the legal text changes and every buyer is re-prompted to accept.
+const TERMS_VERSION = process.env.TERMS_VERSION || '2026-08-09';
+
+// roles: 'super_admin' (platform), 'owner'/'admin' (a servicing company), 'tenant' (buyer)
+const ADMIN_ROLES = ['owner', 'admin'];
+function auth(kind) {
+  return (req, res, next) => {
+    const payload = verifyToken(getCookie(req, 'session'));
+    if (!payload) return res.status(401).json({ error: 'Not signed in' });
+    const user = get(`SELECT id, company_id, email, role, name, phone, must_change_password,
+      terms_accepted_at, terms_version, location_consent_at, deleted_at, archived_at
+      FROM users WHERE id=?`, payload.uid);
+    if (!user || user.deleted_at) return res.status(401).json({ error: 'Not signed in' });
+    if (user.archived_at) return res.status(403).json({ error: 'This account is archived. Contact your servicer.' });
+    if (kind === 'admin' && !ADMIN_ROLES.includes(user.role)) return res.status(403).json({ error: 'Forbidden' });
+    if (kind === 'owner' && user.role !== 'owner') return res.status(403).json({ error: 'Owner access required' });
+    if (kind === 'super' && user.role !== 'super_admin') return res.status(403).json({ error: 'Forbidden' });
+    if (kind === 'tenant' && user.role !== 'tenant') return res.status(403).json({ error: 'Forbidden' });
+    if (ADMIN_ROLES.includes(user.role)) {
+      const co = get('SELECT status FROM companies WHERE id=?', user.company_id);
+      if (co && co.status === 'suspended') return res.status(403).json({ error: 'This account is suspended.' });
+    }
+    req.user = user;
+    req.companyId = user.company_id;
+    next();
+  };
+}
+const adminOnly = auth('admin');
+const ownerOnly = auth('owner');
+const superOnly = auth('super');
+const tenantOnly = auth('tenant');
+const anyUser = auth(null);
+
+// Buyers must accept Terms + Privacy before any loan data, messaging, or payment route.
+function requireTerms(req, res, next) {
+  if (req.user.role === 'tenant' && (!req.user.terms_accepted_at || req.user.terms_version !== TERMS_VERSION)) {
+    return res.status(451).json({ error: 'Terms acceptance required', terms_version: TERMS_VERSION });
+  }
+  next();
+}
+const tenantReady = [tenantOnly, requireTerms];
+
+// Every admin read/write is scoped to the signed-in user's company. These helpers make
+// that the default path so a missing WHERE clause can't leak another company's data.
+function ownedLoan(req, id) {
+  return get('SELECT * FROM loans WHERE id=? AND company_id=?', id, req.companyId);
+}
+function ownedProperty(req, id) {
+  return get('SELECT * FROM properties WHERE id=? AND company_id=?', id, req.companyId);
+}
+
+// ---------- stripe webhook needs raw body, mount before json parser ----------
+app.post('/api/stripe/webhook', express.raw({ type: '*/*' }), (req, res) => {
+  const whSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  const payload = req.body.toString('utf8');
+  if (whSecret && !pay.verifyStripeSignature(payload, req.headers['stripe-signature'], whSecret)) {
+    return res.status(400).send('Bad signature');
+  }
+  try {
+    const event = JSON.parse(payload);
+    if (event.type === 'checkout.session.completed') {
+      const s = event.data.object;
+      if (s.payment_status === 'paid' && s.metadata && s.metadata.loan_id) {
+        postStripePayment(s);
+      }
+    }
+    res.json({ received: true });
+  } catch (e) {
+    res.status(400).send('Bad payload');
+  }
+});
+
+// PayNearMe webhook — posts cash payments automatically once the store confirms.
+app.post('/api/paynearme/webhook', express.raw({ type: '*/*' }), (req, res) => {
+  const payload = req.body.toString('utf8');
+  if (!pay.verifyPnmSignature(payload, req.headers['x-paynearme-signature'], process.env.PNM_WEBHOOK_SECRET)) {
+    return res.status(400).send('Bad signature');
+  }
+  try {
+    // PayNearMe posts form-encoded or JSON depending on config; handle both.
+    let d;
+    try { d = JSON.parse(payload); } catch { d = Object.fromEntries(new URLSearchParams(payload)); }
+    const code = d.site_order_identifier || d.payment_identifier || d.order_identifier;
+    const status = (d.payment_status || d.status || '').toLowerCase();
+    const slip = code ? get('SELECT * FROM cash_slips WHERE slip_code=?', code) : null;
+    if (slip && slip.status === 'open' && (status === 'paid' || status === 'settled' || status === 'complete')) {
+      postPayment(slip.loan_id, slip.amount_cents, 'cash_retail', today(),
+        `pnm:${code}`, `Cash payment at retailer — ${code}`, null);
+      run("UPDATE cash_slips SET status='paid', paid_at=datetime('now') WHERE id=?", slip.id);
+      console.log(`PayNearMe cash payment posted for slip ${code}`);
+    }
+    res.json({ received: true });
+  } catch (e) { res.status(400).send('Bad payload'); }
+});
+
+app.use(express.json({ limit: '60mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+const today = () => new Date().toISOString().slice(0, 10);
+const money = c => (c / 100).toFixed(2);
+
+// ---------- servicing helpers ----------
+function assessRecurringCharges(loan) {
+  const charges = all('SELECT * FROM charges WHERE loan_id=? AND recurring=1 AND active=1', loan.id);
+  for (const ch of charges) {
+    const start = ch.start_date || loan.first_payment_date;
+    const end = ch.end_date && ch.end_date < today() ? ch.end_date : today();
+    let d = new Date(start + 'T00:00:00Z');
+    const now = new Date(end + 'T00:00:00Z');
+    while (d <= now) {
+      const period = d.toISOString().slice(0, 7); // YYYY-MM
+      const tag = `charge:${ch.id}:${period}`;
+      const exists = get('SELECT id FROM ledger WHERE loan_id=? AND memo=?', loan.id, tag);
+      if (!exists) {
+        run(`INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo)
+             VALUES (?,?,?,?,?)`, loan.id, d.toISOString().slice(0, 10), 'fee', -ch.amount_cents, tag);
+        run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', ch.amount_cents, loan.id);
+      }
+      d = loanEngine.addMonthsUTC(d, 1);
+    }
+  }
+  return get('SELECT * FROM loans WHERE id=?', loan.id);
+}
+
+function postPayment(loanId, amountCents, method, entryDate, externalId, memo, createdBy) {
+  let loan = get('SELECT * FROM loans WHERE id=?', loanId);
+  if (!loan) throw new Error('Loan not found');
+  loan = assessRecurringCharges(loan);
+  if (externalId && get('SELECT id FROM ledger WHERE external_id=?', externalId)) {
+    return { duplicate: true };
+  }
+  const alloc = loanEngine.allocatePayment(loan, amountCents, entryDate);
+  const newPrincipal = loan.principal_balance_cents - alloc.to_principal_cents;
+  const newEscrow = loan.escrow_balance_cents + alloc.to_escrow_cents + alloc.unapplied_cents;
+  const newFees = loan.fees_due_cents - alloc.to_fees_cents;
+  const newInterestDue = alloc.interest_shortfall_cents;
+  run(`INSERT INTO ledger (loan_id, entry_date, type, method, amount_cents, to_interest_cents,
+        to_principal_cents, to_escrow_cents, to_fees_cents, principal_balance_after_cents, memo, external_id, created_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    loanId, entryDate, 'payment', method, amountCents, alloc.to_interest_cents,
+    alloc.to_principal_cents, alloc.to_escrow_cents + alloc.unapplied_cents, alloc.to_fees_cents,
+    newPrincipal, memo || null, externalId || null, createdBy || null);
+  run(`UPDATE loans SET principal_balance_cents=?, escrow_balance_cents=?, fees_due_cents=?,
+        interest_due_cents=?, status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
+    newPrincipal, newEscrow, newFees, newInterestDue, newPrincipal, loanId);
+  return { alloc, newPrincipal };
+}
+
+function postStripePayment(session) {
+  const loanId = Number(session.metadata.loan_id);
+  const amount = Number(session.amount_total || session.metadata.amount_cents);
+  const pmType = (session.payment_method_types && session.payment_method_types[0]) || 'card';
+  const method = pmType === 'cashapp' ? 'stripe_cashapp' : pmType === 'us_bank_account' ? 'stripe_ach' : 'stripe_card';
+  return postPayment(loanId, amount, method, today(), `stripe:${session.id}`, 'Online payment', null);
+}
+
+// ---------- automated late / legal notices ----------
+// A payment only counts as "confirmed" once it's on the ledger: admin-recorded payments,
+// Stripe webhook/confirm postings, or cash slips the admin marked paid. The sweep sends a
+// late notice once a payment is past due + grace with nothing confirmed for that period,
+// and escalates to a legal notice after LEGAL_NOTICE_DAYS past due. Read receipts are
+// recorded when the buyer opens the notice in the app.
+const LEGAL_NOTICE_DAYS = Number(process.env.LEGAL_NOTICE_DAYS || 15);
+
+function noticeTemplates(loan, property, tenant, amountDueCents, dueDate, daysPast) {
+  const amt = '$' + (amountDueCents / 100).toFixed(2);
+  const addr = property ? property.address : 'your property';
+  return {
+    late_notice: {
+      subject: `Late Payment Notice — ${addr}`,
+      body: `Dear ${tenant.name},\n\nOur records show that your payment of ${amt} due ${dueDate} for ${addr} has not been received and is now ${daysPast} days past due (beyond the ${loan.grace_days}-day grace period).${loan.late_fee_cents ? ` A late fee of $${(loan.late_fee_cents/100).toFixed(2)} may apply per your agreement.` : ''}\n\nPlease make your payment through the app (card, bank transfer, Cash App Pay, or cash at a participating retailer) or contact us immediately to discuss your account.\n\nIf you have already sent payment, please disregard this notice and message us so we can confirm receipt.\n\n— Loan Servicing`,
+    },
+    legal_notice: {
+      subject: `IMPORTANT: Notice of Default — ${addr}`,
+      body: `Dear ${tenant.name},\n\nThis is a formal notice that your account for ${addr} is seriously past due. The payment of ${amt} due ${dueDate} remains unpaid ${daysPast} days after its due date, and prior notices have not resolved the delinquency.\n\nUnder the terms of your agreement, continued non-payment may result in default proceedings, including forfeiture/eviction action and additional fees and costs as permitted by law.\n\nTo avoid further action, pay the full past-due amount immediately through the app or contact us today to make arrangements.\n\nThis notice is provided in addition to, and does not replace, any notices required to be delivered by other means under your agreement or applicable law.\n\n— Loan Servicing`,
+    },
+  };
+}
+
+function runNoticeSweep() {
+  const loans = all("SELECT * FROM loans WHERE status='active' AND tenant_user_id IS NOT NULL");
+  const nowDate = new Date(today() + 'T00:00:00Z');
+  for (let loan of loans) {
+    try {
+      loan = assessRecurringCharges(loan);
+      const ledger = all('SELECT * FROM ledger WHERE loan_id=?', loan.id);
+      const status = loanEngine.loanStatus(loan, ledger, today());
+      if (!status.is_past_due) continue;
+      // earliest unmet payment period
+      const idx = status.payments_made_equiv; // 0-based count of covered payments
+      const first = new Date(loan.first_payment_date + 'T00:00:00Z');
+      const dueDateObj = loanEngine.addMonthsUTC(first, idx);
+      const dueDate = dueDateObj.toISOString().slice(0, 10);
+      const period = dueDate.slice(0, 7);
+      const daysPast = Math.floor((nowDate - dueDateObj) / 86400000);
+      if (daysPast <= loan.grace_days) continue;
+      const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+      const tenant = get('SELECT * FROM users WHERE id=?', loan.tenant_user_id);
+      const tpl = noticeTemplates(loan, property, tenant, status.owed_now_cents, dueDate, daysPast);
+      const sendNotice = (type) => {
+        if (get('SELECT id FROM notices WHERE loan_id=? AND type=? AND period=?', loan.id, type, period)) return;
+        const t = tpl[type];
+        run('INSERT INTO notices (loan_id, type, period, subject, body) VALUES (?,?,?,?,?)',
+          loan.id, type, period, t.subject, t.body);
+        // also drop it into the message thread so the buyer sees it immediately
+        run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
+          loan.id, get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') ORDER BY id LIMIT 1", loan.company_id).id,
+          `📄 ${t.subject} — open the Notices section on your Home screen to read this important notice.`);
+        console.log(`Sent ${type} for loan ${loan.id} period ${period}`);
+      };
+      sendNotice('late_notice');
+      if (daysPast > LEGAL_NOTICE_DAYS) sendNotice('legal_notice');
+    } catch (e) { console.error('Notice sweep error for loan', loan.id, e.message); }
+  }
+}
+setInterval(runNoticeSweep, 60 * 60 * 1000); // hourly
+setTimeout(runNoticeSweep, 5000);            // shortly after boot
+
+function loanFull(loan) {
+  loan = assessRecurringCharges(loan);
+  const ledger = all('SELECT * FROM ledger WHERE loan_id=? ORDER BY entry_date, id', loan.id);
+  const status = loanEngine.loanStatus(loan, ledger, today());
+  const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+  const tenant = loan.tenant_user_id ? get('SELECT id,name,email,phone FROM users WHERE id=?', loan.tenant_user_id) : null;
+  const charges = all('SELECT * FROM charges WHERE loan_id=? AND active=1', loan.id);
+  return { loan, ledger, status, property, tenant, charges };
+}
+
+// ---------- auth routes ----------
+app.post('/api/login', (req, res) => {
+  const { email, password } = req.body || {};
+  const user = get('SELECT * FROM users WHERE email=? AND deleted_at IS NULL',
+    String(email || '').toLowerCase().trim());
+  if (!user || !verifyPassword(password || '', user.password_hash)) {
+    return res.status(401).json({ error: 'Invalid email or password' });
+  }
+  if (user.archived_at) return res.status(403).json({ error: 'This account is archived. Contact your servicer.' });
+  const token = sign({ uid: user.id, exp: Date.now() + 30 * 86400000 });
+  res.setHeader('Set-Cookie', `session=${token}; HttpOnly; Path=/; Max-Age=${30 * 86400}; SameSite=Lax`);
+  res.json({ id: user.id, name: user.name, role: user.role, email: user.email, must_change_password: !!user.must_change_password });
+});
+app.post('/api/logout', (req, res) => {
+  res.setHeader('Set-Cookie', 'session=; HttpOnly; Path=/; Max-Age=0');
+  res.json({ ok: true });
+});
+app.get('/api/me', anyUser, (req, res) => res.json(req.user));
+app.post('/api/change-password', anyUser, (req, res) => {
+  const { password } = req.body || {};
+  if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  run('UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?', hashPassword(password), req.user.id);
+  res.json({ ok: true });
+});
+
+// ---------- admin: summary ----------
+app.get('/api/admin/summary', adminOnly, (req, res) => {
+  const loans = all("SELECT * FROM loans WHERE status='active' AND company_id=?", req.companyId);
+  let totalBalance = 0, pastDue = 0, owedNow = 0;
+  const loanCards = loans.map(l => {
+    const f = loanFull(l);
+    totalBalance += f.loan.principal_balance_cents;
+    if (f.status.is_past_due) { pastDue++; owedNow += f.status.owed_now_cents; }
+    return {
+      id: l.id, address: f.property ? f.property.address : '', tenant: f.tenant ? f.tenant.name : '(unassigned)',
+      balance_cents: f.loan.principal_balance_cents, owed_now_cents: f.status.owed_now_cents,
+      next_due_date: f.status.next_due_date, is_past_due: f.status.is_past_due, payment_cents: l.payment_cents + l.escrow_cents,
+    };
+  });
+  const unreadMsgs = get(`SELECT COUNT(*) c FROM messages m JOIN loans l ON l.id=m.loan_id
+    WHERE m.read_by_admin=0 AND l.company_id=?`, req.companyId).c;
+  const unassigned = get("SELECT COUNT(*) c FROM expenses WHERE status='unassigned' AND company_id=?", req.companyId).c;
+  const company = get('SELECT id, name FROM companies WHERE id=?', req.companyId);
+  res.json({
+    company, user: { name: req.user.name, role: req.user.role },
+    active_loans: loans.length, total_balance_cents: totalBalance, past_due_count: pastDue,
+    owed_now_cents: owedNow, unread_messages: unreadMsgs, unassigned_expenses: unassigned,
+    loans: loanCards,
+    integrations: { stripe: pay.stripeEnabled(), ai: ai.aiEnabled(), paynearme: pay.pnmEnabled() },
+  });
+});
+
+// ---------- company & staff management ----------
+app.get('/api/admin/company', adminOnly, (req, res) => {
+  const company = get('SELECT * FROM companies WHERE id=?', req.companyId);
+  const staff = all(`SELECT id, name, email, role, archived_at, created_at FROM users
+    WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL ORDER BY id`, req.companyId);
+  res.json({ company, staff, is_owner: req.user.role === 'owner' });
+});
+app.put('/api/admin/company', ownerOnly, (req, res) => {
+  const c = get('SELECT * FROM companies WHERE id=?', req.companyId);
+  run('UPDATE companies SET name=?, contact_email=?, contact_phone=? WHERE id=?',
+    req.body.name || c.name, req.body.contact_email ?? c.contact_email,
+    req.body.contact_phone ?? c.contact_phone, c.id);
+  res.json(get('SELECT * FROM companies WHERE id=?', c.id));
+});
+app.post('/api/admin/staff', ownerOnly, (req, res) => {
+  const { name, email } = req.body || {};
+  if (!name || !email) return res.status(400).json({ error: 'Name and email required' });
+  if (get('SELECT id FROM users WHERE email=?', email.toLowerCase().trim()))
+    return res.status(400).json({ error: 'That email is already in use' });
+  const temp = 'ST-' + crypto.randomInt(100000, 999999) + '!';
+  const r = run(`INSERT INTO users (company_id, email, password_hash, role, name, must_change_password)
+    VALUES (?,?,?,?,?,1)`, req.companyId, email.toLowerCase().trim(), hashPassword(temp), 'admin', name);
+  res.json({ id: r.lastInsertRowid, name, email, temp_password: temp });
+});
+app.delete('/api/admin/staff/:id', ownerOnly, (req, res, next) => {
+  const u = get("SELECT * FROM users WHERE id=? AND company_id=? AND role='admin' AND deleted_at IS NULL",
+    req.params.id, req.companyId);
+  if (!u) return res.status(404).json({ error: 'Staff member not found' });
+  try { eraseUser(u.id, 'admin'); res.json({ ok: true }); } catch (e) { next(e); }
+});
+
+// ---------- company signup (new servicing company self-onboards) ----------
+app.post('/api/signup', (req, res) => {
+  if (process.env.SIGNUPS_OPEN === 'false') return res.status(403).json({ error: 'Signups are closed' });
+  const { company_name, name, email, password } = req.body || {};
+  if (!company_name || !name || !email || !password)
+    return res.status(400).json({ error: 'Company name, your name, email, and password are required' });
+  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  const em = String(email).toLowerCase().trim();
+  if (get('SELECT id FROM users WHERE email=?', em)) return res.status(400).json({ error: 'That email is already registered' });
+  const co = run('INSERT INTO companies (name, contact_email) VALUES (?,?)', company_name, em);
+  const u = run(`INSERT INTO users (company_id, email, password_hash, role, name) VALUES (?,?,?,?,?)`,
+    co.lastInsertRowid, em, hashPassword(password), 'owner', name);
+  const token = sign({ uid: u.lastInsertRowid, exp: Date.now() + 30 * 86400000 });
+  res.setHeader('Set-Cookie', `session=${token}; HttpOnly; Path=/; Max-Age=${30 * 86400}; SameSite=Lax`);
+  res.json({ id: u.lastInsertRowid, name, role: 'owner', company_id: co.lastInsertRowid });
+});
+
+// ---------- platform super admin ----------
+app.get('/api/super/companies', superOnly, (req, res) => {
+  res.json(all(`SELECT c.*,
+    (SELECT COUNT(*) FROM loans WHERE company_id=c.id) AS loan_count,
+    (SELECT COUNT(*) FROM users WHERE company_id=c.id AND role='tenant') AS buyer_count,
+    (SELECT email FROM users WHERE company_id=c.id AND role='owner' ORDER BY id LIMIT 1) AS owner_email
+    FROM companies c ORDER BY c.id DESC`));
+});
+app.put('/api/super/companies/:id', superOnly, (req, res) => {
+  const status = req.body.status;
+  if (!['active', 'suspended'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
+  run('UPDATE companies SET status=? WHERE id=?', status, req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------- admin: properties ----------
+app.get('/api/admin/properties', adminOnly, (req, res) => {
+  const props = all('SELECT * FROM properties WHERE company_id=? ORDER BY id DESC', req.companyId);
+  for (const p of props) {
+    p.expense_total_cents = get("SELECT COALESCE(SUM(amount_cents),0) s FROM expenses WHERE property_id=? AND status='assigned'", p.id).s;
+  }
+  res.json(props);
+});
+app.post('/api/admin/properties', adminOnly, (req, res) => {
+  const { address, city, state, zip, trust_name, trustee, notes } = req.body || {};
+  if (!address) return res.status(400).json({ error: 'Address required' });
+  const r = run('INSERT INTO properties (company_id, address, city, state, zip, trust_name, trustee, notes) VALUES (?,?,?,?,?,?,?,?)',
+    req.companyId, address, city || null, state || null, zip || null, trust_name || null, trustee || null, notes || null);
+  res.json(get('SELECT * FROM properties WHERE id=?', r.lastInsertRowid));
+});
+app.put('/api/admin/properties/:id', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  const b = { ...p, ...req.body };
+  run('UPDATE properties SET address=?, city=?, state=?, zip=?, trust_name=?, trustee=?, notes=? WHERE id=?',
+    b.address, b.city, b.state, b.zip, b.trust_name, b.trustee, b.notes, p.id);
+  res.json(get('SELECT * FROM properties WHERE id=?', p.id));
+});
+
+// ---------- admin: tenant buyers ----------
+app.get('/api/admin/tenants', adminOnly, (req, res) => {
+  const archived = req.query.archived === '1';
+  const rows = all(`SELECT id, name, email, phone, terms_accepted_at, location_consent_at,
+      archived_at, archived_reason, created_at
+    FROM users WHERE role='tenant' AND company_id=? AND deleted_at IS NULL
+      AND archived_at IS ${archived ? 'NOT NULL' : 'NULL'} ORDER BY id DESC`, req.companyId);
+  for (const t of rows) {
+    const loan = get(`SELECT l.id, p.address FROM loans l LEFT JOIN properties p ON p.id=l.property_id
+      WHERE l.tenant_user_id=? AND l.company_id=? ORDER BY l.id DESC LIMIT 1`, t.id, req.companyId);
+    t.loan = loan || null;
+  }
+  res.json(rows);
+});
+app.post('/api/admin/tenants', adminOnly, (req, res) => {
+  const { name, email, phone } = req.body || {};
+  if (!name || !email) return res.status(400).json({ error: 'Name and email required' });
+  if (get('SELECT id FROM users WHERE email=?', email.toLowerCase().trim())) return res.status(400).json({ error: 'Email already exists' });
+  const temp = 'TB-' + crypto.randomInt(100000, 999999) + '!';
+  const r = run('INSERT INTO users (company_id, email, password_hash, role, name, phone, must_change_password) VALUES (?,?,?,?,?,?,1)',
+    req.companyId, email.toLowerCase().trim(), hashPassword(temp), 'tenant', name, phone || null);
+  res.json({ id: r.lastInsertRowid, name, email, phone, temp_password: temp });
+});
+app.post('/api/admin/tenants/:id/reset-password', adminOnly, (req, res) => {
+  const u = get("SELECT id FROM users WHERE id=? AND role='tenant' AND company_id=?", req.params.id, req.companyId);
+  if (!u) return res.status(404).json({ error: 'Buyer not found' });
+  const temp = 'TB-' + crypto.randomInt(100000, 999999) + '!';
+  run('UPDATE users SET password_hash=?, must_change_password=1 WHERE id=?', hashPassword(temp), u.id);
+  res.json({ temp_password: temp });
+});
+
+// ---------- admin: archive, restore, delete users ----------
+// Archiving is reversible and keeps every record — use it for a paid-off buyer or a
+// staffer who left. Deleting erases personal data permanently and cannot be undone.
+function companyUser(req, id, roles) {
+  return get(`SELECT * FROM users WHERE id=? AND company_id=? AND deleted_at IS NULL
+    AND role IN (${roles.map(() => '?').join(',')})`, id, req.companyId, ...roles);
+}
+app.post('/api/admin/tenants/:id/archive', adminOnly, (req, res) => {
+  const u = companyUser(req, req.params.id, ['tenant']);
+  if (!u) return res.status(404).json({ error: 'Buyer not found' });
+  if (u.archived_at) return res.status(400).json({ error: 'Already archived' });
+  run("UPDATE users SET archived_at=datetime('now'), archived_reason=? WHERE id=?",
+    req.body.reason || null, u.id);
+  res.json({ ok: true });
+});
+app.post('/api/admin/tenants/:id/restore', adminOnly, (req, res) => {
+  const u = companyUser(req, req.params.id, ['tenant']);
+  if (!u) return res.status(404).json({ error: 'Buyer not found' });
+  run('UPDATE users SET archived_at=NULL, archived_reason=NULL WHERE id=?', u.id);
+  res.json({ ok: true });
+});
+app.delete('/api/admin/tenants/:id', adminOnly, (req, res, next) => {
+  const u = companyUser(req, req.params.id, ['tenant']);
+  if (!u) return res.status(404).json({ error: 'Buyer not found' });
+  if (req.body && req.body.confirm !== 'DELETE') {
+    return res.status(400).json({ error: 'Type DELETE to confirm' });
+  }
+  try { eraseUser(u.id, 'tenant'); res.json({ ok: true }); } catch (e) { next(e); }
+});
+app.post('/api/admin/staff/:id/archive', ownerOnly, (req, res) => {
+  const u = companyUser(req, req.params.id, ['admin']);
+  if (!u) return res.status(404).json({ error: 'Staff member not found' });
+  run("UPDATE users SET archived_at=datetime('now'), archived_reason=? WHERE id=?",
+    req.body.reason || null, u.id);
+  res.json({ ok: true });
+});
+app.post('/api/admin/staff/:id/restore', ownerOnly, (req, res) => {
+  const u = companyUser(req, req.params.id, ['admin']);
+  if (!u) return res.status(404).json({ error: 'Staff member not found' });
+  run('UPDATE users SET archived_at=NULL, archived_reason=NULL WHERE id=?', u.id);
+  res.json({ ok: true });
+});
+
+// ---------- admin: loans ----------
+app.get('/api/admin/loans', adminOnly, (req, res) => {
+  const loans = all('SELECT * FROM loans WHERE company_id=? ORDER BY id DESC', req.companyId);
+  res.json(loans.map(l => {
+    const f = loanFull(l);
+    return { ...f.loan, address: f.property ? f.property.address : '', tenant_name: f.tenant ? f.tenant.name : null, status_info: f.status };
+  }));
+});
+app.post('/api/admin/loans', adminOnly, (req, res) => {
+  const b = req.body || {};
+  const req_fields = ['property_id', 'sale_price_cents', 'principal_cents', 'interest_rate_bps', 'term_months', 'first_payment_date'];
+  for (const f of req_fields) if (b[f] === undefined || b[f] === null || b[f] === '') return res.status(400).json({ error: `Missing ${f}` });
+  if (!ownedProperty(req, b.property_id)) return res.status(404).json({ error: 'Property not found' });
+  if (b.tenant_user_id && !get("SELECT id FROM users WHERE id=? AND role='tenant' AND company_id=?", b.tenant_user_id, req.companyId))
+    return res.status(404).json({ error: 'Buyer not found' });
+  const payment = b.payment_cents || loanEngine.calcPayment(b.principal_cents, b.interest_rate_bps, b.term_months);
+  const r = run(`INSERT INTO loans (company_id, property_id, tenant_user_id, loan_type, sale_price_cents, down_payment_cents,
+      principal_cents, interest_rate_bps, term_months, payment_cents, escrow_cents, late_fee_cents, grace_days,
+      first_payment_date, due_day, principal_balance_cents, beneficial_interest_pct)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    req.companyId, b.property_id, b.tenant_user_id || null, b.loan_type || 'land_contract', b.sale_price_cents,
+    b.down_payment_cents || 0, b.principal_cents, b.interest_rate_bps, b.term_months, payment,
+    b.escrow_cents || 0, b.late_fee_cents || 0, b.grace_days ?? 5, b.first_payment_date,
+    b.due_day || Number(b.first_payment_date.slice(8, 10)), b.principal_cents, b.beneficial_interest_pct || null);
+  res.json(loanFull(get('SELECT * FROM loans WHERE id=?', r.lastInsertRowid)));
+});
+app.get('/api/admin/loans/:id', adminOnly, (req, res) => {
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Not found' });
+  const f = loanFull(loan);
+  f.schedule = loanEngine.amortizationSchedule(loan);
+  f.payoff = loanEngine.payoffQuote(f.loan, today());
+  f.documents = all('SELECT id, filename, kind, visible_to_tenant, created_at FROM documents WHERE loan_id=?', loan.id);
+  res.json(f);
+});
+app.put('/api/admin/loans/:id', adminOnly, (req, res) => {
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Not found' });
+  const allowed = ['tenant_user_id', 'status', 'escrow_cents', 'late_fee_cents', 'grace_days', 'loan_type', 'beneficial_interest_pct', 'payment_cents'];
+  const sets = [], vals = [];
+  for (const k of allowed) if (req.body[k] !== undefined) { sets.push(`${k}=?`); vals.push(req.body[k]); }
+  if (sets.length) run(`UPDATE loans SET ${sets.join(',')} WHERE id=?`, ...vals, loan.id);
+  res.json(loanFull(get('SELECT * FROM loans WHERE id=?', loan.id)));
+});
+app.post('/api/admin/loans/:id/payments', adminOnly, (req, res) => {
+  const { amount_cents, method, entry_date, memo } = req.body || {};
+  if (!ownedLoan(req, req.params.id)) return res.status(404).json({ error: 'Loan not found' });
+  if (!amount_cents || amount_cents <= 0) return res.status(400).json({ error: 'Amount required' });
+  const result = postPayment(Number(req.params.id), amount_cents, method || 'cash', entry_date || today(), null, memo, req.user.id);
+  res.json(result);
+});
+app.post('/api/admin/loans/:id/latefee', adminOnly, (req, res) => {
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Not found' });
+  const amt = req.body.amount_cents || loan.late_fee_cents;
+  if (!amt) return res.status(400).json({ error: 'No late fee configured' });
+  run('INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo, created_by) VALUES (?,?,?,?,?,?)',
+    loan.id, today(), 'late_fee', -amt, req.body.memo || 'Late fee', req.user.id);
+  run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', amt, loan.id);
+  res.json({ ok: true });
+});
+app.post('/api/admin/loans/:id/charges', adminOnly, (req, res) => {
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Not found' });
+  const { description, amount_cents, recurring, start_date, end_date, category } = req.body || {};
+  if (!description || !amount_cents) return res.status(400).json({ error: 'Description and amount required' });
+  const r = run('INSERT INTO charges (loan_id, description, category, amount_cents, recurring, start_date, end_date) VALUES (?,?,?,?,?,?,?)',
+    loan.id, description, category || 'other', amount_cents, recurring ? 1 : 0, start_date || today(), end_date || null);
+  if (!recurring) {
+    run('INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo, created_by) VALUES (?,?,?,?,?,?)',
+      loan.id, today(), 'fee', -amount_cents, description, req.user.id);
+    run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', amount_cents, loan.id);
+  }
+  res.json(get('SELECT * FROM charges WHERE id=?', r.lastInsertRowid));
+});
+app.delete('/api/admin/charges/:id', adminOnly, (req, res) => {
+  const ch = get(`SELECT c.id FROM charges c JOIN loans l ON l.id=c.loan_id WHERE c.id=? AND l.company_id=?`, req.params.id, req.companyId);
+  if (!ch) return res.status(404).json({ error: 'Not found' });
+  run('UPDATE charges SET active=0 WHERE id=?', ch.id);
+  res.json({ ok: true });
+});
+
+// ---------- admin: documents & AI ----------
+// Shared folders both the admin and the tenant buyer can see, plus the admin-only vault.
+const SHARED_CATEGORIES = ['loan_docs', 'insurance', 'taxes', 'utilities', 'correspondence'];
+const CATEGORY_LABELS = {
+  loan_docs: 'Loan Documents', insurance: 'Insurance', taxes: 'Taxes',
+  utilities: 'Utilities', correspondence: 'Correspondence',
+  private: 'Private (admin only)', statement: 'Statements', other: 'Other',
+};
+
+app.post('/api/admin/documents', adminOnly, (req, res) => {
+  const { filename, mime, data_base64, kind, loan_id, property_id, visible_to_tenant, category, title, effective_date } = req.body || {};
+  if (!filename || !data_base64) return res.status(400).json({ error: 'File required' });
+  if (loan_id && !ownedLoan(req, loan_id)) return res.status(404).json({ error: 'Loan not found' });
+  if (property_id && !ownedProperty(req, property_id)) return res.status(404).json({ error: 'Property not found' });
+  const cat = category || 'other';
+  // Anything filed as "private" is admin-only regardless of the flag sent.
+  const shared = cat !== 'private' && cat !== 'statement' && visible_to_tenant ? 1 : 0;
+  const stored = crypto.randomUUID() + path.extname(filename);
+  fs.writeFileSync(path.join(UPLOAD_DIR, stored), Buffer.from(data_base64, 'base64'));
+  const r = run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, effective_date,
+      filename, stored_name, mime, visible_to_tenant, uploaded_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, req.companyId, loan_id || null, property_id || null, kind || 'closing', cat,
+    title || null, effective_date || null, filename, stored, mime || null, shared, req.user.id);
+  res.json(get('SELECT id, filename, kind, category, title, visible_to_tenant, created_at FROM documents WHERE id=?', r.lastInsertRowid));
+});
+
+// Admin document center for a loan: every shared folder plus the private vault.
+app.get('/api/admin/loans/:id/documents', adminOnly, (req, res) => {
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Not found' });
+  const docs = all(`SELECT id, filename, kind, category, title, effective_date, mime, visible_to_tenant, created_at
+    FROM documents WHERE loan_id=? OR (property_id IS NOT NULL AND property_id=?)
+    ORDER BY COALESCE(effective_date, created_at) DESC, id DESC`, loan.id, loan.property_id);
+  const folders = {};
+  for (const c of [...SHARED_CATEGORIES, 'private']) folders[c] = { label: CATEGORY_LABELS[c], shared: c !== 'private', documents: [] };
+  for (const d of docs) {
+    const key = d.visible_to_tenant ? (SHARED_CATEGORIES.includes(d.category) ? d.category : 'loan_docs') : 'private';
+    folders[key].documents.push(d);
+  }
+  res.json(folders);
+});
+
+app.put('/api/admin/documents/:id', adminOnly, (req, res) => {
+  const doc = get('SELECT * FROM documents WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  const category = req.body.category !== undefined ? req.body.category : doc.category;
+  const vis = req.body.visible_to_tenant !== undefined ? (req.body.visible_to_tenant ? 1 : 0) : doc.visible_to_tenant;
+  const shared = category === 'private' ? 0 : vis;
+  run('UPDATE documents SET category=?, visible_to_tenant=?, title=?, effective_date=? WHERE id=?',
+    category, shared, req.body.title !== undefined ? req.body.title : doc.title,
+    req.body.effective_date !== undefined ? req.body.effective_date : doc.effective_date, doc.id);
+  res.json(get('SELECT id, filename, category, title, visible_to_tenant FROM documents WHERE id=?', doc.id));
+});
+
+app.delete('/api/admin/documents/:id', adminOnly, (req, res) => {
+  const doc = get('SELECT * FROM documents WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  try { fs.unlinkSync(path.join(UPLOAD_DIR, doc.stored_name)); } catch {}
+  run('DELETE FROM documents WHERE id=?', doc.id);
+  res.json({ ok: true });
+});
+
+// Tenant buyer document center — shared folders only, always present as placeholders.
+app.get('/api/tenant/documents', tenantReady, (req, res) => {
+  const loan = get('SELECT * FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', req.user.id);
+  const folders = SHARED_CATEGORIES.map(c => ({ category: c, label: CATEGORY_LABELS[c], documents: [] }));
+  if (!loan) return res.json(folders);
+  const docs = all(`SELECT id, filename, category, title, effective_date, created_at FROM documents
+    WHERE visible_to_tenant=1 AND (loan_id=? OR (property_id IS NOT NULL AND property_id=?))
+    ORDER BY COALESCE(effective_date, created_at) DESC, id DESC`, loan.id, loan.property_id);
+  for (const d of docs) {
+    const f = folders.find(x => x.category === d.category) || folders[0];
+    f.documents.push(d);
+  }
+  res.json(folders);
+});
+app.get('/api/documents/:id/download', anyUser, (req, res) => {
+  const doc = get('SELECT * FROM documents WHERE id=?', req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  if (doc.company_id !== req.user.company_id) return res.status(403).json({ error: 'Forbidden' });
+  if (req.user.role === 'tenant') {
+    const loan = get('SELECT * FROM loans WHERE id=? AND tenant_user_id=?', doc.loan_id, req.user.id);
+    if (!loan || !doc.visible_to_tenant) return res.status(403).json({ error: 'Forbidden' });
+  }
+  res.setHeader('Content-Disposition', `attachment; filename="${doc.filename.replace(/"/g, '')}"`);
+  if (doc.mime) res.setHeader('Content-Type', doc.mime);
+  res.send(fs.readFileSync(path.join(UPLOAD_DIR, doc.stored_name)));
+});
+// AI: extract loan terms from one or more closing docs
+app.post('/api/admin/ai/extract-loan', adminOnly, async (req, res) => {
+  if (!ai.aiEnabled()) return res.status(400).json({ error: 'AI not configured. Set ANTHROPIC_API_KEY on the server.' });
+  const ids = req.body.document_ids || [];
+  if (!ids.length) return res.status(400).json({ error: 'document_ids required' });
+  try {
+    const files = ids.map(id => {
+      const doc = get('SELECT * FROM documents WHERE id=? AND company_id=?', id, req.companyId);
+      if (!doc) throw new Error('Document not found');
+      return { buffer: fs.readFileSync(path.join(UPLOAD_DIR, doc.stored_name)), mime: doc.mime || 'application/pdf', filename: doc.filename };
+    });
+    const extracted = await ai.extractLoanTerms(files);
+    run('UPDATE documents SET extracted_json=? WHERE id=?', JSON.stringify(extracted), ids[0]);
+    res.json(extracted);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+// AI: extract transactions from a bank/CC statement -> expenses for review
+app.post('/api/admin/ai/extract-transactions', adminOnly, async (req, res) => {
+  if (!ai.aiEnabled()) return res.status(400).json({ error: 'AI not configured. Set ANTHROPIC_API_KEY on the server.' });
+  const doc = get('SELECT * FROM documents WHERE id=? AND company_id=?', req.body.document_id, req.companyId);
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+  try {
+    const props = all('SELECT id, address, city FROM properties WHERE company_id=?', req.companyId);
+    const file = { buffer: fs.readFileSync(path.join(UPLOAD_DIR, doc.stored_name)), mime: doc.mime || 'application/pdf', filename: doc.filename };
+    const out = await ai.extractTransactions(file, props);
+    let count = 0;
+    for (const t of out.transactions || []) {
+      const sugg = t.suggested_property_id && ownedProperty(req, t.suggested_property_id) ? t.suggested_property_id : null;
+      run(`INSERT INTO expenses (company_id, property_id, document_id, txn_date, description, amount_cents, category, status)
+           VALUES (?,?,?,?,?,?,?,?)`,
+        req.companyId, sugg, doc.id, t.date || null, t.description || '(no description)',
+        Math.round((t.amount || 0) * 100), t.category || null, 'unassigned');
+      count++;
+    }
+    res.json({ imported: count });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------- admin: expenses ----------
+app.get('/api/admin/expenses', adminOnly, (req, res) => {
+  const status = req.query.status;
+  const rows = status
+    ? all(`SELECT e.*, p.address FROM expenses e LEFT JOIN properties p ON p.id=e.property_id
+           WHERE e.status=? AND e.company_id=? ORDER BY e.txn_date DESC, e.id DESC`, status, req.companyId)
+    : all(`SELECT e.*, p.address FROM expenses e LEFT JOIN properties p ON p.id=e.property_id
+           WHERE e.company_id=? ORDER BY e.txn_date DESC, e.id DESC`, req.companyId);
+  res.json(rows);
+});
+app.post('/api/admin/expenses', adminOnly, (req, res) => {
+  const { property_id, txn_date, description, amount_cents, category } = req.body || {};
+  if (!description || !amount_cents) return res.status(400).json({ error: 'Description and amount required' });
+  if (property_id && !ownedProperty(req, property_id)) return res.status(404).json({ error: 'Property not found' });
+  const r = run('INSERT INTO expenses (company_id, property_id, txn_date, description, amount_cents, category, status) VALUES (?,?,?,?,?,?,?)',
+    req.companyId, property_id || null, txn_date || today(), description, amount_cents, category || null, property_id ? 'assigned' : 'unassigned');
+  res.json(get('SELECT * FROM expenses WHERE id=?', r.lastInsertRowid));
+});
+app.put('/api/admin/expenses/:id', adminOnly, (req, res) => {
+  const e = get('SELECT * FROM expenses WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!e) return res.status(404).json({ error: 'Not found' });
+  const property_id = req.body.property_id !== undefined ? req.body.property_id : e.property_id;
+  if (property_id && !ownedProperty(req, property_id)) return res.status(404).json({ error: 'Property not found' });
+  const status = req.body.status || (property_id ? 'assigned' : e.status);
+  run('UPDATE expenses SET property_id=?, status=?, category=? WHERE id=?',
+    property_id, status, req.body.category !== undefined ? req.body.category : e.category, e.id);
+  res.json(get('SELECT * FROM expenses WHERE id=?', e.id));
+});
+
+// ---------- messages (shared) ----------
+app.get('/api/admin/messages', adminOnly, (req, res) => {
+  const threads = all(`
+    SELECT l.id AS loan_id, p.address, u.name AS tenant_name,
+      (SELECT body FROM messages WHERE loan_id=l.id ORDER BY id DESC LIMIT 1) AS last_message,
+      (SELECT created_at FROM messages WHERE loan_id=l.id ORDER BY id DESC LIMIT 1) AS last_at,
+      (SELECT COUNT(*) FROM messages WHERE loan_id=l.id AND read_by_admin=0) AS unread
+    FROM loans l LEFT JOIN properties p ON p.id=l.property_id LEFT JOIN users u ON u.id=l.tenant_user_id
+    WHERE l.tenant_user_id IS NOT NULL AND l.company_id=? ORDER BY last_at DESC`, req.companyId);
+  res.json(threads);
+});
+app.get('/api/admin/loans/:id/messages', adminOnly, (req, res) => {
+  if (!ownedLoan(req, req.params.id)) return res.status(404).json({ error: 'Loan not found' });
+  run('UPDATE messages SET read_by_admin=1 WHERE loan_id=?', req.params.id);
+  res.json(all('SELECT m.*, u.name AS sender_name, u.role AS sender_role FROM messages m JOIN users u ON u.id=m.sender_user_id WHERE m.loan_id=? ORDER BY m.id', req.params.id));
+});
+app.post('/api/admin/loans/:id/messages', adminOnly, (req, res) => {
+  if (!ownedLoan(req, req.params.id)) return res.status(404).json({ error: 'Loan not found' });
+  if (!req.body.body) return res.status(400).json({ error: 'Message required' });
+  run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)', req.params.id, req.user.id, req.body.body);
+  res.json({ ok: true });
+});
+
+// ---------- PML loans (admin only — never exposed to tenant routes) ----------
+app.get('/api/admin/pml', adminOnly, (req, res) => {
+  const rows = all(`SELECT pl.*, p.address FROM pml_loans pl LEFT JOIN properties p ON p.id=pl.property_id
+    WHERE pl.company_id=? ORDER BY pl.id DESC`, req.companyId);
+  for (const r of rows) {
+    const tb = get("SELECT payment_cents, escrow_cents FROM loans WHERE property_id=? AND status='active' AND company_id=? ORDER BY id DESC LIMIT 1", r.property_id, req.companyId);
+    r.tb_payment_cents = tb ? tb.payment_cents + tb.escrow_cents : 0;
+    r.monthly_spread_cents = r.tb_payment_cents - r.payment_cents;
+    r.next_due_date = loanEngine.nextDueDate(r, today());
+  }
+  res.json(rows);
+});
+app.post('/api/admin/pml', adminOnly, (req, res) => {
+  const b = req.body || {};
+  for (const f of ['property_id', 'lender_name', 'principal_cents', 'interest_rate_bps', 'term_months', 'first_payment_date'])
+    if (!b[f]) return res.status(400).json({ error: `Missing ${f}` });
+  const type = b.payment_type || 'amortized';
+  let payment = b.payment_cents;
+  if (!payment) {
+    payment = type === 'interest_only'
+      ? Math.round(b.principal_cents * (b.interest_rate_bps / 10000) / 12)
+      : loanEngine.calcPayment(b.principal_cents, b.interest_rate_bps, b.term_months);
+  }
+  if (!ownedProperty(req, b.property_id)) return res.status(404).json({ error: 'Property not found' });
+  const r = run(`INSERT INTO pml_loans (company_id, property_id, lender_name, lender_contact, lien_position, principal_cents,
+      interest_rate_bps, term_months, payment_type, payment_cents, balloon_date, first_payment_date,
+      principal_balance_cents, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    req.companyId, b.property_id, b.lender_name, b.lender_contact || null, b.lien_position || 1, b.principal_cents,
+    b.interest_rate_bps, b.term_months, type, payment, b.balloon_date || null, b.first_payment_date,
+    b.principal_cents, b.notes || null);
+  res.json(get('SELECT * FROM pml_loans WHERE id=?', r.lastInsertRowid));
+});
+app.get('/api/admin/pml/:id', adminOnly, (req, res) => {
+  const pml = get('SELECT * FROM pml_loans WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!pml) return res.status(404).json({ error: 'Not found' });
+  const property = get('SELECT * FROM properties WHERE id=?', pml.property_id);
+  const ledger = all('SELECT * FROM pml_ledger WHERE pml_loan_id=? ORDER BY entry_date, id', pml.id);
+  const tb = get("SELECT * FROM loans WHERE property_id=? AND status='active' AND company_id=? ORDER BY id DESC LIMIT 1", pml.property_id, req.companyId);
+  const schedule = pml.payment_type === 'amortized' ? loanEngine.amortizationSchedule({
+    first_payment_date: pml.first_payment_date, principal_cents: pml.principal_cents,
+    interest_rate_bps: pml.interest_rate_bps, term_months: pml.term_months, payment_cents: pml.payment_cents,
+  }) : [];
+  res.json({
+    pml, property, ledger, schedule,
+    payoff: loanEngine.payoffQuote({ ...pml, fees_due_cents: 0, escrow_balance_cents: 0 }, today()),
+    next_due_date: loanEngine.nextDueDate(pml, today()),
+    tb_loan: tb ? { id: tb.id, payment_cents: tb.payment_cents + tb.escrow_cents, balance_cents: tb.principal_balance_cents } : null,
+    monthly_spread_cents: (tb ? tb.payment_cents + tb.escrow_cents : 0) - pml.payment_cents,
+    equity_spread_cents: (tb ? tb.principal_balance_cents : 0) - pml.principal_balance_cents,
+  });
+});
+app.post('/api/admin/pml/:id/payments', adminOnly, (req, res) => {
+  const pml = get('SELECT * FROM pml_loans WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!pml) return res.status(404).json({ error: 'Not found' });
+  const amount = Number(req.body.amount_cents);
+  if (!amount || amount <= 0) return res.status(400).json({ error: 'Amount required' });
+  const r = pml.interest_rate_bps / 10000 / 12;
+  const interestOwed = pml.interest_due_cents || Math.round(pml.principal_balance_cents * r);
+  const toInterest = Math.min(amount, interestOwed);
+  const toPrincipal = Math.min(amount - toInterest, pml.principal_balance_cents);
+  const newBal = pml.principal_balance_cents - toPrincipal;
+  run(`INSERT INTO pml_ledger (pml_loan_id, entry_date, type, amount_cents, to_interest_cents,
+        to_principal_cents, principal_balance_after_cents, memo, created_by) VALUES (?,?,?,?,?,?,?,?,?)`,
+    pml.id, req.body.entry_date || today(), 'payment', amount, toInterest, toPrincipal, newBal,
+    req.body.memo || null, req.user.id);
+  run(`UPDATE pml_loans SET principal_balance_cents=?, interest_due_cents=?,
+        status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
+    newBal, Math.max(0, interestOwed - toInterest), newBal, pml.id);
+  res.json({ to_interest_cents: toInterest, to_principal_cents: toPrincipal, balance_cents: newBal });
+});
+app.post('/api/admin/pml/:id/draw', adminOnly, (req, res) => {
+  const pml = get('SELECT * FROM pml_loans WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!pml) return res.status(404).json({ error: 'Not found' });
+  const amount = Number(req.body.amount_cents);
+  if (!amount || amount <= 0) return res.status(400).json({ error: 'Amount required' });
+  const newBal = pml.principal_balance_cents + amount;
+  run(`INSERT INTO pml_ledger (pml_loan_id, entry_date, type, amount_cents, principal_balance_after_cents, memo, created_by)
+       VALUES (?,?,?,?,?,?,?)`, pml.id, req.body.entry_date || today(), 'draw', amount, newBal, req.body.memo || 'Additional draw', req.user.id);
+  run('UPDATE pml_loans SET principal_balance_cents=? WHERE id=?', newBal, pml.id);
+  res.json({ balance_cents: newBal });
+});
+
+// ---------- notices ----------
+app.get('/api/admin/loans/:id/notices', adminOnly, (req, res) => {
+  if (!ownedLoan(req, req.params.id)) return res.status(404).json({ error: 'Loan not found' });
+  res.json(all('SELECT * FROM notices WHERE loan_id=? ORDER BY id DESC', req.params.id));
+});
+app.post('/api/admin/loans/:id/notices', adminOnly, (req, res) => {
+  const { subject, body } = req.body || {};
+  if (!ownedLoan(req, req.params.id)) return res.status(404).json({ error: 'Loan not found' });
+  if (!subject || !body) return res.status(400).json({ error: 'Subject and body required' });
+  run('INSERT INTO notices (loan_id, type, subject, body) VALUES (?,?,?,?)', req.params.id, 'custom', subject, body);
+  run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
+    req.params.id, req.user.id, `📄 ${subject} — open the Notices section on your Home screen to read this notice.`);
+  res.json({ ok: true });
+});
+app.post('/api/admin/notice-sweep', adminOnly, (req, res) => { runNoticeSweep(); res.json({ ok: true }); });
+app.get('/api/tenant/notices', tenantReady, (req, res) => {
+  const loan = get('SELECT * FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', req.user.id);
+  if (!loan) return res.json([]);
+  res.json(all('SELECT * FROM notices WHERE loan_id=? ORDER BY id DESC', loan.id));
+});
+app.post('/api/tenant/notices/:id/read', tenantReady, (req, res) => {
+  const loan = get('SELECT * FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', req.user.id);
+  if (!loan) return res.status(404).json({ error: 'No loan' });
+  run("UPDATE notices SET read_at=datetime('now') WHERE id=? AND loan_id=? AND read_at IS NULL", req.params.id, loan.id);
+  res.json({ ok: true });
+});
+
+// ---------- consent: terms, privacy, messaging, location ----------
+// Apple 5.1.1 and Google Play both require clear consent before collecting personal data,
+// and Play requires a prominent disclosure before any location permission prompt.
+function logConsent(req, kind, version) {
+  run('INSERT INTO consents (user_id, kind, version, ip, user_agent) VALUES (?,?,?,?,?)',
+    req.user.id, kind, version || null,
+    (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim(),
+    (req.headers['user-agent'] || '').slice(0, 300));
+}
+app.get('/api/terms-version', (req, res) => res.json({ version: TERMS_VERSION }));
+app.post('/api/tenant/accept-terms', tenantOnly, (req, res) => {
+  if (!req.body.accept_terms || !req.body.accept_privacy) {
+    return res.status(400).json({ error: 'You must accept both the Terms of Use and the Privacy Policy to continue.' });
+  }
+  run("UPDATE users SET terms_accepted_at=datetime('now'), terms_version=? WHERE id=?", TERMS_VERSION, req.user.id);
+  logConsent(req, 'terms', TERMS_VERSION);
+  logConsent(req, 'privacy', TERMS_VERSION);
+  logConsent(req, 'messaging', TERMS_VERSION);   // in-app messaging + electronic notices
+  res.json({ ok: true, terms_version: TERMS_VERSION });
+});
+app.get('/api/tenant/consents', tenantOnly, (req, res) => {
+  res.json({
+    terms_accepted_at: req.user.terms_accepted_at,
+    terms_version: req.user.terms_version,
+    current_version: TERMS_VERSION,
+    location_consent_at: req.user.location_consent_at,
+    history: all('SELECT kind, version, created_at FROM consents WHERE user_id=? ORDER BY id DESC LIMIT 50', req.user.id),
+  });
+});
+
+// ---------- account: data export & deletion (App Store 5.1.1(v) / Play Data deletion) ----------
+app.get('/api/account/export', anyUser, (req, res) => {
+  const u = get('SELECT id, name, email, phone, role, created_at, terms_accepted_at, terms_version FROM users WHERE id=?', req.user.id);
+  const out = { account: u, exported_at: new Date().toISOString() };
+  if (req.user.role === 'tenant') {
+    const loan = get('SELECT * FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', req.user.id);
+    if (loan) {
+      out.loan = loan;
+      out.property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+      out.payment_history = all('SELECT * FROM ledger WHERE loan_id=? ORDER BY id', loan.id);
+      out.messages = all('SELECT body, created_at, sender_user_id FROM messages WHERE loan_id=? ORDER BY id', loan.id);
+      out.notices = all('SELECT type, subject, body, sent_at, read_at FROM notices WHERE loan_id=? ORDER BY id', loan.id);
+      out.documents = all('SELECT filename, category, created_at FROM documents WHERE loan_id=? AND visible_to_tenant=1', loan.id);
+    }
+  }
+  out.consent_history = all('SELECT kind, version, created_at FROM consents WHERE user_id=? ORDER BY id', req.user.id);
+  out.location_history = all('SELECT lat, lng, created_at FROM location_pings WHERE user_id=? ORDER BY id', req.user.id);
+  res.setHeader('Content-Disposition', 'attachment; filename="my-data-export.json"');
+  res.setHeader('Content-Type', 'application/json');
+  res.send(JSON.stringify(out, null, 2));
+});
+
+// Erase a user's personal data. Ledger entries, notices, and messages reference the user
+// row by foreign key and carry legal retention duties, so the row is kept as an anonymized
+// tombstone: every piece of personal information is overwritten, the login is destroyed,
+// and the account can never be signed into again. Runs as one transaction so a failure
+// can't leave the account half-erased.
+function eraseUser(uid, role) {
+  const tomb = `deleted-${crypto.randomUUID()}@deleted.invalid`;
+  db.exec('BEGIN');
+  try {
+    run('DELETE FROM location_pings WHERE user_id=?', uid);
+    run('DELETE FROM consents WHERE user_id=?', uid);
+    run('UPDATE messages SET body=? WHERE sender_user_id=?', '[message removed at user request]', uid);
+    if (role === 'tenant') run('UPDATE loans SET tenant_user_id=NULL WHERE tenant_user_id=?', uid);
+    run(`UPDATE users SET email=?, name='Deleted user', phone=NULL,
+           password_hash=?, must_change_password=0, location_consent_at=NULL,
+           terms_accepted_at=NULL, terms_version=NULL, deleted_at=datetime('now')
+         WHERE id=?`, tomb, hashPassword(crypto.randomUUID()), uid);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+app.post('/api/account/delete', anyUser, (req, res, next) => {
+  if (req.body.confirm !== 'DELETE') return res.status(400).json({ error: 'Type DELETE to confirm' });
+  if (req.user.role === 'owner') {
+    return res.status(400).json({ error: 'Company owners cannot self-delete. Transfer ownership or contact support.' });
+  }
+  try {
+    eraseUser(req.user.id, req.user.role);
+    res.setHeader('Set-Cookie', 'session=; HttpOnly; Path=/; Max-Age=0');
+    res.json({ ok: true, message: 'Your account and personal data have been deleted.' });
+  } catch (e) { next(e); }
+});
+
+// ---------- tenant routes ----------
+function tenantLoan(req) {
+  return get('SELECT * FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', req.user.id);
+}
+app.get('/api/tenant/loan', tenantReady, (req, res) => {
+  const loan = tenantLoan(req);
+  if (!loan) return res.status(404).json({ error: 'No loan is linked to your account yet. Contact your servicer.' });
+  const f = loanFull(loan);
+  f.schedule = loanEngine.amortizationSchedule(loan);
+  f.payoff = loanEngine.payoffQuote(f.loan, today());
+  f.documents = all('SELECT id, filename, created_at FROM documents WHERE loan_id=? AND visible_to_tenant=1', loan.id);
+  f.slips = all("SELECT * FROM cash_slips WHERE loan_id=? AND status='open' ORDER BY id DESC", loan.id);
+  f.stripe_enabled = pay.stripeEnabled();
+  f.location_consent_at = req.user.location_consent_at;
+  f.terms_accepted_at = req.user.terms_accepted_at;
+  res.json(f);
+});
+app.post('/api/tenant/pay/checkout', tenantReady, async (req, res) => {
+  const loan = tenantLoan(req);
+  if (!loan) return res.status(404).json({ error: 'No loan' });
+  if (!pay.stripeEnabled()) return res.status(400).json({ error: 'Online payments are not enabled yet. Ask your servicer.' });
+  const amount = Number(req.body.amount_cents);
+  if (!amount || amount < 100) return res.status(400).json({ error: 'Enter a valid amount' });
+  try {
+    const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+    const proto = req.headers['x-forwarded-proto'] || 'http';
+    const baseUrl = process.env.BASE_URL || `${proto}://${req.headers.host}`;
+    const session = await pay.createCheckoutSession({
+      loan: { ...loan, address: property ? property.address : 'your home' },
+      amountCents: amount, baseUrl, tenantEmail: req.user.email,
+    });
+    res.json({ url: session.url });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+// Confirm after redirect (covers local/dev where webhooks can't reach the server)
+app.get('/api/tenant/pay/confirm', tenantReady, async (req, res) => {
+  if (!pay.stripeEnabled()) return res.json({ ok: false, reason: 'stripe_not_configured' });
+  try {
+    const s = await pay.retrieveSession(req.query.session_id);
+    if (s.payment_status === 'paid' && s.metadata && Number(s.metadata.loan_id)) {
+      const result = postStripePayment(s);
+      return res.json({ ok: true, duplicate: !!result.duplicate });
+    }
+    res.json({ ok: false });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.post('/api/tenant/pay/cash-slip', tenantReady, async (req, res) => {
+  const loan = tenantLoan(req);
+  if (!loan) return res.status(404).json({ error: 'No loan' });
+  const amount = Number(req.body.amount_cents);
+  if (!amount || amount < 100) return res.status(400).json({ error: 'Enter a valid amount' });
+  try {
+    const slip = await pay.createRetailSlip(loan.id, amount, req.user);
+    res.json(slip);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/api/tenant/messages', tenantReady, (req, res) => {
+  const loan = tenantLoan(req);
+  if (!loan) return res.json([]);
+  run('UPDATE messages SET read_by_tenant=1 WHERE loan_id=?', loan.id);
+  res.json(all('SELECT m.*, u.name AS sender_name, u.role AS sender_role FROM messages m JOIN users u ON u.id=m.sender_user_id WHERE m.loan_id=? ORDER BY m.id', loan.id));
+});
+app.post('/api/tenant/messages', tenantReady, (req, res) => {
+  const loan = tenantLoan(req);
+  if (!loan) return res.status(404).json({ error: 'No loan' });
+  if (!req.body.body) return res.status(400).json({ error: 'Message required' });
+  run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_tenant) VALUES (?,?,?,1)', loan.id, req.user.id, req.body.body);
+  res.json({ ok: true });
+});
+
+// ---------- location sharing (opt-in with recorded consent) ----------
+app.post('/api/tenant/location/consent', tenantReady, (req, res) => {
+  if (req.body.consent) {
+    run("UPDATE users SET location_consent_at=datetime('now') WHERE id=?", req.user.id);
+    logConsent(req, 'location_on', TERMS_VERSION);
+  } else {
+    run('UPDATE users SET location_consent_at=NULL WHERE id=?', req.user.id);
+    run('DELETE FROM location_pings WHERE user_id=?', req.user.id); // revoke deletes history
+    logConsent(req, 'location_off', TERMS_VERSION);
+  }
+  res.json({ ok: true });
+});
+app.post('/api/tenant/location', tenantReady, (req, res) => {
+  const u = get('SELECT location_consent_at FROM users WHERE id=?', req.user.id);
+  if (!u.location_consent_at) return res.status(403).json({ error: 'Location sharing not enabled' });
+  const { lat, lng, accuracy_m } = req.body || {};
+  if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat/lng required' });
+  run('INSERT INTO location_pings (user_id, lat, lng, accuracy_m) VALUES (?,?,?,?)', req.user.id, lat, lng, accuracy_m || null);
+  // keep only latest 50 pings per user
+  run('DELETE FROM location_pings WHERE user_id=? AND id NOT IN (SELECT id FROM location_pings WHERE user_id=? ORDER BY id DESC LIMIT 50)', req.user.id, req.user.id);
+  res.json({ ok: true });
+});
+app.get('/api/admin/tenants/:id/location', adminOnly, (req, res) => {
+  const u = get("SELECT location_consent_at FROM users WHERE id=? AND company_id=? AND role='tenant'", req.params.id, req.companyId);
+  if (!u) return res.status(404).json({ error: 'Not found' });
+  const last = get('SELECT * FROM location_pings WHERE user_id=? ORDER BY id DESC LIMIT 1', req.params.id);
+  res.json({ consent_at: u.location_consent_at, last_ping: last || null });
+});
+
+// ---------- admin: cash slips (mark paid when cash received) ----------
+app.get('/api/admin/cash-slips', adminOnly, (req, res) => {
+  res.json(all(`SELECT s.*, p.address, u.name AS tenant_name FROM cash_slips s
+    JOIN loans l ON l.id=s.loan_id LEFT JOIN properties p ON p.id=l.property_id
+    LEFT JOIN users u ON u.id=l.tenant_user_id WHERE l.company_id=? ORDER BY s.id DESC`, req.companyId));
+});
+app.post('/api/admin/cash-slips/:id/mark-paid', adminOnly, (req, res) => {
+  const slip = get(`SELECT s.* FROM cash_slips s JOIN loans l ON l.id=s.loan_id
+    WHERE s.id=? AND l.company_id=?`, req.params.id, req.companyId);
+  if (!slip || slip.status !== 'open') return res.status(400).json({ error: 'Slip not open' });
+  postPayment(slip.loan_id, slip.amount_cents, 'cash_retail', today(), `slip:${slip.slip_code}`, `Cash payment — slip ${slip.slip_code}`, req.user.id);
+  run("UPDATE cash_slips SET status='paid', paid_at=datetime('now') WHERE id=?", slip.id);
+  res.json({ ok: true });
+});
+
+// ---------- pages ----------
+app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
+app.get('/privacy', (req, res) => res.sendFile(path.join(__dirname, 'public', 'privacy.html')));
+app.get('/terms', (req, res) => res.sendFile(path.join(__dirname, 'public', 'terms.html')));
+app.get('/support', (req, res) => res.sendFile(path.join(__dirname, 'public', 'support.html')));
+app.get('/delete-account', (req, res) => res.sendFile(path.join(__dirname, 'public', 'delete-account.html')));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'tenant.html')));
+
+// Any unhandled route error comes back as JSON so the apps can surface a real message.
+app.use((err, req, res, next) => {
+  console.error(`${req.method} ${req.path} —`, err.message);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: err.message || 'Server error' });
+});
+
+app.listen(PORT, () => console.log(`PorchPay running on port ${PORT}`));
+module.exports = app;
