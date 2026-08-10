@@ -1,0 +1,105 @@
+NOTIFICATIONS — how they work and what you need to do
+=====================================================
+
+Three separate things, and they behave differently. Worth knowing which is which.
+
+
+1. IN-APP BADGES  — works everywhere, nothing to set up
+------------------------------------------------------
+Red count bubbles on the buyer's Pay, Docs and Messages tabs. Appears the moment
+something happens; clears when they open that tab. Works in any browser, installed
+or not. Nothing can block it.
+
+
+2. APP ICON BADGE — the number on the home screen icon
+------------------------------------------------------
+Requires the app to be installed to the home screen. Works on Android and desktop
+Chrome/Edge. On iPhone it needs iOS 16.4+ AND notification permission granted.
+Shows the total unread count across all categories.
+
+
+3. POP-UP NOTIFICATIONS — arrive when the app is closed
+-------------------------------------------------------
+This is real push. The buyer turns it on under Settings -> Notifications, and can
+switch individual categories off (messages, documents, payment reminders, past-due
+alerts, receipts).
+
+  Android Chrome     works in a browser tab or installed
+  Desktop Chrome     works
+  iPhone / iPad      ONLY if the buyer adds the app to their home screen first.
+                     Safari in a normal tab cannot receive push. That is Apple's
+                     restriction, not something the app can work around.
+
+Nothing you do depends on push succeeding — the badge and the in-app feed always
+record it either way.
+
+
+WHAT TRIGGERS A NOTIFICATION
+----------------------------
+  Buyer gets one when:
+    - you send them a message
+    - you share a document into one of their folders
+    - a payment reminder fires (see below)
+    - a payment posts to their loan
+    - a late or legal notice goes out
+
+  You get one when:
+    - a buyer sends you a message
+
+
+PAYMENT REMINDERS — the Reminders page
+--------------------------------------
+Three come set up already, timed against each buyer's own due date:
+
+    5 days before   pop-up only
+    On the due date pop-up + in-app message
+    5 days after    pop-up + in-app message
+
+Every part is yours to change. For each reminder you set:
+
+    Name             what you call it
+    When it fires    anywhere from 14 days before to 30 days after the due date
+    How it reaches   pop-up only / in-app message only / both
+    Only if unpaid   skip buyers who already paid, or send regardless
+    Title and text   with merge fields — {{first_name}}, {{amount_due}},
+                     {{due_date}}, {{monthly_payment}}, {{late_fee}} and more
+
+Add as many as you like. Switch any off without deleting it.
+
+They run on their own several times a day. "Run the reminder sweep" fires anything
+due today immediately — useful for testing. A reminder never sends twice for the
+same due date, so running it repeatedly is safe.
+
+To nudge one buyer right now: open their loan -> "Send reminder". Pick a saved
+reminder or type your own. It goes straight to their phone.
+
+
+MESSAGE TEMPLATES
+-----------------
+You said you couldn't find these — they were on their own page with no route in
+from Messages. Fixed. Messages now has "Manage templates" and "Payment reminders"
+buttons at the top, and inside a conversation there are "Use a template" and
+"Send a reminder" buttons under the composer.
+
+Six templates ship ready: welcome, payment reminder, receipt, friendly past-due,
+escrow update, payoff. Preview any of them against a real buyer before sending.
+
+
+EMOJI
+-----
+The 🙂 button beside the message box opens a picker grouped into Friendly, Money,
+Home and Paperwork. The same picker sits under the template editor and the reminder
+editor, so emoji work in saved templates too.
+
+
+NOTHING TO CONFIGURE
+--------------------
+Push signing keys generate themselves on first run and persist. If you ever want to
+pin them yourself, set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in Railway.
+
+
+ONE THING WORTH TELLING BUYERS
+------------------------------
+iPhone users only get pop-ups after adding the app to their home screen. Worth a
+line in your welcome message: "Tap Share, then Add to Home Screen, so you get
+payment reminders." The welcome template is a good place for it.

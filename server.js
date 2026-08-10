@@ -12,6 +12,7 @@ const sms = require('./sms');
 const reports = require('./reports');
 const tpl = require('./templates');
 const addr = require('./address');
+const notify = require('./notify');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -198,6 +199,13 @@ function postPayment(loanId, amountCents, method, entryDate, externalId, memo, c
     alloc.to_principal_cents, alloc.to_escrow_cents + alloc.unapplied_cents, alloc.to_fees_cents,
     newPrincipal, memo || null, externalId || null, createdBy || null);
   if (feeCents) run('UPDATE ledger SET fee_cents=? WHERE id=(SELECT MAX(id) FROM ledger WHERE loan_id=?)', feeCents, loanId);
+  if (loan.tenant_user_id) {
+    notify.notify(loan.tenant_user_id, {
+      kind: 'payment_received', title: 'Payment received',
+      body: `We applied $${(amountCents / 100).toFixed(2)} to your loan. Balance is now $${(newPrincipal / 100).toFixed(2)}.`,
+      url: '/?tab=activity',
+    }).catch(() => {});
+  }
   run(`UPDATE loans SET principal_balance_cents=?, escrow_balance_cents=?, fees_due_cents=?,
         interest_due_cents=?, status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
     newPrincipal, newEscrow, newFees, newInterestDue, newPrincipal, loanId);
@@ -271,6 +279,11 @@ function runNoticeSweep() {
         run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
           loan.id, get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') ORDER BY id LIMIT 1", loan.company_id).id,
           `📄 ${t.subject} — open the Notices section on your Home screen to read this important notice.`);
+        if (loan.tenant_user_id) {
+          notify.notify(loan.tenant_user_id, { kind: 'notice', title: t.subject,
+            body: 'Open the app to read this notice.', url: '/', dedupeKey: `notice:${type}:${period}:${loan.id}` })
+            .catch(() => {});
+        }
         console.log(`Sent ${type} for loan ${loan.id} period ${period}`);
       };
       sendNotice('late_notice');
@@ -476,6 +489,13 @@ app.delete('/api/admin/staff/:id', ownerOnly, (req, res, next) => {
 // ---------- first-run setup wizard ----------
 app.get('/api/admin/setup-state', adminOnly, (req, res) => {
   const c = get('SELECT * FROM companies WHERE id=?', req.companyId);
+  // Belt and braces: if this company is clearly already in use — real name, and the
+  // owner has set their own password — treat setup as done even if the flag went
+  // missing. Nobody should be walked through setup twice.
+  if (!c.setup_complete && c.name && c.name !== 'My Company' && !req.user.must_change_password) {
+    run('UPDATE companies SET setup_complete=1 WHERE id=?', c.id);
+    c.setup_complete = 1;
+  }
   res.json({
     setup_complete: !!c.setup_complete,
     must_change_password: !!req.user.must_change_password,
@@ -488,6 +508,11 @@ app.get('/api/admin/setup-state', adminOnly, (req, res) => {
     user: { name: req.user.name, phone: req.user.phone, email: req.user.email },
   });
 });
+app.post('/api/admin/setup-skip', adminOnly, (req, res) => {
+  run('UPDATE companies SET setup_complete=1 WHERE id=?', req.companyId);
+  res.json({ ok: true });
+});
+
 app.post('/api/admin/setup', adminOnly, (req, res, next) => {
   const b = req.body || {};
   try {
@@ -1134,6 +1159,15 @@ app.post('/api/admin/documents', adminOnly, (req, res) => {
       filename, stored_name, mime, visible_to_tenant, uploaded_by)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, req.companyId, loan_id || null, property_id || null, kind || 'closing', cat,
     title || null, effective_date || null, filename, stored, mime || null, shared, req.user.id);
+  if (shared && loan_id) {
+    const ln = get('SELECT tenant_user_id FROM loans WHERE id=?', loan_id);
+    if (ln && ln.tenant_user_id) {
+      notify.notify(ln.tenant_user_id, {
+        kind: 'document', title: 'A new document was shared with you',
+        body: title || filename, url: '/?tab=docs',
+      }).catch(() => {});
+    }
+  }
   res.json(get('SELECT id, filename, kind, category, title, visible_to_tenant, created_at FROM documents WHERE id=?', r.lastInsertRowid));
 });
 
@@ -1368,6 +1402,13 @@ app.post('/api/admin/loans/:id/messages', adminOnly, (req, res) => {
   } else {
     run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
       loan.id, req.user.id, b.body);
+  }
+  if (loan.tenant_user_id) {
+    const co = get('SELECT name FROM companies WHERE id=?', req.companyId);
+    notify.notify(loan.tenant_user_id, {
+      kind: 'message', title: `New message from ${co ? co.name : 'your servicer'}`,
+      body: b.subject || (b.body || '').slice(0, 120), url: '/?tab=msgs',
+    }).catch(() => {});
   }
   res.json({ ok: true });
 });
@@ -1785,6 +1826,164 @@ app.post('/api/admin/autopay-sweep', adminOnly, async (req, res, next) => {
   try { await runAutopaySweep(); res.json({ ok: true }); } catch (e) { next(e); }
 });
 
+// ---------- payment reminders the admin configures ----------
+const DEFAULT_REMINDERS = [
+  { name: 'Coming up', offset_days: -5, channel: 'push', only_if_unpaid: 1,
+    title: 'Payment due in 5 days',
+    body: 'Your payment of {{monthly_payment}} for {{property_address}} is due {{due_date}}.' },
+  { name: 'Due today', offset_days: 0, channel: 'both', only_if_unpaid: 1,
+    title: 'Payment due today',
+    body: 'Your payment of {{amount_due}} is due today. You can pay in the app in under a minute.' },
+  { name: 'Past due', offset_days: 5, channel: 'both', only_if_unpaid: 1,
+    title: 'Payment past due',
+    body: 'We have not received your payment of {{amount_due}} for {{property_address}}. A late fee of {{late_fee}} may apply.' },
+];
+
+function seedReminders(companyId) {
+  if (get('SELECT COUNT(*) c FROM reminder_rules WHERE company_id=?', companyId).c) return;
+  for (const r of DEFAULT_REMINDERS) {
+    run(`INSERT INTO reminder_rules (company_id, name, offset_days, title, body, channel, only_if_unpaid)
+         VALUES (?,?,?,?,?,?,?)`, companyId, r.name, r.offset_days, r.title, r.body, r.channel, r.only_if_unpaid);
+  }
+}
+
+app.get('/api/admin/reminders', adminOnly, (req, res) => {
+  seedReminders(req.companyId);
+  res.json({
+    merge_fields: tpl.MERGE_FIELDS,
+    rules: all('SELECT * FROM reminder_rules WHERE company_id=? ORDER BY offset_days', req.companyId),
+  });
+});
+app.post('/api/admin/reminders', adminOnly, (req, res) => {
+  const b = req.body || {};
+  if (!b.name || !b.title || !b.body) return res.status(400).json({ error: 'Name, title and message are required' });
+  const r = run(`INSERT INTO reminder_rules (company_id, name, offset_days, title, body, channel, only_if_unpaid, enabled)
+    VALUES (?,?,?,?,?,?,?,?)`, req.companyId, b.name, Number(b.offset_days) || 0, b.title, b.body,
+    b.channel || 'push', b.only_if_unpaid === false ? 0 : 1, b.enabled === false ? 0 : 1);
+  res.json(get('SELECT * FROM reminder_rules WHERE id=?', r.lastInsertRowid));
+});
+app.put('/api/admin/reminders/:id', adminOnly, (req, res) => {
+  const rule = get('SELECT * FROM reminder_rules WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!rule) return res.status(404).json({ error: 'Not found' });
+  const b = req.body || {};
+  run(`UPDATE reminder_rules SET name=?, offset_days=?, title=?, body=?, channel=?, enabled=?, only_if_unpaid=? WHERE id=?`,
+    b.name ?? rule.name, b.offset_days ?? rule.offset_days, b.title ?? rule.title, b.body ?? rule.body,
+    b.channel ?? rule.channel, b.enabled === undefined ? rule.enabled : (b.enabled ? 1 : 0),
+    b.only_if_unpaid === undefined ? rule.only_if_unpaid : (b.only_if_unpaid ? 1 : 0), rule.id);
+  res.json(get('SELECT * FROM reminder_rules WHERE id=?', rule.id));
+});
+app.delete('/api/admin/reminders/:id', adminOnly, (req, res) => {
+  const rule = get('SELECT * FROM reminder_rules WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!rule) return res.status(404).json({ error: 'Not found' });
+  run('DELETE FROM reminder_rules WHERE id=?', rule.id);
+  res.json({ ok: true });
+});
+
+// Send one buyer a reminder right now, from a rule or free text.
+app.post('/api/admin/loans/:id/remind', adminOnly, async (req, res, next) => {
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (!loan.tenant_user_id) return res.status(400).json({ error: 'No buyer on this loan yet' });
+  try {
+    const ctx = mergeContextForLoan(req, loan.id);
+    const values = tpl.buildMergeValues(ctx);
+    let title = req.body.title, body = req.body.body;
+    if (req.body.rule_id) {
+      const rule = get('SELECT * FROM reminder_rules WHERE id=? AND company_id=?', req.body.rule_id, req.companyId);
+      if (!rule) return res.status(404).json({ error: 'Reminder not found' });
+      title = rule.title; body = rule.body;
+    }
+    if (!title) return res.status(400).json({ error: 'Nothing to send' });
+    await notify.notify(loan.tenant_user_id, {
+      kind: 'payment_due',
+      title: tpl.applyMerge(title, values),
+      body: tpl.applyMerge(body || '', values),
+      url: '/?tab=pay',
+    });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// Daily sweep that fires every enabled rule at its offset from the due date.
+async function runReminderSweep() {
+  const today_ = today();
+  const loans = all("SELECT * FROM loans WHERE status='active' AND tenant_user_id IS NOT NULL");
+  for (const raw of loans) {
+    try {
+      const loan = assessRecurringCharges(raw);
+      const ledger = all('SELECT * FROM ledger WHERE loan_id=?', loan.id);
+      const status = loanEngine.loanStatus(loan, ledger, today_);
+      const due = status.next_due_date || loanEngine.nextDueDate(loan, today_);
+      if (!due) continue;
+      const rules = all('SELECT * FROM reminder_rules WHERE company_id=? AND enabled=1', loan.company_id);
+      if (!rules.length) continue;
+
+      const company = get('SELECT * FROM companies WHERE id=?', loan.company_id);
+      const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+      const buyer = get('SELECT * FROM users WHERE id=?', loan.tenant_user_id);
+      if (!buyer || buyer.deleted_at || buyer.archived_at) continue;
+      const values = tpl.buildMergeValues({ company, buyer, loan, property, status,
+        payoff: loanEngine.payoffQuote(loan, today_), baseUrl: process.env.BASE_URL || '' });
+
+      for (const rule of rules) {
+        // The day this rule wants to fire, relative to the due date.
+        const fireOn = new Date(new Date(due + 'T00:00:00Z').getTime() + rule.offset_days * 86400000)
+          .toISOString().slice(0, 10);
+        if (fireOn !== today_) continue;
+        if (rule.only_if_unpaid && status.owed_now_cents <= 0 && rule.offset_days >= 0) continue;
+
+        const title = tpl.applyMerge(rule.title, values);
+        const body = tpl.applyMerge(rule.body, values);
+        const dedupe = `rule:${rule.id}:${due}`;
+
+        if (rule.channel === 'push' || rule.channel === 'both') {
+          await notify.notify(loan.tenant_user_id, { kind: rule.offset_days > 0 ? 'payment_late' : 'payment_due',
+            title, body, url: '/?tab=pay', dedupeKey: dedupe });
+        }
+        if (rule.channel === 'message' || rule.channel === 'both') {
+          const already = get("SELECT id FROM messages WHERE loan_id=? AND subject=? AND date(created_at)=?",
+            loan.id, title, today_);
+          if (!already) {
+            const html = tpl.brandedShell({ company, subject: title,
+              bodyHtml: `<p>${tpl.escapeHtml(body)}</p>`, baseUrl: process.env.BASE_URL || '' });
+            const sender = get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL ORDER BY id LIMIT 1", loan.company_id);
+            if (sender) run(`INSERT INTO messages (loan_id, sender_user_id, body, body_html, subject, read_by_admin)
+              VALUES (?,?,?,?,?,1)`, loan.id, sender.id, body, html, title);
+          }
+        }
+      }
+    } catch (e) { console.error('Reminder sweep failed for loan', raw.id, e.message); }
+  }
+}
+setInterval(runReminderSweep, 6 * 60 * 60 * 1000);
+setTimeout(runReminderSweep, 30000);
+app.post('/api/admin/reminder-sweep', adminOnly, async (req, res, next) => {
+  try { await runReminderSweep(); res.json({ ok: true }); } catch (e) { next(e); }
+});
+
+// ---------- notifications ----------
+app.get('/api/push/public-key', anyUser, (req, res) => res.json({ key: notify.vapid().publicKey }));
+app.post('/api/push/subscribe', anyUser, (req, res, next) => {
+  try { notify.subscribe(req.user.id, req.body.subscription); res.json({ ok: true }); }
+  catch (e) { next(e); }
+});
+app.post('/api/push/unsubscribe', anyUser, (req, res) => {
+  if (req.body.endpoint) notify.unsubscribe(req.body.endpoint);
+  res.json({ ok: true });
+});
+app.get('/api/notifications', anyUser, (req, res) => {
+  res.json({ counts: notify.unreadCount(req.user.id), items: notify.list(req.user.id) });
+});
+app.post('/api/notifications/read', anyUser, (req, res) => {
+  notify.markRead(req.user.id, { id: req.body.id, kind: req.body.kind });
+  res.json({ counts: notify.unreadCount(req.user.id) });
+});
+app.get('/api/notifications/prefs', anyUser, (req, res) => res.json(notify.prefsFor(req.user.id)));
+app.post('/api/notifications/prefs', anyUser, (req, res) => {
+  notify.setPrefs(req.user.id, req.body || {});
+  res.json(notify.prefsFor(req.user.id));
+});
+
 // ---------- consent: terms, privacy, messaging, location ----------
 // Apple 5.1.1 and Google Play both require clear consent before collecting personal data,
 // and Play requires a prominent disclosure before any location permission prompt.
@@ -1848,6 +2047,8 @@ function eraseUser(uid, role) {
   try {
     run('DELETE FROM location_pings WHERE user_id=?', uid);
     run('DELETE FROM consents WHERE user_id=?', uid);
+    run('DELETE FROM notifications WHERE user_id=?', uid);
+    run('DELETE FROM push_subscriptions WHERE user_id=?', uid);
     run('UPDATE messages SET body=? WHERE sender_user_id=?', '[message removed at user request]', uid);
     if (role === 'tenant') run('UPDATE loans SET tenant_user_id=NULL WHERE tenant_user_id=?', uid);
     run(`UPDATE users SET email=?, name='Deleted user', phone=NULL,
@@ -1950,6 +2151,12 @@ app.post('/api/tenant/messages', tenantReady, (req, res) => {
   if (!loan) return res.status(404).json({ error: 'No loan' });
   if (!req.body.body) return res.status(400).json({ error: 'Message required' });
   run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_tenant) VALUES (?,?,?,1)', loan.id, req.user.id, req.body.body);
+  const property = get('SELECT address FROM properties WHERE id=?', loan.property_id);
+  for (const a of all("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL AND archived_at IS NULL", loan.company_id)) {
+    notify.notify(a.id, { kind: 'message', title: `${req.user.name} sent a message`,
+      body: `${property ? property.address + ' — ' : ''}${String(req.body.body).slice(0, 120)}`,
+      url: '/admin' }).catch(() => {});
+  }
   res.json({ ok: true });
 });
 

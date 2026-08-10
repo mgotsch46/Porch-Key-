@@ -298,6 +298,44 @@ CREATE TABLE IF NOT EXISTS linked_accounts (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- In-app notification feed. Badge counts read from here, so a notification is never
+-- lost just because a push failed to deliver.
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  kind TEXT NOT NULL DEFAULT 'general',
+  title TEXT NOT NULL,
+  body TEXT,
+  url TEXT,
+  dedupe_key TEXT,          -- stops the same reminder firing twice in a period
+  read_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Payment reminder rules. The admin decides when they fire and what they say.
+-- offset_days is relative to the due date: -3 means three days before, +5 means five after.
+CREATE TABLE IF NOT EXISTS reminder_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  name TEXT NOT NULL,
+  offset_days INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  channel TEXT NOT NULL DEFAULT 'push' CHECK (channel IN ('push','message','both')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  only_if_unpaid INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 -- Reusable HTML message templates, per company.
 CREATE TABLE IF NOT EXISTS message_templates (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -352,6 +390,7 @@ addColumnIfMissing('users', 'location_consent_at', 'TEXT');
 addColumnIfMissing('users', 'terms_accepted_at', 'TEXT');
 addColumnIfMissing('users', 'terms_version', 'TEXT');
 addColumnIfMissing('users', 'deleted_at', 'TEXT');
+addColumnIfMissing('users', 'notify_prefs', 'TEXT');
 addColumnIfMissing('users', 'stripe_customer_id', 'TEXT');
 addColumnIfMissing('companies', 'setup_complete', 'INTEGER DEFAULT 0');
 addColumnIfMissing('companies', 'logo_path', 'TEXT');
@@ -521,6 +560,8 @@ function CREATE_INDEXES() {
     CREATE INDEX IF NOT EXISTS idx_pm_user ON payment_methods(user_id);
     CREATE INDEX IF NOT EXISTS idx_linked_co ON linked_accounts(company_id);
     CREATE INDEX IF NOT EXISTS idx_costs_prop ON property_costs(property_id);
+    CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_notif_dedupe ON notifications(user_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_exp_external ON expenses(external_id) WHERE external_id IS NOT NULL;
   `);
 }

@@ -1,0 +1,89 @@
+WHY SETUP KEPT ASKING — and the bigger problem behind it
+=========================================================
+
+Short version: your database was being erased on every deploy. Setup reappeared
+because the app genuinely was seeing a brand-new install each time.
+
+
+WHAT WENT WRONG
+---------------
+Your app stores everything — the SQLite database and every uploaded document — in
+a folder called /data. On Railway, a container's own disk is temporary; anything
+written there disappears when the app redeploys or restarts. Persisting data needs
+a Volume mounted at that path.
+
+You had one. When I consolidated two services earlier, I asked Railway's agent to
+move the volume to the surviving service and delete the empty one. It deleted the
+old service and the volume went with it. The new service was left with DATA_DIR=/data
+pointing at temporary storage, and I did not verify the mount afterwards.
+
+That was my error, and it is the kind that only shows up later — which is exactly
+what happened.
+
+
+WHAT I FIXED
+------------
+  - Created a new volume and mounted it at /data on the porchpay service
+  - Committed it and confirmed the service now reports hasVolume: true
+  - Deploy completed successfully
+
+From this point your loans, buyers, documents and messages survive redeploys.
+
+
+WHAT WAS LOST
+-------------
+Anything you entered before now. If you created test properties or buyers while
+trying the app out, they are gone. Nothing you had entered was real production
+data as far as I know — but check, and re-enter anything that mattered.
+
+The good news on timing: this surfaced before you had live buyers in the system.
+
+
+ALSO FIXED — setup can no longer repeat
+---------------------------------------
+Two safeguards, independent of the volume:
+
+  1. If a company already has a real name and you have set your own password, the
+     app now treats setup as finished even if the flag went missing. You cannot be
+     walked through it twice.
+
+  2. The wizard has a "Skip — I'll do this later" button. It dismisses permanently.
+
+So even if something else goes sideways in future, setup will not nag you.
+
+
+TWO THINGS FOR YOU TO DO
+------------------------
+1. Sign in and confirm things look right:
+     https://porchpay-production.up.railway.app/admin
+     marisa@reneweqllc.com / Dmsaa121252$
+
+   Because the volume is new and empty, the app has seeded a fresh company. Run
+   through setup once more — this time it will stick.
+
+2. AFTER you sign in successfully, delete these two variables in Railway:
+     RESET_OWNER_PASSWORD
+     RESET_OWNER_EMAIL
+   Railway -> porchpay -> Variables -> hover each -> delete.
+   While they exist, your password resets to Dmsaa121252$ on every deploy.
+
+
+HOW TO CHECK THIS YOURSELF IN FUTURE
+------------------------------------
+Railway -> porchpay -> Settings -> Volumes. There should be a volume mounted at
+/data. If that section is empty, data is not persisting — say so and I will fix it.
+
+Worth doing after any change to the service.
+
+
+BACKUPS — worth setting up before real buyers
+---------------------------------------------
+A volume protects against redeploys. It does not protect against a mistaken delete.
+Everything lives in one file, so a backup is quick:
+
+    npm i -g @railway/cli
+    railway login
+    railway link
+    railway run cp -r /data ./backup-%date%
+
+Do this before any significant change, and on a schedule once you have live loans.

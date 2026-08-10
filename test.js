@@ -525,6 +525,71 @@ async function main() {
   r = await req('/api/admin/address-suggest?q=abc');
   ok(Array.isArray(r.json.suggestions), 'address lookup returns a list even for a short query');
 
+  console.log('— notifications and badges');
+  r = await req('/api/push/public-key');
+  ok(r.json.key && r.json.key.length > 60, 'VAPID public key available for push');
+
+  // a message from the admin badges the buyer
+  const tbUser = (await req('/api/admin/tenants')).json.find(t => t.email === 'gus@test.com');
+  const gusCookie = (await req('/api/login', { method: 'POST', body: JSON.stringify({
+    email: 'gus@test.com', password: (await req(`/api/admin/tenants/${tbUser.id}/reset-password`, { method: 'POST', body: '{}' })).json.temp_password }) }, '')).cookie;
+  await req('/api/change-password', { method: 'POST', body: JSON.stringify({ password: 'GusPass12345!' }) }, gusCookie);
+  await req('/api/tenant/accept-terms', { method: 'POST', body: JSON.stringify({ accept_terms: true, accept_privacy: true }) }, gusCookie);
+
+  r = await req(`/api/admin/loans/${splitLoan}/messages`, { method: 'POST', body: JSON.stringify({ body: 'Quick question for you' }) });
+  await new Promise(res2 => setTimeout(res2, 120));
+  r = await req('/api/notifications', {}, gusCookie);
+  ok(r.json.counts.tabs.msgs >= 1, 'admin message badges the buyer Messages tab');
+
+  // a shared document badges the Docs tab
+  const b64c = Buffer.from('%PDF policy').toString('base64');
+  await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+    filename: 'policy.pdf', mime: 'application/pdf', data_base64: b64c, loan_id: splitLoan,
+    category: 'insurance', title: '2026 policy', visible_to_tenant: true }) });
+  await new Promise(res2 => setTimeout(res2, 120));
+  r = await req('/api/notifications', {}, gusCookie);
+  ok(r.json.counts.tabs.docs >= 1, 'shared document badges the Docs tab');
+  ok(r.json.counts.total >= 2, 'total drives the app icon badge');
+
+  // opening a tab clears just that badge
+  await req('/api/notifications/read', { method: 'POST', body: JSON.stringify({ kind: 'document' }) }, gusCookie);
+  r = await req('/api/notifications', {}, gusCookie);
+  ok(r.json.counts.tabs.docs === 0 && r.json.counts.tabs.msgs >= 1, 'reading one category leaves the others');
+
+  console.log('— admin payment reminders');
+  r = await req('/api/admin/reminders');
+  ok(r.json.rules.length >= 3, 'default reminder rules seeded');
+  ok(r.json.rules.some(x => x.offset_days < 0) && r.json.rules.some(x => x.offset_days > 0),
+    'defaults cover before and after the due date');
+
+  r = await req('/api/admin/reminders', { method: 'POST', body: JSON.stringify({
+    name: 'Two days out', offset_days: -2, channel: 'both',
+    title: 'Heads up, {{first_name}}', body: '{{amount_due}} is due {{due_date}}.' }) });
+  const ruleId = r.json.id;
+  ok(r.status === 200 && r.json.offset_days === -2, 'custom reminder created');
+  r = await req('/api/admin/reminders/' + ruleId, { method: 'PUT', body: JSON.stringify({ enabled: false }) });
+  ok(r.json.enabled === 0, 'reminder can be switched off');
+
+  r = await req(`/api/admin/loans/${splitLoan}/remind`, { method: 'POST', body: JSON.stringify({
+    title: 'Friendly nudge', body: 'You owe {{amount_due}}.' }) });
+  ok(r.status === 200, 'admin sends a one-off reminder');
+  r = await req('/api/notifications', {}, gusCookie);
+  ok(r.json.items.some(i => i.title === 'Friendly nudge'), 'reminder lands in the buyer feed');
+  ok(r.json.counts.tabs.pay >= 1, 'reminder badges the Pay tab');
+
+  r = await req('/api/admin/reminder-sweep', { method: 'POST', body: '{}' });
+  ok(r.status === 200, 'reminder sweep runs');
+  const feedBefore = (await req('/api/notifications', {}, gusCookie)).json.items.length;
+  await req('/api/admin/reminder-sweep', { method: 'POST', body: '{}' });
+  const feedAfter = (await req('/api/notifications', {}, gusCookie)).json.items.length;
+  ok(feedAfter === feedBefore, 'sweep does not duplicate reminders on a second run');
+
+  console.log('— notification preferences');
+  r = await req('/api/notifications/prefs', { method: 'POST', body: JSON.stringify({ document: false }) }, gusCookie);
+  ok(r.json.document === false, 'buyer can switch a category off');
+  r = await req('/api/admin/reminders/' + ruleId, { method: 'DELETE' });
+  ok(r.status === 200, 'reminder deleted');
+
   console.log('— multi-company isolation');
   r = await req('/api/signup', { method: 'POST', body: JSON.stringify({
     company_name: 'Rival Holdings LLC', name: 'Rival Owner', email: 'rival@test.com', password: 'RivalPass123!' }) }, '');

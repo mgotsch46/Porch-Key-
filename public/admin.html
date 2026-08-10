@@ -39,6 +39,8 @@ aside{width:236px;background:var(--nav);color:#fff;padding:22px 0;flex-shrink:0;
 aside .logo{padding:0 20px 18px;font-weight:700;font-size:17px;border-bottom:1px solid rgba(255,255,255,.12);margin-bottom:14px;letter-spacing:-.3px}
 aside .co{padding:0 20px 14px;font-size:12px;color:#9FC4D2;margin-top:-8px}
 aside button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:none;color:#C5DBE4;padding:12px 20px;font-size:14.5px;font-family:inherit;cursor:pointer;border-left:3px solid transparent}
+aside button .ico{font-size:17px;width:20px;text-align:center;flex-shrink:0}
+aside button.mobile-only{display:none}
 aside button:hover{background:rgba(255,255,255,.06);color:#fff}
 aside button.active{background:var(--nav2);color:#fff;border-left-color:var(--accent);font-weight:600}
 aside .me-chip{display:flex;align-items:center;gap:9px;margin:0 12px 14px;padding:9px 11px;
@@ -71,6 +73,14 @@ h2{font-size:15.5px;margin-bottom:12px;font-weight:700;letter-spacing:-.2px}
 .pp-contact{padding:0 18px 12px;font-size:12.5px;color:var(--mut);line-height:1.6}
 .pp-footer{display:flex;align-items:center;gap:7px;padding:10px 18px;border-top:1px solid var(--line);background:#fafcf8;font-size:11.5px;color:var(--mut)}
 .pp-ppmark{height:15px;width:auto;opacity:.75}
+input.solved{background:var(--brand-pale);border-color:var(--brand);color:var(--brand);font-weight:700}
+.emojibar{display:flex;flex-wrap:wrap;gap:4px;padding:10px;background:var(--bg);
+  border:1px solid var(--line);border-radius:12px;margin-top:8px;max-height:180px;overflow-y:auto}
+.emojibar button{background:none;border:none;font-size:21px;cursor:pointer;padding:4px 5px;
+  border-radius:8px;line-height:1}
+.emojibar button:hover{background:var(--brand-pale)}
+.emojigroup{width:100%;font-size:11px;color:var(--mut);font-weight:700;text-transform:uppercase;
+  letter-spacing:.5px;margin:6px 0 2px}
 .tplcard{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:11px}
 .mergechip{background:var(--brand-pale);color:var(--brand);border:none;border-radius:8px;padding:6px 11px;
   font-size:12.5px;font-weight:600;font-family:ui-monospace,monospace;cursor:pointer}
@@ -157,14 +167,18 @@ a{color:var(--brand);font-weight:600}
   aside{position:fixed;bottom:0;left:0;right:0;top:auto;height:auto;width:100%;
     background:#fff;border-top:1px solid var(--line);padding:0 0 env(safe-area-inset-bottom);
     display:flex;overflow:visible;z-index:40;box-shadow:0 -2px 14px rgba(0,0,0,.06)}
-  aside button{flex:1;flex-direction:column;gap:2px;justify-content:center;text-align:center;
+  aside button{flex:1;flex-direction:column;gap:1px;justify-content:center;text-align:center;
     padding:9px 2px 7px;font-size:10.5px;color:var(--mut);border:none;min-height:60px}
+  aside button .ico{font-size:21px;width:auto;margin-bottom:1px;filter:grayscale(1) opacity(.55)}
+  aside button.active .ico{filter:none}
+  aside button .lbl{display:block;line-height:1.1}
   aside button.active{background:none;color:var(--brand);font-weight:700;border:none}
   aside button.active::before{content:'';position:absolute;top:0;left:26%;right:26%;height:3px;
     background:var(--brand);border-radius:0 0 4px 4px}
   aside button{position:relative}
-  /* only the five primary destinations live in the phone tab bar */
-  aside button:nth-child(n+8){display:none}
+  /* only the first five destinations live in the phone tab bar; the rest sit in More */
+  aside button:nth-child(n+6){display:none}
+  aside button.mobile-only{display:flex!important}
   aside .badge{position:absolute;top:5px;right:50%;margin-right:-22px;margin-left:0;padding:0 6px}
   main{padding:14px 14px 20px;max-width:100%}
   h1{font-size:21px;margin-bottom:14px}
@@ -213,20 +227,21 @@ a{color:var(--brand);font-weight:600}
     <div class="logo"><img src="/logo-mark-white.png" alt="" style="height:22px;width:auto;vertical-align:-4px;margin-right:7px">Porch Pay <span style="font-weight:400;font-size:12px;opacity:.7">Admin</span></div>
     <div class="co" id="co-name"></div>
     <div class="me-chip" id="me-chip"></div>
-    <button id="nv-dash" class="active" onclick="nav('dash')">Dashboard</button>
-    <button id="nv-loans" onclick="nav('loans')">Loans</button>
-    <button id="nv-pml" onclick="nav('pml')">PML Loans</button>
-    <button id="nv-tbs" onclick="nav('tbs')">Tenant Buyers</button>
-    <button id="nv-props" onclick="nav('props')">🏠 Properties</button>
-    <button id="nv-calc" onclick="nav('calc')">🧮 Calculator</button>
-    <button id="nv-reports" onclick="nav('reports')">📈 Reports</button>
-    <button id="nv-templates" onclick="nav('templates')">📝 Templates</button>
-    <button id="nv-invites" onclick="nav('invites')">📲 Invitations <span id="inv-badge" class="badge hidden"></span></button>
-    <button id="nv-exp" onclick="nav('exp')">Expenses <span id="exp-badge" class="badge hidden"></span></button>
-    <button id="nv-msgs" onclick="nav('msgs')">Messages <span id="msg-badge" class="badge hidden"></span></button>
-    <button id="nv-slips" onclick="nav('slips')">Cash Codes</button>
-    <button id="nv-settings" onclick="nav('settings')">⚙️ Settings</button>
-    <button id="nv-more" class="mobile-only" onclick="toggleMoreSheet()">⋯ More</button>
+    <button id="nv-dash" class="active" onclick="nav('dash')"><span class="ico">📊</span><span class="lbl">Dashboard</span></button>
+    <button id="nv-props" onclick="nav('props')"><span class="ico">🏠</span><span class="lbl">Properties</span></button>
+    <button id="nv-loans" onclick="nav('loans')"><span class="ico">📄</span><span class="lbl">Loans</span></button>
+    <button id="nv-msgs" onclick="nav('msgs')"><span class="ico">💬</span><span class="lbl">Messages</span><span id="msg-badge" class="badge hidden"></span></button>
+    <button id="nv-more" class="mobile-only" onclick="toggleMoreSheet()"><span class="ico">⋯</span><span class="lbl">More</span></button>
+    <button id="nv-pml" onclick="nav('pml')"><span class="ico">🏦</span><span class="lbl">PML Loans</span></button>
+    <button id="nv-tbs" onclick="nav('tbs')"><span class="ico">👥</span><span class="lbl">Tenant Buyers</span></button>
+    <button id="nv-calc" onclick="nav('calc')"><span class="ico">🧮</span><span class="lbl">Calculator</span></button>
+    <button id="nv-reports" onclick="nav('reports')"><span class="ico">📈</span><span class="lbl">Reports</span></button>
+    <button id="nv-templates" onclick="nav('templates')"><span class="ico">📝</span><span class="lbl">Templates</span></button>
+    <button id="nv-reminders" onclick="nav('reminders')"><span class="ico">🔔</span><span class="lbl">Reminders</span></button>
+    <button id="nv-invites" onclick="nav('invites')"><span class="ico">📲</span><span class="lbl">Invitations</span><span id="inv-badge" class="badge hidden"></span></button>
+    <button id="nv-exp" onclick="nav('exp')"><span class="ico">🧾</span><span class="lbl">Expenses</span><span id="exp-badge" class="badge hidden"></span></button>
+    <button id="nv-slips" onclick="nav('slips')"><span class="ico">💵</span><span class="lbl">Cash Codes</span></button>
+    <button id="nv-settings" onclick="nav('settings')"><span class="ico">⚙️</span><span class="lbl">Settings</span></button>
     <button style="margin-top:14px;color:#7FA3B2" onclick="logout()">Sign out</button>
   </aside>
   <main>
@@ -325,16 +340,20 @@ a{color:var(--brand);font-weight:600}
     <section id="pg-calc" class="hidden">
       <h1>Amortization Calculator</h1>
       <div class="card">
-        <p class="note" style="margin-bottom:14px">Fill in <b>any three</b> and leave the fourth blank — it works out the missing one.</p>
+        <p class="note" style="margin-bottom:14px">Fill in <b>any three</b> and leave the fourth blank. The missing one appears as you type. Click into a filled field and clear it to solve for that one instead.</p>
         <div class="grid2">
           <div class="field"><label>Amount financed ($)</label><input id="ca-principal" type="number" step="0.01" inputmode="decimal" oninput="calcSolve()"></div>
           <div class="field"><label>Interest rate (% APR)</label><input id="ca-rate" type="number" step="0.001" inputmode="decimal" oninput="calcSolve()"></div>
           <div class="field"><label>Term (months)</label><input id="ca-term" type="number" inputmode="numeric" oninput="calcSolve()"></div>
           <div class="field"><label>Monthly P&amp;I ($)</label><input id="ca-payment" type="number" step="0.01" inputmode="decimal" oninput="calcSolve()"></div>
           <div class="field"><label>First payment date</label><input id="ca-first" type="date" oninput="calcSolve()"></div>
-          <div class="field"><label>&nbsp;</label><button class="small" onclick="calcClear()">Clear all</button></div>
+          <div class="field"><label>Total interest</label><input id="ca-interest" readonly style="background:var(--bg)"></div>
         </div>
         <div id="ca-msg" class="note"></div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="primary" onclick="printSchedule()">🖨️ Printable amortization schedule</button>
+          <button class="small" onclick="calcClear()">Clear all</button>
+        </div>
       </div>
       <div id="ca-out"></div>
     </section>
@@ -373,6 +392,25 @@ a{color:var(--brand);font-weight:600}
         <h2>Merge fields</h2>
         <p class="note" style="margin-bottom:10px">Click to copy, then paste into a template.</p>
         <div id="tpl-fields" style="display:flex;flex-wrap:wrap;gap:7px"></div>
+      </div>
+    </section>
+
+    <!-- REMINDERS -->
+    <section id="pg-reminders" class="hidden">
+      <h1>Payment Reminders</h1>
+      <p class="note" style="margin-bottom:14px">These fire automatically for every active loan, timed against each buyer's due date. Merge fields fill in their real numbers.</p>
+      <button class="primary" style="margin-bottom:14px" onclick="reminderModal()">+ New reminder</button>
+      <div id="rem-list"></div>
+      <div class="card">
+        <h2>Merge fields</h2>
+        <p class="note" style="margin-bottom:10px">Click to copy.</p>
+        <div id="rem-fields" style="display:flex;flex-wrap:wrap;gap:7px"></div>
+      </div>
+      <div class="card">
+        <h2>Run now</h2>
+        <p class="note" style="margin-bottom:10px">Normally these run on their own a few times a day. Use this to fire anything due today immediately.</p>
+        <button class="small" onclick="runReminders()">Run the reminder sweep</button>
+        <span id="rem-run" class="note" style="margin-left:10px"></span>
       </div>
     </section>
 
@@ -418,16 +456,26 @@ a{color:var(--brand);font-weight:600}
     <!-- MESSAGES -->
     <section id="pg-msgs" class="hidden">
       <h1>Messages</h1>
+      <div class="card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <span class="note" style="flex:1;min-width:200px">Templates go out on your letterhead with the buyer's real numbers filled in.</span>
+        <button class="small" onclick="nav('templates')">&#128221; Manage templates</button>
+        <button class="small" onclick="nav('reminders')">&#128276; Payment reminders</button>
+      </div>
       <div id="msg-threads" class="card"></div>
       <div id="msg-thread" class="hidden">
         <button class="small" onclick="openMsgs()">← All conversations</button>
         <div class="card" style="margin-top:12px">
           <h2 id="mt-title"></h2>
           <div id="mt-list" style="max-height:420px;overflow:auto;padding:6px 0"></div>
-          <div style="display:flex;gap:8px;margin-top:8px">
+          <div id="emoji-bar" class="emojibar hidden"></div>
+          <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+            <button class="small" style="margin:0" onclick="toggleEmoji()" title="Insert emoji">&#128578;</button>
             <input id="mt-input" placeholder="Write a message…" style="flex:1" onkeydown="if(event.key==='Enter')sendAdminMsg()">
             <button class="primary" onclick="sendAdminMsg()">Send</button>
-            <button class="small" onclick="sendTemplateModal()">&#128221; Template</button>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+            <button class="small" onclick="sendTemplateModal()">&#128221; Use a template</button>
+            <button class="small" onclick="remindModal(msgLoanId)">&#128276; Send a reminder</button>
           </div>
         </div>
       </div>
@@ -570,6 +618,7 @@ a{color:var(--brand);font-weight:600}
 
     <div style="display:flex;gap:10px;margin-top:20px">
       <button class="small" id="wz-back" onclick="wzGo(-1)" style="visibility:hidden">← Back</button>
+      <button class="small" onclick="wzSkip()">Skip — I'll do this later</button>
       <button class="primary" style="margin-left:auto" id="wz-next" onclick="wzNext()">Continue</button>
     </div>
   </div>
@@ -704,7 +753,7 @@ async function doLogin(){
 async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
 
 function nav(pg){
-  for(const p of ['dash','loans','loan','pml','pmld','tbs','props','propd','calc','reports','templates','invites','exp','msgs','slips','settings']){
+  for(const p of ['dash','loans','loan','pml','pmld','tbs','props','propd','calc','reports','templates','reminders','invites','exp','msgs','slips','settings']){
     const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
   }
@@ -717,6 +766,7 @@ function nav(pg){
   if(pg==='reports')loadReports();
   if(pg==='calc')calcSolve();
   if(pg==='templates')loadTemplates();
+  if(pg==='reminders')loadReminders();
 }
 
 // ---------- properties ----------
@@ -1212,7 +1262,9 @@ function templateModal(id){
     </div>
     <div class="field"><label>Subject line</label><input id="tm-subject" value="${esc(t.subject||'')}"></div>
     <div class="field"><label>Message (HTML allowed)</label>
-      <textarea id="tm-body" rows="13" style="font-family:ui-monospace,monospace;font-size:13px">${esc(t.body_html||starter)}</textarea></div>
+      <textarea id="tm-body" rows="13" style="font-family:ui-monospace,monospace;font-size:13px">${esc(t.body_html||starter)}</textarea>
+      <p class="note" style="margin:8px 0 6px">Click an emoji to drop it in:</p>
+      ${emojiStripFor('tm-body')}</div>
     <div id="tm-err" class="err hidden"></div>
     <button class="primary" onclick="saveTemplate(${id||0})">Save template</button>
     <button class="small" onclick="previewDraft()">Preview</button>
@@ -1242,6 +1294,38 @@ async function deleteTemplate(id){
   if(!confirm('Remove this template?'))return;
   await api('/api/admin/templates/'+id,{method:'DELETE'}); loadTemplates();
 }
+// A small, deliberately useful set rather than a full picker.
+const EMOJI_SETS = [
+  ['Friendly', ['\u{1F44B}','\u{1F642}','\u{1F60A}','\u{1F44D}','\u{1F64F}','\u{1F49A}','\u{1F389}','\u{2728}','\u{1F91D}','\u{1F4AA}']],
+  ['Money', ['\u{1F4B5}','\u{1F4B0}','\u{1F4B3}','\u{1F9FE}','\u{1F4C8}','\u{1F4C9}','\u{2705}','\u{26A0}\u{FE0F}','\u{23F0}','\u{1F4C5}']],
+  ['Home', ['\u{1F3E1}','\u{1F3E0}','\u{1F511}','\u{1F6AA}','\u{1F528}','\u{1F6E0}\u{FE0F}','\u{1F9F0}','\u{1F4E6}','\u{1F333}','\u{2600}\u{FE0F}']],
+  ['Paperwork', ['\u{1F4C4}','\u{1F4C1}','\u{1F4CB}','\u{270D}\u{FE0F}','\u{1F4EE}','\u{1F4EC}','\u{1F4CE}','\u{1F58A}\u{FE0F}','\u{1F4CC}','\u{2139}\u{FE0F}']],
+];
+function emojiButtons(targetId){
+  return EMOJI_SETS.map(([name,list])=>
+    `<div class="emojigroup">${name}</div>` +
+    list.map(e=>`<button type="button" onclick="insertEmojiInto('${targetId}','${e}')">${e}</button>`).join('')
+  ).join('');
+}
+function toggleEmoji(){
+  const bar=$('emoji-bar');
+  if(!bar.dataset.built){ bar.innerHTML=emojiButtons('mt-input'); bar.dataset.built='1'; }
+  bar.classList.toggle('hidden');
+}
+function insertEmojiInto(targetId, e){
+  const el=$(targetId); if(!el) return;
+  const start=el.selectionStart ?? el.value.length;
+  const end=el.selectionEnd ?? start;
+  el.value = el.value.slice(0,start) + e + el.value.slice(end);
+  el.focus();
+  const pos=start+e.length;
+  try{ el.setSelectionRange(pos,pos); }catch{}
+}
+function insertEmoji(e){ insertEmojiInto('mt-input', e); }
+function emojiStripFor(targetId){
+  return `<div class="emojibar" style="max-height:none;margin-bottom:10px">${emojiButtons(targetId)}</div>`;
+}
+
 async function sendTemplateModal(){
   if(!TEMPLATES.length) await loadTemplates();
   modal(`<h2>Send a template</h2>
@@ -1270,10 +1354,62 @@ async function sendTemplate(){
 }
 
 // ---------- amortization calculator ----------
-let calcTimer=null;
+let calcTimer=null, CALC_LAST=null;
+// The field the user last cleared is the one we solve for, so typing over an answer
+// hands the question to whatever is now empty.
+function calcClearField(id){ $(id).value=''; $(id).classList.remove('solved'); calcSolve(); }
+function printSchedule(){
+  if(!CALC_LAST || !CALC_LAST.schedule) { alert('Fill in three values first.'); return; }
+  const r=CALC_LAST;
+  const w=window.open('','_blank');
+  if(!w){ alert('Allow pop-ups to print the schedule.'); return; }
+  const co=$('head-co') ? $('head-co').textContent : '';
+  w.document.write(`<!DOCTYPE html><html><head><title>Amortization Schedule</title>
+    <style>
+      body{font-family:'Space Grotesk',system-ui,sans-serif;color:#16220D;padding:28px;max-width:900px;margin:0 auto}
+      h1{font-size:20px;margin-bottom:4px}
+      .sub{color:#6B7A5F;font-size:13px;margin-bottom:18px}
+      .terms{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px}
+      .t{background:#EFF8E7;border-radius:8px;padding:10px}
+      .t .l{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:#6B7A5F}
+      .t .v{font-size:16px;font-weight:700;color:#54A32F}
+      table{width:100%;border-collapse:collapse;font-size:12px}
+      th{text-align:left;border-bottom:2px solid #16220D;padding:6px 4px;font-size:10px;
+        text-transform:uppercase;letter-spacing:.5px;color:#6B7A5F}
+      td{padding:5px 4px;border-bottom:1px solid #E6EEDD}
+      td.r,th.r{text-align:right}
+      tr:nth-child(12n) td{border-bottom:1.5px solid #B9D3C8}
+      @media print{ body{padding:0} .noprint{display:none} }
+      .noprint{margin-bottom:16px}
+      .foot{margin-top:20px;font-size:10px;color:#6B7A5F;text-align:center}
+    </style></head><body>
+    <div class="noprint"><button onclick="window.print()" style="padding:9px 18px;font-size:14px;cursor:pointer">Print</button></div>
+    <h1>Amortization Schedule</h1>
+    <div class="sub">${co?co+' · ':''}Prepared ${new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</div>
+    <div class="terms">
+      <div class="t"><div class="l">Amount financed</div><div class="v">${fmt(r.principal_cents)}</div></div>
+      <div class="t"><div class="l">Interest rate</div><div class="v">${(r.interest_rate_bps/100).toFixed(3)}%</div></div>
+      <div class="t"><div class="l">Term</div><div class="v">${r.term_months} mo</div></div>
+      <div class="t"><div class="l">Monthly P&amp;I</div><div class="v">${fmt(r.payment_cents)}</div></div>
+      <div class="t"><div class="l">Total of payments</div><div class="v">${fmt(r.total_paid_cents)}</div></div>
+      <div class="t"><div class="l">Total interest</div><div class="v">${fmt(r.total_interest_cents)}</div></div>
+      <div class="t"><div class="l">First payment</div><div class="v">${fdate(r.first_payment_date)}</div></div>
+      <div class="t"><div class="l">Final payment</div><div class="v">${fdate(r.final_payment_date)}</div></div>
+    </div>
+    <table><thead><tr><th>#</th><th>Date</th><th class="r">Payment</th><th class="r">Interest</th>
+      <th class="r">Principal</th><th class="r">Balance</th></tr></thead><tbody>
+      ${r.schedule.map(row=>`<tr><td>${row.n}</td><td>${fdate(row.date)}</td>
+        <td class="r">${fmt(row.payment_cents)}</td><td class="r">${fmt(row.interest_cents)}</td>
+        <td class="r">${fmt(row.principal_cents)}</td><td class="r">${fmt(row.balance_cents)}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="foot">Prepared with Porch Pay</div>
+    </body></html>`);
+  w.document.close();
+}
 function calcClear(){
-  ['ca-principal','ca-rate','ca-term','ca-payment'].forEach(id=>$(id).value='');
-  $('ca-out').innerHTML=''; $('ca-msg').textContent='';
+  ['ca-principal','ca-rate','ca-term','ca-payment'].forEach(id=>{ $(id).value=''; $(id).classList.remove('solved'); });
+  if($('ca-interest')) $('ca-interest').value='';
+  $('ca-out').innerHTML=''; $('ca-msg').textContent=''; CALC_LAST=null;
 }
 function calcSolve(){
   clearTimeout(calcTimer);
@@ -1294,11 +1430,22 @@ function calcSolve(){
       $('ca-msg').innerHTML = r.solved_for && r.solved_for!=='nothing'
         ? `Solved for the <b>${names[r.solved_for]}</b>.${r.solved_for==='principal'?' Approximate — several amounts produce the same rounded payment.':''}`
         : 'All four given — here is the schedule.';
-      // write the solved value back into its blank box
-      if(r.solved_for==='payment' && !v('ca-payment')) $('ca-payment').placeholder=(r.payment_cents/100).toFixed(2);
-      if(r.solved_for==='principal' && !v('ca-principal')) $('ca-principal').placeholder=(r.principal_cents/100).toFixed(2);
-      if(r.solved_for==='term' && !v('ca-term')) $('ca-term').placeholder=r.term_months;
-      if(r.solved_for==='rate' && !v('ca-rate')) $('ca-rate').placeholder=(r.interest_rate_bps/100).toFixed(3);
+      // Put the answer in its field and mark it as the computed one.
+      ['ca-principal','ca-rate','ca-term','ca-payment'].forEach(id=>{
+        $(id).classList.remove('solved'); $(id).removeAttribute('title');
+      });
+      const solvedField = {payment:'ca-payment',principal:'ca-principal',term:'ca-term',rate:'ca-rate'}[r.solved_for];
+      if(solvedField){
+        const val = r.solved_for==='payment' ? (r.payment_cents/100).toFixed(2)
+          : r.solved_for==='principal' ? (r.principal_cents/100).toFixed(2)
+          : r.solved_for==='term' ? String(r.term_months)
+          : (r.interest_rate_bps/100).toFixed(3);
+        $(solvedField).value = val;
+        $(solvedField).classList.add('solved');
+        $(solvedField).title = 'Calculated — clear this field to solve for something else';
+      }
+      $('ca-interest').value = fmt(r.total_interest_cents);
+      CALC_LAST = r;
       const yrs=Math.floor(r.term_months/12), mos=r.term_months%12;
       $('ca-out').innerHTML=`
         <div class="cards">
@@ -1324,6 +1471,90 @@ function calcSolve(){
         </div>`;
     }catch(e){ $('ca-msg').innerHTML='<span style="color:var(--red)">'+esc(e.message)+'</span>'; }
   },300);
+}
+
+// ---------- payment reminders ----------
+let REMINDERS=[];
+function offsetLabel(d){
+  d=Number(d);
+  if(d===0) return 'On the due date';
+  if(d<0) return `${Math.abs(d)} day${Math.abs(d)===1?'':'s'} before due`;
+  return `${d} day${d===1?'':'s'} after due`;
+}
+async function loadReminders(){
+  const d=await api('/api/admin/reminders');
+  REMINDERS=d.rules;
+  $('rem-list').innerHTML=REMINDERS.map(r=>`
+    <div class="tplcard"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+      <div style="flex:1">
+        <b style="font-size:15px">${esc(r.name)}</b>
+        <span class="pill ${r.offset_days>0?'due':r.offset_days===0?'amber':'ok'}">${esc(offsetLabel(r.offset_days))}</span>
+        ${r.enabled?'':'<span class="pill gray">off</span>'}
+        <span class="pill gray">${r.channel==='both'?'pop-up + message':r.channel==='message'?'message only':'pop-up only'}</span>
+        <div class="note" style="margin-top:5px"><b>${esc(r.title)}</b></div>
+        <div class="note">${esc(r.body)}</div>
+      </div>
+      <div style="white-space:nowrap">
+        <button class="small" onclick="toggleReminder(${r.id},${r.enabled?0:1})">${r.enabled?'Turn off':'Turn on'}</button>
+        <button class="small" onclick="reminderModal(${r.id})">Edit</button>
+        <button class="small warn" onclick="deleteReminder(${r.id})">&#10005;</button>
+      </div>
+    </div></div>`).join('')||'<p class="note">No reminders yet.</p>';
+  $('rem-fields').innerHTML=(d.merge_fields||[]).map(f=>
+    `<button class="mergechip" title="${esc(f.label)}" onclick="copyMerge('${f.key}')">{{${f.key}}}</button>`).join('');
+}
+function reminderModal(id){
+  const r=REMINDERS.find(x=>x.id===id)||{};
+  modal(`<h2>${id?'Edit':'New'} reminder</h2>
+    <div class="grid2">
+      <div class="field"><label>Name</label><input id="rm-name" value="${esc(r.name||'')}" placeholder="Coming up"></div>
+      <div class="field"><label>When it fires</label>
+        <select id="rm-offset">
+          ${[-14,-10,-7,-5,-3,-2,-1,0,1,3,5,7,10,14,21,30].map(d=>
+            `<option value="${d}"${Number(r.offset_days)===d?' selected':''}>${offsetLabel(d)}</option>`).join('')}
+        </select></div>
+      <div class="field"><label>How it reaches them</label>
+        <select id="rm-channel">
+          <option value="push"${r.channel==='push'?' selected':''}>Pop-up notification only</option>
+          <option value="message"${r.channel==='message'?' selected':''}>In-app message only</option>
+          <option value="both"${r.channel==='both'?' selected':''}>Both</option>
+        </select></div>
+      <div class="field"><label>Only if still unpaid</label>
+        <select id="rm-unpaid">
+          <option value="1"${r.only_if_unpaid!==0?' selected':''}>Yes — skip if they have paid</option>
+          <option value="0"${r.only_if_unpaid===0?' selected':''}>No — always send</option>
+        </select></div>
+    </div>
+    <div class="field"><label>Notification title</label><input id="rm-title" value="${esc(r.title||'')}" placeholder="Payment due in 5 days"></div>
+    <div class="field"><label>Message</label><textarea id="rm-body" rows="4">${esc(r.body||'Your payment of {{monthly_payment}} for {{property_address}} is due {{due_date}}.')}</textarea>
+      ${emojiStripFor('rm-body')}
+      <p class="note" style="margin-top:6px">Merge fields: <code>{{first_name}}</code> <code>{{amount_due}}</code> <code>{{due_date}}</code> <code>{{monthly_payment}}</code> <code>{{late_fee}}</code></p></div>
+    <div id="rm-err" class="err hidden"></div>
+    <button class="primary" onclick="saveReminder(${id||0})">Save reminder</button>`);
+}
+async function saveReminder(id){
+  try{
+    const body={ name:$('rm-name').value, offset_days:Number($('rm-offset').value),
+      title:$('rm-title').value, body:$('rm-body').value, channel:$('rm-channel').value,
+      only_if_unpaid:$('rm-unpaid').value==='1' };
+    if(!body.name||!body.title) throw new Error('Name and title are required');
+    if(id) await api('/api/admin/reminders/'+id,{method:'PUT',body:JSON.stringify(body)});
+    else await api('/api/admin/reminders',{method:'POST',body:JSON.stringify(body)});
+    closeModal(); loadReminders();
+  }catch(e){ $('rm-err').textContent=e.message; $('rm-err').classList.remove('hidden'); }
+}
+async function toggleReminder(id,on){
+  await api('/api/admin/reminders/'+id,{method:'PUT',body:JSON.stringify({enabled:!!on})});
+  loadReminders();
+}
+async function deleteReminder(id){
+  if(!confirm('Remove this reminder?'))return;
+  await api('/api/admin/reminders/'+id,{method:'DELETE'}); loadReminders();
+}
+async function runReminders(){
+  $('rem-run').textContent='Running...';
+  try{ await api('/api/admin/reminder-sweep',{method:'POST',body:'{}'}); $('rem-run').textContent='Done — anything due today has been sent.'; }
+  catch(e){ $('rem-run').textContent='Failed: '+e.message; }
 }
 
 // ---------- reports ----------
@@ -1811,6 +2042,7 @@ async function openLoan(id){
       <button class="small" onclick="chargeModal()">Add charge</button>
       <button class="small" onclick="docModal()">Upload document</button>
       <button class="small" onclick="msgLoanId=${L.id};nav('msgs');openThread(${L.id},'${esc(f.property?f.property.address:'')}')">Message buyer</button>
+      <button class="small" onclick="remindModal(${L.id})">🔔 Send reminder</button>
     </div>
   </div>
   <div class="grid2">
@@ -1888,6 +2120,33 @@ function modal(html){
   },0);
 }
 function closeModal(){ $('modal').classList.add('hidden'); }
+async function remindModal(loanId){
+  if(!REMINDERS.length){ try{ await loadReminders(); }catch{} }
+  modal(`<h2>Send a payment reminder</h2>
+    <p class="note" style="margin-bottom:14px">Goes straight to their phone as a pop-up, and shows as a badge in the app.</p>
+    <div class="field"><label>Use a saved reminder</label>
+      <select id="rd-rule" onchange="rdFill()">
+        <option value="">Write my own</option>
+        ${REMINDERS.map(r=>`<option value="${r.id}">${esc(r.name)}</option>`).join('')}
+      </select></div>
+    <div class="field"><label>Title</label><input id="rd-title" placeholder="Payment due today"></div>
+    <div class="field"><label>Message</label><textarea id="rd-body" rows="3" placeholder="Your payment of {{amount_due}} is due {{due_date}}."></textarea></div>
+    <div id="rd-err" class="err hidden"></div>
+    <div id="rd-ok" class="okmsg hidden"></div>
+    <button class="primary" onclick="sendReminder(${loanId})">Send now</button>`);
+}
+function rdFill(){
+  const r=REMINDERS.find(x=>x.id===Number($('rd-rule').value));
+  if(r){ $('rd-title').value=r.title; $('rd-body').value=r.body; }
+}
+async function sendReminder(loanId){
+  try{
+    const ruleId=Number($('rd-rule').value)||null;
+    await api(`/api/admin/loans/${loanId}/remind`,{method:'POST',body:JSON.stringify(
+      ruleId?{rule_id:ruleId}:{title:$('rd-title').value, body:$('rd-body').value})});
+    $('rd-ok').textContent='Sent.'; $('rd-ok').classList.remove('hidden'); $('rd-err').classList.add('hidden');
+  }catch(e){ $('rd-err').textContent=e.message; $('rd-err').classList.remove('hidden'); }
+}
 function recordPaymentModal(){
   modal(`<h2>Record a payment</h2>
     <div class="field"><label>Amount ($)</label><input id="rp-amt" type="number" step="0.01"></div>
@@ -2306,6 +2565,14 @@ function wzRender(){
   document.querySelectorAll('.wstep').forEach(el=>el.classList.toggle('on', +el.dataset.s <= wzStep));
   $('wz-back').style.visibility = wzStep > 1 ? 'visible' : 'hidden';
   $('wz-next').textContent = wzStep === wzMax ? 'Finish setup' : 'Continue';
+}
+async function wzSkip(){
+  if(wzStep===1 && $('wz-pw') && !$('wz-pw').value){
+    if(!confirm('Skip setup? You are still using a temporary password — change it in Settings soon.')) return;
+  }
+  try{ await api('/api/admin/setup-skip',{method:'POST',body:'{}'}); }catch{}
+  $('wizard').classList.add('hidden');
+  loadDash(); nav('props');
 }
 function wzGo(d){ wzStep = Math.max(1, Math.min(wzMax, wzStep + d)); $('wz-err').classList.add('hidden'); wzRender(); }
 async function wzNext(){
