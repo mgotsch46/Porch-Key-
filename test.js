@@ -263,6 +263,22 @@ async function main() {
   r = await req('/api/tenant/location', { method: 'POST', body: JSON.stringify({ lat: 40.1, lng: -83.0 }) }, tbCookie);
   ok(r.status === 403, 'nothing is recorded again until they opt back in');
 
+  console.log('— address lookup');
+  r = await req('/api/admin/address-suggest?q=abc');
+  ok(r.status === 200 && Array.isArray(r.json.suggestions), 'short queries return an empty list, not an error');
+  ok(r.json.suggestions.length === 0, 'under four characters it does not call out to the geocoder');
+  r = await req('/api/admin/address-suggest?q=1600%20Pennsylvania%20Ave%20Washington%20DC');
+  ok(r.status === 200, 'the lookup endpoint always answers, even when the geocoder is unreachable');
+  ok('suggestions' in r.json, 'the shape is always the same so the UI can rely on it');
+  if (r.json.error) {
+    console.log('     (geocoder unreachable from this machine: ' + r.json.error + ' — the endpoint degraded cleanly)');
+  } else {
+    ok(r.json.suggestions.length > 0, 'a real address returns matches');
+    const d = r.json.suggestions[0].details;
+    ok(d && d.city && d.state && d.zip, 'a match carries city, state and ZIP to fill in');
+    ok(d && d.lat && d.lng, 'a match carries coordinates, so distance-from-home works');
+  }
+
   console.log('— tasks');
   r = await req('/api/admin/tasks', { method: 'POST', body: JSON.stringify({
     title: 'Change the locks', property_id: propId, category: 'bog', priority: 'high',

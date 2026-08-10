@@ -306,7 +306,10 @@ h2{font-size:15.5px;margin-bottom:12px;font-weight:700;letter-spacing:-.2px}
   box-shadow:0 6px 20px rgba(0,0,0,.10);max-height:230px;overflow-y:auto}
 .addr-item{padding:11px 13px;font-size:13.5px;cursor:pointer;border-bottom:1px solid var(--line)}
 .addr-item:last-child{border-bottom:none}
-.addr-item:hover{background:var(--brand-pale);color:var(--brand)}
+.addr-item:hover,.addr-item.on{background:var(--brand-pale);color:var(--brand)}
+/* Status lines inside the dropdown — searching, no match, service down. */
+.addr-msg{padding:11px 13px;font-size:13px;color:var(--mut)}
+.addr-msg.warn{color:#8A5A00;background:var(--accent-pale)}
 .pp-contact{padding:0 18px 12px;font-size:12.5px;color:var(--mut);line-height:1.6}
 .pp-footer{display:flex;align-items:center;gap:7px;padding:10px 18px;border-top:1px solid var(--line);background:#fafcf8;font-size:11.5px;color:var(--mut)}
 .pp-ppmark{height:15px;width:auto;opacity:.75}
@@ -1077,7 +1080,9 @@ a{color:var(--brand);font-weight:600}
           <p class="note" style="margin-top:5px">The name buyers see on statements and notices.</p></div>
         <div class="field"><label>Representative name</label><input id="wz-rep" placeholder="Who buyers ask for"></div>
         <div class="field"><label>Representative phone</label><input id="wz-repphone" placeholder="(555) 555-5555"></div>
-        <div class="field"><label>Mailing address</label><input id="wz-mail" placeholder="PO Box 123"></div>
+        <div class="field"><label>Mailing address</label>
+          <input id="wz-mail" placeholder="Start typing the address…">
+          <p class="note" style="margin-top:5px">Pick a match and the city, state and ZIP fill themselves.</p></div>
         <div class="field"><label>City</label><input id="wz-mailcity"></div>
         <div class="field"><label>State</label><input id="wz-mailstate"></div>
         <div class="field"><label>ZIP</label><input id="wz-mailzip"></div>
@@ -1137,50 +1142,96 @@ a{color:var(--brand);font-weight:600}
 <script>
 const ADMIN_ROLES = ['owner','admin','super_admin'];
 // Type an address, pick a match, and the city/state/ZIP fill themselves.
+// Every address field in the app, in one place. Add a line here and it gets lookup
+// everywhere it appears — no chance of a form quietly missing out, which is exactly
+// what had happened to the setup wizard.
+const ADDRESS_FIELDS = [
+  ['np-addr', {city:'np-city', state:'np-state', zip:'np-zip',
+               latId:'np-lat', lngId:'np-lng', countyId:'np-county'}],   // new property
+  ['cm-addr', {city:'cm-city', state:'cm-state', zip:'cm-zip'}],          // contact
+  ['wz-mail', {city:'wz-mailcity', state:'wz-mailstate', zip:'wz-mailzip'}], // setup wizard
+  ['co-mail', {city:'co-mailcity', state:'co-mailstate', zip:'co-mailzip'}], // company settings
+];
+function wireAddressFields(){
+  for(const [id, f] of ADDRESS_FIELDS) attachAddressLookup(id, f);
+}
+
 function attachAddressLookup(inputId, fields){
   const el=$(inputId); if(!el || el.dataset.addrWired) return;
   el.dataset.addrWired='1';
   el.setAttribute('autocomplete','off');
+  el.setAttribute('spellcheck','false');
+  if(!el.placeholder) el.placeholder='Start typing the address…';
+
   const box=document.createElement('div');
   box.className='addr-suggest hidden';
   el.parentNode.style.position='relative';
   el.parentNode.appendChild(box);
-  let timer=null;
-  const hide=()=>box.classList.add('hidden');
+
+  let timer=null, items=[], cursor=-1;
+  const hide=()=>{ box.classList.add('hidden'); cursor=-1; };
+  const paint=()=>{
+    box.querySelectorAll('.addr-item').forEach((n,i)=>n.classList.toggle('on', i===cursor));
+  };
+
+  // Fill every field this address knows about.
+  const choose=async(sg)=>{
+    let d=sg.details;
+    if(!d && sg.provider==='google'){
+      try{ d=await api(`/api/admin/address-details?id=${encodeURIComponent(sg.id)}&provider=google`); }catch{}
+    }
+    if(d){
+      el.value=d.address||sg.label;
+      const put=(key,val)=>{ if(fields[key] && $(fields[key])) $(fields[key]).value = val || ''; };
+      put('city',d.city); put('state',d.state); put('zip',d.zip);
+      put('latId',d.lat); put('lngId',d.lng); put('countyId',d.county);
+      // Let anything watching those fields react (the property form reads them on save).
+      ['city','state','zip'].forEach(k=>{
+        if(fields[k] && $(fields[k])) $(fields[k]).dispatchEvent(new Event('input',{bubbles:true}));
+      });
+    } else { el.value=sg.label; }
+    hide();
+  };
+
   el.addEventListener('blur',()=>setTimeout(hide,180));
+  el.addEventListener('keydown',(e)=>{
+    if(box.classList.contains('hidden')) return;
+    if(e.key==='ArrowDown'){ e.preventDefault(); cursor=Math.min(cursor+1, items.length-1); paint(); }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); cursor=Math.max(cursor-1, 0); paint(); }
+    else if(e.key==='Enter' && cursor>=0){ e.preventDefault(); choose(items[cursor]); }
+    else if(e.key==='Escape'){ hide(); }
+  });
+
   el.addEventListener('input',()=>{
     clearTimeout(timer);
     const q=el.value.trim();
-    if(q.length<5){ hide(); return; }
+    if(q.length<4){ hide(); return; }
+    // Say something while it thinks, so nobody assumes it is broken.
+    box.innerHTML='<div class="addr-msg">Looking up addresses…</div>';
+    box.classList.remove('hidden');
     timer=setTimeout(async()=>{
+      if(el.value.trim()!==q) return;          // they kept typing
       try{
         const r=await api('/api/admin/address-suggest?q='+encodeURIComponent(q));
-        if(!r.suggestions || !r.suggestions.length){ hide(); return; }
-        box.innerHTML=r.suggestions.map((sg,i)=>
-          `<div class="addr-item" data-i="${i}">${esc(sg.label)}</div>`).join('');
-        box.classList.remove('hidden');
+        if(el.value.trim()!==q) return;
+        items=r.suggestions||[];
+        if(r.error){
+          box.innerHTML='<div class="addr-msg warn">Address lookup is unavailable right now — type the address by hand.</div>';
+          return;
+        }
+        if(!items.length){
+          box.innerHTML='<div class="addr-msg">No match. Keep typing, or enter it by hand.</div>';
+          return;
+        }
+        cursor=-1;
+        box.innerHTML=items.map((sg,i)=>`<div class="addr-item" data-i="${i}">${esc(sg.label)}</div>`).join('');
         box.querySelectorAll('.addr-item').forEach(item=>{
-          item.onmousedown=async(ev)=>{
-            ev.preventDefault();
-            const sg=r.suggestions[Number(item.dataset.i)];
-            let d=sg.details;
-            if(!d && sg.provider==='google'){
-              try{ d=await api(`/api/admin/address-details?id=${encodeURIComponent(sg.id)}&provider=google`); }catch{}
-            }
-            if(d){
-              el.value=d.address||sg.label;
-              if(fields.city && $(fields.city)) $(fields.city).value=d.city||'';
-              if(fields.state && $(fields.state)) $(fields.state).value=d.state||'';
-              if(fields.zip && $(fields.zip)) $(fields.zip).value=d.zip||'';
-              if(fields.latId && $(fields.latId)) $(fields.latId).value=d.lat||'';
-              if(fields.lngId && $(fields.lngId)) $(fields.lngId).value=d.lng||'';
-              if(fields.countyId && $(fields.countyId)) $(fields.countyId).value=d.county||'';
-            } else { el.value=sg.label; }
-            hide();
-          };
+          item.onmousedown=(ev)=>{ ev.preventDefault(); choose(items[Number(item.dataset.i)]); };
         });
-      }catch{ hide(); }
-    },350);
+      }catch(e){
+        box.innerHTML='<div class="addr-msg warn">Address lookup is unavailable right now — type the address by hand.</div>';
+      }
+    },320);
   });
 }
 
@@ -1237,6 +1288,7 @@ async function boot(){
     if(!ADMIN_ROLES.includes(me.role)){ location.href='/'; return; }
     $('v-login').classList.add('hidden'); $('v-app').classList.remove('hidden');
     loadDash();
+    wireAddressFields();          // the wizard and Settings are on the page, not in a modal
     maybeWizard().catch(()=>{});
   }catch{ $('v-login').classList.remove('hidden'); }
 }
@@ -1259,7 +1311,7 @@ function nav(pg){
   if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();loadLinked();}
   if(pg==='msgs')openMsgs(); if(pg==='slips')loadSlips();
   if(pg==='pml'){loadProps();loadPML();}
-  if(pg==='settings'){loadSettings();loadTexting();}
+  if(pg==='settings'){loadSettings();loadTexting();wireAddressFields();}
   if(pg==='invites')loadInvites();
   if(pg==='reports')loadReports();
   if(pg==='calc')calcSolve();
@@ -3648,12 +3700,7 @@ async function sendCustomNotice(){
 }
 function modal(html){
   $('modal-content').innerHTML=html; $('modal').classList.remove('hidden');
-  setTimeout(()=>{
-    wireInputs();
-    attachAddressLookup('np-addr',{city:'np-city',state:'np-state',zip:'np-zip',
-      latId:'np-lat',lngId:'np-lng',countyId:'np-county'});
-    attachAddressLookup('sl-addr',{city:'sl-city',state:'sl-state',zip:'sl-zip'});
-  },0);
+  setTimeout(()=>{ wireInputs(); wireAddressFields(); },0);
 }
 // Most people want the year-by-year picture; the month-by-month detail is one tap away.
 let CALC_OPEN=false;
@@ -4279,6 +4326,7 @@ async function markSlip(id){
 // ---------- first-run setup wizard ----------
 let wzStep = 1, wzMax = 4;
 async function maybeWizard(){
+  setTimeout(wireAddressFields, 60);   // wizard fields exist by now
   const st = await api('/api/admin/setup-state');
   if (st.setup_complete && !st.must_change_password) return false;
   $('wz-name').value = st.user.name && st.user.name !== 'Administrator' ? st.user.name : '';

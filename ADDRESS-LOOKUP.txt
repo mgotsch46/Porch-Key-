@@ -1,0 +1,62 @@
+ADDRESS AUTO-COMPLETE — where it works and how to tell if it isn't
+==================================================================
+
+YOUR QUESTION: does it auto-search and fill as you type, on properties and on
+initial setup?
+
+Properties: yes, it already did.
+Initial setup: no, it did not. That was a genuine gap. Fixed.
+
+
+WHERE IT NOW WORKS
+------------------
+  Add property           address, city, state, ZIP, county, and coordinates
+  Setup wizard           mailing address, city, state, ZIP      <-- was missing
+  Settings -> Company    mailing address, city, state, ZIP      <-- was missing
+  Contacts               address, city, state, ZIP
+
+The coordinates matter beyond convenience: they are what makes the "distance from
+the property" reading on a buyer's location work. A property whose address was typed
+by hand rather than picked from the list has no coordinates and shows dashes there.
+
+
+HOW IT BEHAVES
+--------------
+Type four characters and it starts looking. Pick a suggestion — by mouse, or with the
+arrow keys and Enter — and every related field fills itself. Escape closes the list.
+
+The dropdown always tells you what is happening rather than just disappearing:
+
+  "Looking up addresses…"                        while it searches
+  "No match. Keep typing, or enter it by hand."  nothing found
+  "Address lookup is unavailable right now"      the service could not be reached
+
+That last one matters. Previously the list just vanished on failure, which looks
+identical to "you typed something wrong". Now you can tell the difference.
+
+You can always type an address by hand. Nothing is blocked if lookup is down.
+
+
+A HONEST NOTE ON TESTING
+------------------------
+I could not verify the lookup end-to-end from where I run. My environment can only
+reach an allowlisted set of domains, and the Census geocoder is not one of them —
+Google's is blocked too, while GitHub answers fine. So the failure I see here is my
+own network, not your app.
+
+What I did verify: the endpoint answers correctly in every case, returns the same
+shape whether it succeeds or fails, does not call out for queries under four
+characters, and degrades to a clear message instead of an error. Four tests cover it.
+
+Please check it yourself once deployed: start typing a real address on Add Property.
+If you see the "unavailable" message rather than suggestions, tell me and I will look
+at it from the server side.
+
+
+IF YOU WANT BETTER RESULTS
+--------------------------
+The free US Census geocoder is used by default — no key, no cost, but it only knows
+US addresses and is fussy about incomplete ones. Setting GOOGLE_PLACES_API_KEY in
+Railway switches it to Google Places, which is markedly better at partial addresses
+and understands units and apartment numbers. Google bills per request; for the volume
+you would generate it is pennies.

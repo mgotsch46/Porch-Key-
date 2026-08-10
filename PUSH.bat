@@ -32,7 +32,7 @@ git add -A
 if errorlevel 1 goto failed
 
 echo  Committing...
-git commit -m "Calculator as input blocks with solve-for indicator, amortization as colored year blocks, schedules folded away, proper message composer, swipe-down More sheet, dead code removed"
+git commit -m "Address lookup on setup wizard and company settings, keyboard-navigable with honest failure messages, calculator blocks with solve-for indicator, amortization year blocks, message composer"
 
 echo  Pushing to GitHub...
 echo.
