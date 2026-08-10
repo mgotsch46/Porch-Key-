@@ -52,6 +52,29 @@ aside .badge{background:var(--accent);color:#3D2800;border-radius:20px;padding:1
 main{flex:1;padding:28px;max-width:1280px}
 h1{font-size:24px;margin-bottom:18px;letter-spacing:-.6px;font-weight:700}
 h2{font-size:15.5px;margin-bottom:12px;font-weight:700;letter-spacing:-.2px}
+.pp-letter{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#fff}
+.pp-letterhead{display:flex;align-items:center;gap:10px;padding:14px 18px;background:var(--brand-pale);border-bottom:1px solid var(--line)}
+.pp-colog{height:30px;width:auto}
+.pp-coname{font-weight:700;font-size:15px;color:var(--brand)}
+.pp-subject{padding:14px 18px 0;font-size:17px;font-weight:700;letter-spacing:-.3px}
+.pp-body{padding:14px 18px;font-size:14.5px;line-height:1.65}
+.pp-body p{margin-bottom:11px}
+.pp-body ul,.pp-body ol{margin:0 0 11px 20px}
+.pp-body li{margin-bottom:5px}
+.pp-body a{color:var(--brand)}
+.addr-suggest{position:absolute;left:0;right:0;top:100%;z-index:70;background:#fff;
+  border:1px solid var(--line);border-radius:10px;margin-top:4px;overflow:hidden;
+  box-shadow:0 6px 20px rgba(0,0,0,.10);max-height:230px;overflow-y:auto}
+.addr-item{padding:11px 13px;font-size:13.5px;cursor:pointer;border-bottom:1px solid var(--line)}
+.addr-item:last-child{border-bottom:none}
+.addr-item:hover{background:var(--brand-pale);color:var(--brand)}
+.pp-contact{padding:0 18px 12px;font-size:12.5px;color:var(--mut);line-height:1.6}
+.pp-footer{display:flex;align-items:center;gap:7px;padding:10px 18px;border-top:1px solid var(--line);background:#fafcf8;font-size:11.5px;color:var(--mut)}
+.pp-ppmark{height:15px;width:auto;opacity:.75}
+.tplcard{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:11px}
+.mergechip{background:var(--brand-pale);color:var(--brand);border:none;border-radius:8px;padding:6px 11px;
+  font-size:12.5px;font-weight:600;font-family:ui-monospace,monospace;cursor:pointer}
+.mergechip:hover{background:var(--brand);color:#fff}
 .phasebar{display:flex;gap:6px;margin-top:16px;flex-wrap:wrap}
 .phasestep{flex:1;min-width:96px;padding:9px 8px;border:1.5px solid var(--line);background:#fff;
   border-radius:10px;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer;color:var(--mut)}
@@ -195,6 +218,9 @@ a{color:var(--brand);font-weight:600}
     <button id="nv-pml" onclick="nav('pml')">PML Loans</button>
     <button id="nv-tbs" onclick="nav('tbs')">Tenant Buyers</button>
     <button id="nv-props" onclick="nav('props')">🏠 Properties</button>
+    <button id="nv-calc" onclick="nav('calc')">🧮 Calculator</button>
+    <button id="nv-reports" onclick="nav('reports')">📈 Reports</button>
+    <button id="nv-templates" onclick="nav('templates')">📝 Templates</button>
     <button id="nv-invites" onclick="nav('invites')">📲 Invitations <span id="inv-badge" class="badge hidden"></span></button>
     <button id="nv-exp" onclick="nav('exp')">Expenses <span id="exp-badge" class="badge hidden"></span></button>
     <button id="nv-msgs" onclick="nav('msgs')">Messages <span id="msg-badge" class="badge hidden"></span></button>
@@ -295,6 +321,61 @@ a{color:var(--brand);font-weight:600}
       <div id="prop-detail" style="margin-top:12px"></div>
     </section>
 
+    <!-- CALCULATOR -->
+    <section id="pg-calc" class="hidden">
+      <h1>Amortization Calculator</h1>
+      <div class="card">
+        <p class="note" style="margin-bottom:14px">Fill in <b>any three</b> and leave the fourth blank — it works out the missing one.</p>
+        <div class="grid2">
+          <div class="field"><label>Amount financed ($)</label><input id="ca-principal" type="number" step="0.01" inputmode="decimal" oninput="calcSolve()"></div>
+          <div class="field"><label>Interest rate (% APR)</label><input id="ca-rate" type="number" step="0.001" inputmode="decimal" oninput="calcSolve()"></div>
+          <div class="field"><label>Term (months)</label><input id="ca-term" type="number" inputmode="numeric" oninput="calcSolve()"></div>
+          <div class="field"><label>Monthly P&amp;I ($)</label><input id="ca-payment" type="number" step="0.01" inputmode="decimal" oninput="calcSolve()"></div>
+          <div class="field"><label>First payment date</label><input id="ca-first" type="date" oninput="calcSolve()"></div>
+          <div class="field"><label>&nbsp;</label><button class="small" onclick="calcClear()">Clear all</button></div>
+        </div>
+        <div id="ca-msg" class="note"></div>
+      </div>
+      <div id="ca-out"></div>
+    </section>
+
+    <!-- REPORTS -->
+    <section id="pg-reports" class="hidden">
+      <h1>Reports</h1>
+      <div class="tabs-inline">
+        <button id="rt-returns" class="active" onclick="rptTab='returns';loadReports()">Returns</button>
+        <button id="rt-pl" onclick="rptTab='pl';loadReports()">Profit &amp; Loss</button>
+        <button id="rt-bs" onclick="rptTab='bs';loadReports()">Balance Sheet</button>
+      </div>
+      <div id="rpt-period" class="card hidden">
+        <div class="grid3">
+          <div class="field"><label>From</label><input id="rp-from" type="date"></div>
+          <div class="field"><label>To</label><input id="rp-to" type="date"></div>
+          <div class="field"><label>Quick range</label>
+            <select id="rp-quick" onchange="rptQuick()">
+              <option value="all" selected>All time</option>
+              <option value="ytd">Year to date</option>
+              <option value="12m">Last 12 months</option>
+              <option value="ly">Last calendar year</option>
+            </select></div>
+        </div>
+      </div>
+      <div id="rpt-body"></div>
+    </section>
+
+    <!-- TEMPLATES -->
+    <section id="pg-templates" class="hidden">
+      <h1>Message Templates</h1>
+      <p class="note" style="margin-bottom:14px">Write once, send often. Every message goes out on your company letterhead with your logo. Merge fields fill in that buyer's real numbers.</p>
+      <button class="primary" style="margin-bottom:14px" onclick="templateModal()">+ New template</button>
+      <div id="tpl-list"></div>
+      <div class="card">
+        <h2>Merge fields</h2>
+        <p class="note" style="margin-bottom:10px">Click to copy, then paste into a template.</p>
+        <div id="tpl-fields" style="display:flex;flex-wrap:wrap;gap:7px"></div>
+      </div>
+    </section>
+
     <!-- INVITATIONS -->
     <section id="pg-invites" class="hidden">
       <h1>Buyer Invitations</h1>
@@ -346,6 +427,7 @@ a{color:var(--brand);font-weight:600}
           <div style="display:flex;gap:8px;margin-top:8px">
             <input id="mt-input" placeholder="Write a message…" style="flex:1" onkeydown="if(event.key==='Enter')sendAdminMsg()">
             <button class="primary" onclick="sendAdminMsg()">Send</button>
+            <button class="small" onclick="sendTemplateModal()">&#128221; Template</button>
           </div>
         </div>
       </div>
@@ -363,6 +445,16 @@ a{color:var(--brand);font-weight:600}
           <div class="field"><label>Contact email</label><input id="co-email"></div>
           <div class="field"><label>Contact phone</label><input id="co-phone"></div>
         </div>
+        <div class="grid3">
+          <div class="field"><label>Management company name</label><input id="co-mgmt"></div>
+          <div class="field"><label>Representative name</label><input id="co-rep"></div>
+          <div class="field"><label>Representative phone</label><input id="co-repphone"></div>
+          <div class="field" style="grid-column:span 2"><label>Mailing address</label><input id="co-mail"></div>
+          <div class="field"><label>City</label><input id="co-mailcity"></div>
+          <div class="field"><label>State</label><input id="co-mailstate"></div>
+          <div class="field"><label>ZIP</label><input id="co-mailzip"></div>
+        </div>
+        <p class="note" style="margin-bottom:12px">These appear on every message and notice, and prefill onto each new property. You can change them for a single property without affecting the rest.</p>
         <button class="primary" id="co-save" onclick="saveCompany()">Save company</button>
       </div>
 
@@ -372,12 +464,10 @@ a{color:var(--brand);font-weight:600}
         <div class="grid2">
           <div class="field"><label>Buyer email to prefill</label><input id="df-email" type="email" placeholder="buyer@example.com"></div>
           <div class="field"><label>Buyer phone to prefill</label><input id="df-phone" placeholder="(555) 555-5555"></div>
-          <div class="field"><label>Default late fee ($)</label><input id="df-late" type="number" step="0.01"></div>
-          <div class="field"><label>Default grace period (days)</label><input id="df-grace" type="number"></div>
         </div>
         <div id="df-ok" class="okmsg hidden"></div>
         <button class="primary" onclick="saveDefaults()">Save defaults</button>
-        <p class="note" style="margin-top:10px">Late fee and grace are set <b>per property</b> — these are just the starting values when you add a new one.</p>
+        <p class="note" style="margin-top:10px">Late fee, grace period and payment date are set on each property, not here.</p>
       </div>
       <div class="card">
         <h2>Your login</h2>
@@ -455,17 +545,23 @@ a{color:var(--brand);font-weight:600}
         <div class="field"><label>Contact email</label><input id="wz-coemail" type="email"></div>
         <div class="field"><label>Contact phone</label><input id="wz-cophone"></div>
       </div>
+      <div class="grid2">
+        <div class="field"><label>Management company name</label><input id="wz-mgmt" placeholder="RenewEQ Management LLC">
+          <p class="note" style="margin-top:5px">The name buyers see on statements and notices.</p></div>
+        <div class="field"><label>Representative name</label><input id="wz-rep" placeholder="Who buyers ask for"></div>
+        <div class="field"><label>Representative phone</label><input id="wz-repphone" placeholder="(555) 555-5555"></div>
+        <div class="field"><label>Mailing address</label><input id="wz-mail" placeholder="PO Box 123"></div>
+        <div class="field"><label>City</label><input id="wz-mailcity"></div>
+        <div class="field"><label>State</label><input id="wz-mailstate"></div>
+        <div class="field"><label>ZIP</label><input id="wz-mailzip"></div>
+      </div>
       <div class="field"><label>Logo (optional)</label><input id="wz-logo" type="file" accept="image/*">
         <p class="note" style="margin-top:6px">Replaces the Porch Pay mark in your buyers' app. PNG with a transparent background works best.</p></div>
     </div>
 
     <div class="wpane hidden" data-s="4">
-      <h2>Servicing defaults</h2>
-      <p class="note" style="margin-bottom:14px">Starting values for new loans — you can override them per loan.</p>
-      <div class="grid2">
-        <div class="field"><label>Late fee ($)</label><input id="wz-late" type="number" step="0.01" value="50"></div>
-        <div class="field"><label>Grace period (days)</label><input id="wz-grace" type="number" value="5"></div>
-      </div>
+      <h2>Payment processing</h2>
+      <p class="note" style="margin-bottom:14px">Late fee, grace period and payment date are set <b>per property</b>, since they come out of each contract. Nothing to set here.</p>
       <div class="field"><label><input id="wz-fees" type="checkbox" checked style="width:auto;margin-right:7px">Pass payment processing fees to the buyer</label>
         <p class="note" style="margin-top:6px">The buyer is charged the payment plus the processor's fee; their loan is credited the full payment.
         <b>Check your state law first</b> — a few states restrict card surcharges, and debit card surcharging is barred by card network rules.</p></div>
@@ -498,6 +594,79 @@ a{color:var(--brand);font-weight:600}
 
 <script>
 const ADMIN_ROLES = ['owner','admin','super_admin'];
+// Type an address, pick a match, and the city/state/ZIP fill themselves.
+function attachAddressLookup(inputId, fields){
+  const el=$(inputId); if(!el || el.dataset.addrWired) return;
+  el.dataset.addrWired='1';
+  el.setAttribute('autocomplete','off');
+  const box=document.createElement('div');
+  box.className='addr-suggest hidden';
+  el.parentNode.style.position='relative';
+  el.parentNode.appendChild(box);
+  let timer=null;
+  const hide=()=>box.classList.add('hidden');
+  el.addEventListener('blur',()=>setTimeout(hide,180));
+  el.addEventListener('input',()=>{
+    clearTimeout(timer);
+    const q=el.value.trim();
+    if(q.length<5){ hide(); return; }
+    timer=setTimeout(async()=>{
+      try{
+        const r=await api('/api/admin/address-suggest?q='+encodeURIComponent(q));
+        if(!r.suggestions || !r.suggestions.length){ hide(); return; }
+        box.innerHTML=r.suggestions.map((sg,i)=>
+          `<div class="addr-item" data-i="${i}">${esc(sg.label)}</div>`).join('');
+        box.classList.remove('hidden');
+        box.querySelectorAll('.addr-item').forEach(item=>{
+          item.onmousedown=async(ev)=>{
+            ev.preventDefault();
+            const sg=r.suggestions[Number(item.dataset.i)];
+            let d=sg.details;
+            if(!d && sg.provider==='google'){
+              try{ d=await api(`/api/admin/address-details?id=${encodeURIComponent(sg.id)}&provider=google`); }catch{}
+            }
+            if(d){
+              el.value=d.address||sg.label;
+              if(fields.city && $(fields.city)) $(fields.city).value=d.city||'';
+              if(fields.state && $(fields.state)) $(fields.state).value=d.state||'';
+              if(fields.zip && $(fields.zip)) $(fields.zip).value=d.zip||'';
+              if(fields.latId && $(fields.latId)) $(fields.latId).value=d.lat||'';
+              if(fields.lngId && $(fields.lngId)) $(fields.lngId).value=d.lng||'';
+              if(fields.countyId && $(fields.countyId)) $(fields.countyId).value=d.county||'';
+            } else { el.value=sg.label; }
+            hide();
+          };
+        });
+      }catch{ hide(); }
+    },350);
+  });
+}
+
+// Phone numbers are shown the same way everywhere: 555-555-5555.
+function formatPhoneInput(v){
+  if(!v) return '';
+  const d=String(v).replace(/\D/g,'');
+  if(d.length<=3) return d;
+  if(d.length<=6) return d.slice(0,3)+'-'+d.slice(3);
+  if(d.length<=10) return d.slice(0,3)+'-'+d.slice(3,6)+'-'+d.slice(6);
+  if(d.length===11 && d[0]==='1') return '1-'+d.slice(1,4)+'-'+d.slice(4,7)+'-'+d.slice(7);
+  return String(v);
+}
+function attachPhoneMask(id){
+  const el=$(id); if(!el || el.dataset.phoneWired) return;
+  el.dataset.phoneWired='1';
+  el.setAttribute('inputmode','tel');
+  el.addEventListener('input',()=>{ el.value=formatPhoneInput(el.value); });
+  if(el.value) el.value=formatPhoneInput(el.value);
+}
+// Wire every phone and address field currently on screen.
+function wireInputs(){
+  document.querySelectorAll('input').forEach(el=>{
+    const hint=((el.id||'')+' '+(el.placeholder||'')).toLowerCase();
+    if(/phone|cell|mobile|tel/.test(hint)) attachPhoneMask(el.id);
+  });
+}
+
 const AGREEMENT_LABELS = {
   agreement_for_deed: 'Agreement for Deed',
   land_contract: 'Land Contract',
@@ -535,7 +704,7 @@ async function doLogin(){
 async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
 
 function nav(pg){
-  for(const p of ['dash','loans','loan','pml','pmld','tbs','props','propd','invites','exp','msgs','slips','settings']){
+  for(const p of ['dash','loans','loan','pml','pmld','tbs','props','propd','calc','reports','templates','invites','exp','msgs','slips','settings']){
     const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
   }
@@ -545,6 +714,9 @@ function nav(pg){
   if(pg==='pml'){loadProps();loadPML();}
   if(pg==='settings')loadSettings();
   if(pg==='invites')loadInvites();
+  if(pg==='reports')loadReports();
+  if(pg==='calc')calcSolve();
+  if(pg==='templates')loadTemplates();
 }
 
 // ---------- properties ----------
@@ -555,8 +727,13 @@ async function setPhase(pid,phase){
   await loadProps(); openProp(pid);
 }
 const COST_ICONS={purchase:'🏷️',closing:'📑',rehab:'🔨',bog:'👷',insurance:'🛡️',taxes:'🏛️',utilities:'💡',marketing:'📣',legal:'⚖️',other:'•'};
+async function prefillOwner(){
+  try{ const d=await api('/api/admin/defaults');
+    if($('np-owner') && !$('np-owner').value && d.owner_name) $('np-owner').value=d.owner_name;
+  }catch{}
+}
 function newPropModal(){
-  setTimeout(prefillPropDefaults,0);
+  setTimeout(prefillOwner,0);
   modal(`<h2>Add property</h2>
     <div class="field"><label>Street address</label><input id="np-addr"></div>
     <div class="grid3">
@@ -569,23 +746,25 @@ function newPropModal(){
       <div class="field"><label>Beds</label><input id="np-beds" type="number"></div>
       <div class="field"><label>Baths</label><input id="np-baths" type="number" step="0.5"></div>
       <div class="field"><label>Sq ft</label><input id="np-sqft" type="number"></div>
-      <div class="field"><label>Late fee for this property ($)</label><input id="np-late" type="number" step="0.01"></div>
-      <div class="field"><label>Grace period (days)</label><input id="np-grace" type="number"></div>
+      <div class="field"><label>Late fee ($)</label><input id="np-late" type="number" step="0.01"></div>
+      <div class="field"><label>Grace period (days)</label><input id="np-grace" type="number" placeholder="5"></div>
+      <div class="field"><label>Payment due day of month</label><input id="np-dueday" type="number" min="1" max="28" placeholder="1"></div>
     </div>
-    <p class="note" style="margin:-4px 0 12px">Late fee and grace are set per property. New properties start from your company defaults; change them here for this house.</p>
-    <div class="grid2">
-      <div class="field"><label>Land trust name (optional)</label><input id="np-trust"></div>
+    <p class="note" style="margin:-4px 0 12px">These come from this property's contract, so they're set here rather than company-wide.</p>
+    <div class="grid3">
+      <div class="field"><label>Owner name</label><input id="np-owner" placeholder="Who holds title"></div>
+      <div class="field"><label>Owner type</label><select id="np-ownertype">
+        <option value="llc">LLC</option>
+        <option value="land_trust">Land Trust</option>
+        <option value="individual">Individual</option>
+        <option value="corporation">Corporation</option>
+        <option value="partnership">Partnership</option>
+        <option value="other">Other</option></select></div>
       <div class="field"><label>Trustee (optional)</label><input id="np-trustee"></div>
+      <div class="field" style="grid-column:span 2"><label>Land trust name (if applicable)</label><input id="np-trust"></div>
     </div>
     <div id="np-err" class="err hidden"></div>
     <button class="primary" onclick="createProp()">Add property</button>`);
-}
-async function prefillPropDefaults(){
-  try{
-    const d=await api('/api/admin/defaults');
-    if($('np-late') && d.late_fee_cents!=null) $('np-late').value=(d.late_fee_cents/100).toFixed(2);
-    if($('np-grace') && d.grace_days!=null) $('np-grace').value=d.grace_days;
-  }catch{}
 }
 async function createProp(){
   try{
@@ -600,7 +779,10 @@ async function createProp(){
       beds:parseInt($('np-beds').value)||null, baths:parseFloat($('np-baths').value)||null,
       sqft:parseInt($('np-sqft').value)||null,
       late_fee_cents:$('np-late').value!==''?Math.round(parseFloat($('np-late').value)*100):null,
-      grace_days:$('np-grace').value!==''?parseInt($('np-grace').value):null })});
+      grace_days:$('np-grace').value!==''?parseInt($('np-grace').value):null,
+      due_day:$('np-dueday').value!==''?parseInt($('np-dueday').value):null,
+      owner_name:$('np-owner').value||null, owner_type:$('np-ownertype').value,
+      trustee:$('np-trustee').value||null })});
     if(price) await api(`/api/admin/properties/${prop.id}/costs`,{method:'POST',body:JSON.stringify({
       category:'purchase', description:'Purchase price', amount_cents:price, cost_date:$('np-acq').value||null })});
     closeModal(); openProp(prop.id);
@@ -634,6 +816,7 @@ async function openProp(id){
   </div>
   <div class="card">
     <h2>${esc(p.address)}${p.city?', '+esc(p.city):''} ${p.status==='sold'?'<span class="pill ok">sold</span>':'<span class="pill gray">'+esc(p.status||'owned')+'</span>'}</h2>
+    <p class="note"><b>Owner:</b> ${esc(p.owner_name||'—')} <span class="pill gray">${esc((f.owner_types||{})[p.owner_type]||p.owner_type||'LLC')}</span>${p.trustee?' · trustee '+esc(p.trustee):''}</p>
     <p class="note">${[p.beds?p.beds+' bd':'',p.baths?p.baths+' ba':'',p.sqft?p.sqft.toLocaleString()+' sqft':'',p.year_built?'built '+p.year_built:''].filter(Boolean).join(' · ')||'No property details yet'}
       ${p.acquired_date?' · acquired '+fdate(p.acquired_date):''}
       ${p.trust_name?' · '+esc(p.trust_name):''}</p>
@@ -645,14 +828,15 @@ async function openProp(id){
       <button class="small" onclick="costModal(${p.id})">+ Add cost</button>
       <button class="small" onclick="propDocModal(${p.id})">+ Upload document</button>
       <button class="small" onclick="pmlModal(${p.id})">+ Add PML loan</button>
-      <button class="small" onclick="propTermsModal(${p.id})">Late fee &amp; grace</button>
+      <button class="small" onclick="propTermsModal(${p.id})">Owner &amp; payment terms</button>
     </div>
     <div class="phasebar">
       ${(f.phases||[]).map(ph=>`<button class="phasestep ${p.phase===ph?'on':''} ${(f.phases.indexOf(ph)<f.phases.indexOf(p.phase||'acquired'))?'done':''}"
         onclick="setPhase(${p.id},'${ph}')">${esc((f.phase_labels||{})[ph]||ph)}</button>`).join('')}
     </div>
-    <p class="note" style="margin-top:10px">Late fee ${p.late_fee_cents!=null?fmt(p.late_fee_cents):'<span class="note">not set — company default applies</span>'}
-      · grace ${p.grace_days!=null?p.grace_days+' days':'company default'}</p>
+    <p class="note" style="margin-top:10px">Late fee ${p.late_fee_cents!=null?fmt(p.late_fee_cents):'not set'}
+      · grace ${p.grace_days!=null?p.grace_days+' days':'5 days'}
+      · due day ${p.due_day!=null?p.due_day:'from first payment date'}</p>
   </div>
   <div class="grid2">
     <div class="card"><h2>Cost basis</h2>
@@ -714,11 +898,20 @@ async function openProp(id){
 }
 function propTermsModal(pid){
   const p=(PROPS||[]).find(x=>x.id===pid)||{};
-  modal(`<h2>Late fee &amp; grace for this property</h2>
-    <p class="note" style="margin-bottom:14px">These apply to the loan when you sell this house. Leave blank to use your company default.</p>
-    <div class="grid2">
+  modal(`<h2>Owner &amp; payment terms</h2>
+    <p class="note" style="margin-bottom:14px">These come from this property's contract and apply to the loan when you sell it.</p>
+    <div class="grid3">
       <div class="field"><label>Late fee ($)</label><input id="pt-late" type="number" step="0.01" value="${p.late_fee_cents!=null?(p.late_fee_cents/100).toFixed(2):''}"></div>
       <div class="field"><label>Grace period (days)</label><input id="pt-grace" type="number" value="${p.grace_days!=null?p.grace_days:''}"></div>
+      <div class="field"><label>Due day of month</label><input id="pt-dueday" type="number" min="1" max="28" value="${p.due_day!=null?p.due_day:''}"></div>
+    </div>
+    <div class="grid3">
+      <div class="field"><label>Owner name</label><input id="pt-owner" value="${esc(p.owner_name||'')}"></div>
+      <div class="field"><label>Owner type</label><select id="pt-ownertype">
+        ${['llc','land_trust','individual','corporation','partnership','other'].map(k=>
+          `<option value="${k}"${p.owner_type===k?' selected':''}>${k==='llc'?'LLC':k==='land_trust'?'Land Trust':k[0].toUpperCase()+k.slice(1)}</option>`).join('')}
+      </select></div>
+      <div class="field"><label>Trustee (optional)</label><input id="pt-trustee" value="${esc(p.trustee||'')}"></div>
     </div>
     <div id="pt-err" class="err hidden"></div>
     <button class="primary" onclick="savePropTerms(${pid})">Save</button>`);
@@ -727,7 +920,10 @@ async function savePropTerms(pid){
   try{
     await api(`/api/admin/properties/${pid}/details`,{method:'PUT',body:JSON.stringify({
       late_fee_cents:$('pt-late').value!==''?Math.round(parseFloat($('pt-late').value)*100):null,
-      grace_days:$('pt-grace').value!==''?parseInt($('pt-grace').value):null })});
+      grace_days:$('pt-grace').value!==''?parseInt($('pt-grace').value):null,
+      due_day:$('pt-dueday').value!==''?parseInt($('pt-dueday').value):null,
+      owner_name:$('pt-owner').value||null, owner_type:$('pt-ownertype').value,
+      trustee:$('pt-trustee').value||null })});
     closeModal(); await loadProps(); openProp(pid);
   }catch(e){ $('pt-err').textContent=e.message; $('pt-err').classList.remove('hidden'); }
 }
@@ -803,7 +999,7 @@ async function prefillBuyer(prefix){
   }catch{}
 }
 function sellModal(pid){
-  setTimeout(()=>prefillBuyer('sl'),0);
+  setTimeout(()=>{ prefillBuyer('sl'); slMaturity(); },0);
   modal(`<h2>Sell to a tenant buyer</h2>
     <p class="note" style="margin-bottom:14px">This creates the buyer's login, opens the loan, and prepares a text invitation.</p>
     <div class="grid2">
@@ -818,13 +1014,42 @@ function sellModal(pid){
     <div class="grid3">
       <div class="field"><label>Sale price ($)</label><input id="sl-price" type="number" step="0.01" oninput="slCalc()"></div>
       <div class="field"><label>Down payment ($)</label><input id="sl-down" type="number" step="0.01" oninput="slCalc()"></div>
-      <div class="field"><label>Amount financed ($)</label><input id="sl-fin" type="number" step="0.01"></div>
-      <div class="field"><label>Interest rate (%)</label><input id="sl-rate" type="number" step="0.01"></div>
-      <div class="field"><label>Term (months)</label><input id="sl-term" type="number" value="360"></div>
-      <div class="field"><label>Monthly P&I ($ — blank = auto)</label><input id="sl-pi" type="number" step="0.01"></div>
-      <div class="field"><label>Monthly escrow ($)</label><input id="sl-escrow" type="number" step="0.01" value="0"></div>
-      <div class="field"><label>First payment date</label><input id="sl-first" type="date"></div>
+      <div class="field"><label>Amount financed ($)</label><input id="sl-fin" type="number" step="0.01" oninput="slPI()"></div>
+      <div class="field"><label>Interest rate (%)</label><input id="sl-rate" type="number" step="0.01" oninput="slPI()"></div>
+      <div class="field"><label>Term (months)</label><input id="sl-term" type="number" value="360" oninput="slPI();slMaturity()"></div>
+      <div class="field"><label>First payment date</label><input id="sl-first" type="date" oninput="slMaturity()"></div>
+      <div class="field"><label>Final payment date</label><input id="sl-final" type="date" oninput="slTermFromFinal()">
+        <p class="note" style="margin-top:4px">Fills itself from the term — change it to reset the term.</p></div>
       <div class="field"><label>Beneficial interest %</label><input id="sl-bi" type="number" step="0.1"></div>
+    </div>
+
+    <div class="card" style="background:var(--brand-pale);border:none;margin:4px 0 16px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-weight:700;font-size:14px">Principal &amp; interest</span>
+        <span id="sl-pi-calc" style="font-size:22px;font-weight:700;color:var(--brand)">$0.00</span>
+      </div>
+      <p class="note" style="margin-top:6px">Calculated from the amount financed, rate and term.
+        <a href="#" onclick="togglePiOverride();return false">Override</a></p>
+      <div id="sl-pi-wrap" class="hidden" style="margin-top:10px">
+        <input id="sl-pi" type="number" step="0.01" placeholder="Enter a different P&amp;I" oninput="slTotal()">
+      </div>
+    </div>
+
+    <h2 style="margin:18px 0 8px">What else the buyer pays each month</h2>
+    <p class="note" style="margin-bottom:12px">Each shows as its own line in their app, so nothing looks like a mystery charge.</p>
+    <div class="grid3">
+      <div class="field"><label>Property taxes ($)</label><input id="sl-taxes" type="number" step="0.01" value="0" oninput="slTotal()">
+        <p class="note" style="margin-top:4px">Held in escrow</p></div>
+      <div class="field"><label>Insurance ($)</label><input id="sl-ins" type="number" step="0.01" value="0" oninput="slTotal()">
+        <p class="note" style="margin-top:4px">Held in escrow</p></div>
+      <div class="field"><label>Utilities ($)</label><input id="sl-util" type="number" step="0.01" value="0" oninput="slTotal()"></div>
+      <div class="field"><label>Servicing fee ($)</label><input id="sl-svc" type="number" step="0.01" value="0" oninput="slTotal()"></div>
+      <div class="field"><label>Misc. monthly fee ($)</label><input id="sl-misc" type="number" step="0.01" value="0" oninput="slTotal()"></div>
+      <div class="field"><label>Label for misc. fee</label><input id="sl-misclabel" placeholder="e.g. HOA dues"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;padding:12px 0;border-top:2px solid var(--ink);
+      font-weight:700;font-size:17px;margin-bottom:14px">
+      <span>Total monthly payment</span><span id="sl-total">$0.00</span>
     </div>
     <div id="sl-err" class="err hidden"></div>
     <button class="primary" onclick="doSell(${pid})">Complete sale &amp; create buyer login</button>`);
@@ -832,6 +1057,59 @@ function sellModal(pid){
 function slCalc(){
   const price=parseFloat($('sl-price').value)||0, down=parseFloat($('sl-down').value)||0;
   if(price) $('sl-fin').value=(price-down).toFixed(2);
+  slPI();
+}
+let PI_OVERRIDE=false;
+function togglePiOverride(){
+  PI_OVERRIDE=!PI_OVERRIDE;
+  $('sl-pi-wrap').classList.toggle('hidden',!PI_OVERRIDE);
+  if(!PI_OVERRIDE) $('sl-pi').value='';
+  slTotal();
+}
+// Keep the first payment date, term and final payment date in agreement.
+let matTimer=null;
+async function slMaturity(){
+  clearTimeout(matTimer);
+  matTimer=setTimeout(async()=>{
+    const first=$('sl-first').value, term=parseInt($('sl-term').value)||0;
+    if(!first||!term) return;
+    try{
+      const r=await api(`/api/admin/maturity?first_payment_date=${first}&term_months=${term}`);
+      if(r.final_payment_date) $('sl-final').value=r.final_payment_date;
+    }catch{}
+  },250);
+}
+async function slTermFromFinal(){
+  const first=$('sl-first').value, final=$('sl-final').value;
+  if(!first||!final) return;
+  try{
+    const r=await api(`/api/admin/maturity?first_payment_date=${first}&final_payment_date=${final}`);
+    if(r.term_months>0){ $('sl-term').value=r.term_months; slPI(); }
+  }catch{}
+}
+let piTimer=null;
+function slPI(){
+  clearTimeout(piTimer);
+  piTimer=setTimeout(async()=>{
+    const fin=Math.round((parseFloat($('sl-fin').value)||0)*100);
+    const rate=Math.round((parseFloat($('sl-rate').value)||0)*100);
+    const term=parseInt($('sl-term').value)||0;
+    if(!fin||!term){ $('sl-pi-calc').textContent=fmt(0); slTotal(); return; }
+    try{
+      const r=await api(`/api/admin/calc-payment?principal_cents=${fin}&interest_rate_bps=${rate}&term_months=${term}`);
+      $('sl-pi-calc').textContent=fmt(r.payment_cents);
+      $('sl-pi-calc').dataset.cents=r.payment_cents;
+    }catch{}
+    slTotal();
+  },250);
+}
+function slTotal(){
+  const pi = PI_OVERRIDE && $('sl-pi').value
+    ? Math.round(parseFloat($('sl-pi').value)*100)
+    : Number($('sl-pi-calc').dataset.cents||0);
+  const extra=['sl-taxes','sl-ins','sl-util','sl-svc','sl-misc']
+    .reduce((t,id)=>t+Math.round((parseFloat(($(id)||{}).value)||0)*100),0);
+  const el=$('sl-total'); if(el) el.textContent=fmt(pi+extra);
 }
 async function doSell(pid){
   try{
@@ -843,8 +1121,13 @@ async function doSell(pid){
       principal_cents:Math.round(parseFloat($('sl-fin').value)*100),
       interest_rate_bps:Math.round(parseFloat($('sl-rate').value)*100),
       term_months:parseInt($('sl-term').value),
-      payment_cents:$('sl-pi').value?Math.round(parseFloat($('sl-pi').value)*100):null,
-      escrow_cents:Math.round((parseFloat($('sl-escrow').value)||0)*100),
+      payment_cents:(PI_OVERRIDE && $('sl-pi').value)?Math.round(parseFloat($('sl-pi').value)*100):null,
+      monthly_taxes_cents:Math.round((parseFloat($('sl-taxes').value)||0)*100),
+      monthly_insurance_cents:Math.round((parseFloat($('sl-ins').value)||0)*100),
+      monthly_utilities_cents:Math.round((parseFloat($('sl-util').value)||0)*100),
+      monthly_servicing_cents:Math.round((parseFloat($('sl-svc').value)||0)*100),
+      monthly_misc_cents:Math.round((parseFloat($('sl-misc').value)||0)*100),
+      misc_label:$('sl-misclabel').value||null,
       first_payment_date:$('sl-first').value,
       beneficial_interest_pct:$('sl-bi').value?parseFloat($('sl-bi').value):null })});
     closeModal(); showInvite(r.invitation_id);
@@ -895,13 +1178,283 @@ async function loadInvites(){
   ).join('')||'<tr><td colspan="5" class="note">No invitations yet. Sell a property to create one.</td></tr>';
 }
 
+// ---------- message templates ----------
+let TEMPLATES=[], MERGE_FIELDS=[];
+async function loadTemplates(){
+  const d=await api('/api/admin/templates');
+  TEMPLATES=d.templates; MERGE_FIELDS=d.merge_fields;
+  $('tpl-list').innerHTML=TEMPLATES.map(t=>`
+    <div class="tplcard"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+      <div><b style="font-size:15px">${esc(t.name)}</b>
+        ${t.is_starter?'<span class="pill gray">starter</span>':''}
+        <div class="note" style="margin-top:3px">${esc(t.subject||'(no subject)')}</div></div>
+      <div style="white-space:nowrap">
+        <button class="small" onclick="previewTemplate(${t.id})">Preview</button>
+        <button class="small" onclick="templateModal(${t.id})">Edit</button>
+        <button class="small warn" onclick="deleteTemplate(${t.id})">&#10005;</button></div>
+    </div></div>`).join('')||'<p class="note">No templates yet.</p>';
+  $('tpl-fields').innerHTML=MERGE_FIELDS.map(f=>
+    `<button class="mergechip" title="${esc(f.label)} - e.g. ${esc(f.example)}" onclick="copyMerge('${f.key}')">{{${f.key}}}</button>`).join('');
+}
+function copyMerge(key){
+  const t=document.createElement('textarea'); t.value='{{'+key+'}}';
+  document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove();
+}
+function templateModal(id){
+  const t=TEMPLATES.find(x=>x.id===id)||{};
+  const starter='<p>Hi {{first_name}},</p>\n<p></p>\n<p>&mdash; {{company_name}}</p>';
+  modal(`<h2>${id?'Edit':'New'} template</h2>
+    <div class="grid2">
+      <div class="field"><label>Template name</label><input id="tm-name" value="${esc(t.name||'')}" placeholder="Payment reminder"></div>
+      <div class="field"><label>Category</label><select id="tm-cat">
+        ${['general','welcome','reminder','receipt','late','notice','payoff'].map(c=>`<option value="${c}"${t.category===c?' selected':''}>${c}</option>`).join('')}
+      </select></div>
+    </div>
+    <div class="field"><label>Subject line</label><input id="tm-subject" value="${esc(t.subject||'')}"></div>
+    <div class="field"><label>Message (HTML allowed)</label>
+      <textarea id="tm-body" rows="13" style="font-family:ui-monospace,monospace;font-size:13px">${esc(t.body_html||starter)}</textarea></div>
+    <div id="tm-err" class="err hidden"></div>
+    <button class="primary" onclick="saveTemplate(${id||0})">Save template</button>
+    <button class="small" onclick="previewDraft()">Preview</button>
+    <div id="tm-preview" style="margin-top:14px"></div>`);
+}
+async function saveTemplate(id){
+  try{
+    const body={ name:$('tm-name').value, category:$('tm-cat').value,
+      subject:$('tm-subject').value, body_html:$('tm-body').value };
+    if(!body.name) throw new Error('Give the template a name');
+    if(id) await api('/api/admin/templates/'+id,{method:'PUT',body:JSON.stringify(body)});
+    else await api('/api/admin/templates',{method:'POST',body:JSON.stringify(body)});
+    closeModal(); loadTemplates();
+  }catch(e){ $('tm-err').textContent=e.message; $('tm-err').classList.remove('hidden'); }
+}
+async function previewDraft(){
+  const r=await api('/api/admin/templates/preview',{method:'POST',body:JSON.stringify({
+    subject:$('tm-subject').value, body_html:$('tm-body').value })});
+  $('tm-preview').innerHTML='<p class="note" style="margin-bottom:8px">Preview with example values:</p>'+r.html;
+}
+async function previewTemplate(id){
+  const t=TEMPLATES.find(x=>x.id===id);
+  const r=await api('/api/admin/templates/preview',{method:'POST',body:JSON.stringify({subject:t.subject, body_html:t.body_html})});
+  modal(`<h2>${esc(t.name)}</h2>${r.html}<button class="primary" style="margin-top:16px" onclick="closeModal()">Close</button>`);
+}
+async function deleteTemplate(id){
+  if(!confirm('Remove this template?'))return;
+  await api('/api/admin/templates/'+id,{method:'DELETE'}); loadTemplates();
+}
+async function sendTemplateModal(){
+  if(!TEMPLATES.length) await loadTemplates();
+  modal(`<h2>Send a template</h2>
+    <div class="field"><label>Template</label><select id="st-tpl" onchange="previewSendTemplate()">
+      <option value="">Choose...</option>
+      ${TEMPLATES.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
+    <div id="st-preview"></div>
+    <div id="st-err" class="err hidden"></div>
+    <button class="primary" onclick="sendTemplate()">Send to this buyer</button>`);
+}
+async function previewSendTemplate(){
+  const id=Number($('st-tpl').value); if(!id){ $('st-preview').innerHTML=''; return; }
+  const t=TEMPLATES.find(x=>x.id===id);
+  const r=await api('/api/admin/templates/preview',{method:'POST',body:JSON.stringify({
+    loan_id:msgLoanId, subject:t.subject, body_html:t.body_html })});
+  $('st-preview').innerHTML='<p class="note" style="margin-bottom:8px">Exactly what they will see:</p>'+r.html;
+}
+async function sendTemplate(){
+  try{
+    const id=Number($('st-tpl').value); if(!id) throw new Error('Pick a template first');
+    const t=TEMPLATES.find(x=>x.id===id);
+    await api(`/api/admin/loans/${msgLoanId}/messages`,{method:'POST',body:JSON.stringify({
+      subject:t.subject, body_html:t.body_html, template_id:t.id })});
+    closeModal(); openThread(msgLoanId,$('mt-title').textContent);
+  }catch(e){ $('st-err').textContent=e.message; $('st-err').classList.remove('hidden'); }
+}
+
+// ---------- amortization calculator ----------
+let calcTimer=null;
+function calcClear(){
+  ['ca-principal','ca-rate','ca-term','ca-payment'].forEach(id=>$(id).value='');
+  $('ca-out').innerHTML=''; $('ca-msg').textContent='';
+}
+function calcSolve(){
+  clearTimeout(calcTimer);
+  calcTimer=setTimeout(async()=>{
+    const v=id=>$(id).value.trim();
+    const q=new URLSearchParams();
+    if(v('ca-principal')) q.set('principal_cents', Math.round(parseFloat(v('ca-principal'))*100));
+    if(v('ca-rate')!=='') q.set('interest_rate_bps', Math.round(parseFloat(v('ca-rate'))*100));
+    if(v('ca-term')) q.set('term_months', parseInt(v('ca-term')));
+    if(v('ca-payment')) q.set('payment_cents', Math.round(parseFloat(v('ca-payment'))*100));
+    if(v('ca-first')) q.set('first_payment_date', v('ca-first'));
+    const filled=['ca-principal','ca-rate','ca-term','ca-payment'].filter(id=>v(id)!=='').length;
+    if(filled<3){ $('ca-msg').textContent='Fill in any three of the four above.'; $('ca-out').innerHTML=''; return; }
+    try{
+      const r=await api('/api/admin/amortize?'+q.toString());
+      if(r.error){ $('ca-msg').innerHTML='<span style="color:var(--red)">'+esc(r.error)+'</span>'; $('ca-out').innerHTML=''; return; }
+      const names={payment:'monthly payment',principal:'amount financed',term:'term',rate:'interest rate'};
+      $('ca-msg').innerHTML = r.solved_for && r.solved_for!=='nothing'
+        ? `Solved for the <b>${names[r.solved_for]}</b>.${r.solved_for==='principal'?' Approximate — several amounts produce the same rounded payment.':''}`
+        : 'All four given — here is the schedule.';
+      // write the solved value back into its blank box
+      if(r.solved_for==='payment' && !v('ca-payment')) $('ca-payment').placeholder=(r.payment_cents/100).toFixed(2);
+      if(r.solved_for==='principal' && !v('ca-principal')) $('ca-principal').placeholder=(r.principal_cents/100).toFixed(2);
+      if(r.solved_for==='term' && !v('ca-term')) $('ca-term').placeholder=r.term_months;
+      if(r.solved_for==='rate' && !v('ca-rate')) $('ca-rate').placeholder=(r.interest_rate_bps/100).toFixed(3);
+      const yrs=Math.floor(r.term_months/12), mos=r.term_months%12;
+      $('ca-out').innerHTML=`
+        <div class="cards">
+          <div class="stat"><div class="n">${fmt(r.payment_cents)}</div><div class="l">Monthly P&amp;I</div></div>
+          <div class="stat"><div class="n">${fmt(r.principal_cents)}</div><div class="l">Amount financed</div></div>
+          <div class="stat"><div class="n">${(r.interest_rate_bps/100).toFixed(3)}%</div><div class="l">Interest rate</div></div>
+          <div class="stat"><div class="n">${r.term_months}</div><div class="l">Months${yrs?` (${yrs}y ${mos}m)`:''}</div></div>
+        </div>
+        <div class="card">
+          <h2>Totals</h2>
+          ${rline('Total of all payments', fmt(r.total_paid_cents))}
+          ${rline('Total interest paid', fmt(r.total_interest_cents))}
+          ${rline('Interest as a share of principal', ((r.total_interest_cents/r.principal_cents)*100).toFixed(1)+'%')}
+          ${r.final_payment_date?rline('Final payment date', fdate(r.final_payment_date)):''}
+        </div>
+        <div class="card"><h2>Schedule</h2>
+          <div style="max-height:420px;overflow:auto"><table>
+            <thead><tr><th>#</th><th>Date</th><th class="right">Payment</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Balance</th></tr></thead>
+            <tbody>${r.schedule.map(row=>`<tr><td>${row.n}</td><td>${fdate(row.date)}</td>
+              <td class="right">${fmt(row.payment_cents)}</td><td class="right">${fmt(row.interest_cents)}</td>
+              <td class="right">${fmt(row.principal_cents)}</td><td class="right">${fmt(row.balance_cents)}</td></tr>`).join('')}</tbody>
+          </table></div>
+        </div>`;
+    }catch(e){ $('ca-msg').innerHTML='<span style="color:var(--red)">'+esc(e.message)+'</span>'; }
+  },300);
+}
+
+// ---------- reports ----------
+let rptTab='returns';
+const pctFmt = v => (v===null||v===undefined) ? '—' : v.toFixed(1)+'%';
+const pctColor = v => (v===null||v===undefined) ? 'var(--mut)' : (v>=0?'var(--brand)':'var(--red)');
+function rptQuick(){
+  const v=$('rp-quick').value, now=new Date(), y=now.getFullYear(), iso=d=>d.toISOString().slice(0,10);
+  if(v==='ytd'){ $('rp-from').value=`${y}-01-01`; $('rp-to').value=iso(now); }
+  else if(v==='12m'){ $('rp-from').value=iso(new Date(Date.now()-365*86400000)); $('rp-to').value=iso(now); }
+  else if(v==='ly'){ $('rp-from').value=`${y-1}-01-01`; $('rp-to').value=`${y-1}-12-31`; }
+  else { $('rp-from').value=''; $('rp-to').value=''; }
+  loadReports();
+}
+async function loadReports(){
+  ['returns','pl','bs'].forEach(t=>$('rt-'+t).classList.toggle('active', rptTab===t));
+  $('rpt-period').classList.toggle('hidden', rptTab!=='pl');
+  if(rptTab==='returns') return renderReturns();
+  if(rptTab==='pl') return renderPL();
+  return renderBS();
+}
+function rline(label,value,o){
+  o=o||{};
+  return `<div style="display:flex;justify-content:space-between;padding:${o.total?'11px 0 0':'7px 0'};font-size:14.5px;
+    ${o.total?'border-top:2px solid var(--ink);margin-top:8px;font-weight:700;font-size:16px;':''}
+    ${o.sub?'padding-left:14px;color:var(--mut);font-size:13.5px;':''}">
+    <span>${label}</span><span${o.color?` style="color:${o.color}"`:''}>${value}</span></div>`;
+}
+async function renderReturns(){
+  const d=await api('/api/admin/reports/returns'), t=d.totals;
+  $('rpt-body').innerHTML=`
+  <div class="cards">
+    <div class="stat"><div class="n">${fmt(t.cash_invested_cents)}</div><div class="l">Cash in the deals</div></div>
+    <div class="stat"><div class="n" style="color:${pctColor(t.cash_on_cash_run_rate_pct)}">${pctFmt(t.cash_on_cash_run_rate_pct)}</div><div class="l">Cash-on-cash</div></div>
+    <div class="stat"><div class="n" style="color:${pctColor(t.roi_to_date_pct)}">${pctFmt(t.roi_to_date_pct)}</div><div class="l">ROI to date</div></div>
+    <div class="stat"><div class="n" style="color:${t.net_profit_to_date_cents>=0?'var(--brand)':'var(--red)'}">${fmt(t.net_profit_to_date_cents)}</div><div class="l">Net profit to date</div></div>
+  </div>
+  <div class="card"><h2>Portfolio</h2>
+    ${rline('All-in cost across every property', fmt(t.all_in_cents))}
+    ${rline('Less: lender money and buyer down payments', '-'+fmt(t.all_in_cents-t.cash_invested_cents))}
+    ${rline('Your cash in the deals', fmt(t.cash_invested_cents), {total:true})}
+    <div style="height:14px"></div>
+    ${rline('Notes receivable (buyers owe you)', fmt(t.note_balance_cents))}
+    ${rline('Owed to private lenders', '-'+fmt(t.lender_balance_cents))}
+    ${rline('Annual cash flow at current payments', fmt(t.annual_run_rate_cents))}
+    ${rline('Actual cash flow, last 12 months', fmt(t.ttm_cash_flow_cents))}
+  </div>
+  <div class="card"><h2>By property</h2><div style="overflow-x:auto"><table>
+    <thead><tr><th>Property</th><th class="right">All in</th><th class="right">Cash invested</th>
+      <th class="right">Annual cash flow</th><th class="right">Cash-on-cash</th><th class="right">ROI to date</th></tr></thead>
+    <tbody>${d.properties.map(r=>`<tr class="click" onclick="openProp(${r.property_id})">
+      <td>${esc(r.address)}<br><span class="note">${esc(r.status||'')}${r.years_held?' · held '+r.years_held+' yr':''}</span></td>
+      <td class="right">${fmt(r.all_in_cents)}</td>
+      <td class="right">${r.infinite_return?'<span class="pill ok">all cash out</span>':fmt(r.cash_invested_cents)}</td>
+      <td class="right">${fmt(r.annual_run_rate_cents)}</td>
+      <td class="right" style="color:${pctColor(r.cash_on_cash_run_rate_pct)}">${r.infinite_return?'&#8734;':pctFmt(r.cash_on_cash_run_rate_pct)}</td>
+      <td class="right" style="color:${pctColor(r.roi_to_date_pct)}">${r.infinite_return?'&#8734;':pctFmt(r.roi_to_date_pct)}</td></tr>`).join('')
+      ||'<tr><td colspan="6" class="note">No properties yet.</td></tr>'}</tbody></table></div>
+    <p class="note" style="margin-top:12px"><b>Cash invested</b> is everything you put in, less what a lender advanced and less the buyer's down payment, plus any lender principal you have repaid. <b>Cash-on-cash</b> is annual cash flow over that. <b>&#8734;</b> means the deal has returned all your cash.</p>
+  </div>`;
+}
+async function renderPL(){
+  const q=[]; if($('rp-from').value) q.push('from='+$('rp-from').value); if($('rp-to').value) q.push('to='+$('rp-to').value);
+  const d=await api('/api/admin/reports/pl'+(q.length?'?'+q.join('&'):''));
+  const L={rehab:'Rehab &amp; repairs',bog:'Boots on the ground',filing:'Filing &amp; recording',
+    insurance:'Insurance',taxes:'Property taxes',utilities:'Utilities',marketing:'Marketing',
+    legal:'Legal &amp; title',closing:'Closing costs',other:'Other',imported:'Imported from statements'};
+  const e=d.expenses;
+  $('rpt-body').innerHTML=`
+  <div class="cards">
+    <div class="stat"><div class="n">${fmt(d.revenue.total_cents)}</div><div class="l">Revenue</div></div>
+    <div class="stat"><div class="n">${fmt(e.total_cents)}</div><div class="l">Expenses</div></div>
+    <div class="stat"><div class="n" style="color:${d.net_operating_income_cents>=0?'var(--brand)':'var(--red)'}">${fmt(d.net_operating_income_cents)}</div><div class="l">Net operating income</div></div>
+    <div class="stat"><div class="n" style="color:${d.net_income_cents>=0?'var(--brand)':'var(--red)'}">${fmt(d.net_income_cents)}</div><div class="l">Net income</div></div>
+  </div>
+  <div class="card"><h2>Profit &amp; Loss <span class="note" style="font-weight:400">${d.period.from||d.period.to?((d.period.from||'start')+' to '+(d.period.to||'today')):'All time'}</span></h2>
+    <p style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin:14px 0 4px">Revenue</p>
+    ${rline('Interest income from buyer notes', fmt(d.revenue.interest_income))}
+    ${rline('Late fees and other charges collected', fmt(d.revenue.fee_income))}
+    ${rline('Total revenue', fmt(d.revenue.total_cents), {total:true})}
+    <p style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin:22px 0 4px">Expenses</p>
+    ${rline('Interest paid to private lenders', fmt(e.lender_interest))}
+    ${Object.keys(L).filter(k=>e[k]).map(k=>rline(L[k], fmt(e[k]))).join('')}
+    ${rline('Total expenses', fmt(e.total_cents), {total:true})}
+    ${rline('Net operating income', fmt(d.net_operating_income_cents), {total:true, color:d.net_operating_income_cents>=0?'var(--brand)':'var(--red)'})}
+    ${d.gain_on_sale_cents?`<p style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin:22px 0 4px">Gain on sale</p>
+      ${d.sales.map(sl=>rline(esc(sl.address)+' <span class="note">('+fmt(sl.sale_price_cents)+' less '+fmt(sl.basis_cents)+' basis)</span>', fmt(sl.gain_cents))).join('')}
+      ${rline('Total gain on sale', fmt(d.gain_on_sale_cents), {total:true})}`:''}
+    ${rline('Net income', fmt(d.net_income_cents), {total:true, color:d.net_income_cents>=0?'var(--brand)':'var(--red)'})}
+  </div>
+  <div class="card"><h2>Not counted as income</h2>
+    ${rline('Principal collected from buyers', fmt(d.memo.principal_collected_cents))}
+    ${rline('Escrow collected and held for buyers', fmt(d.memo.escrow_collected_cents))}
+    ${rline('Processing fees passed to the processor', fmt(d.memo.processing_fees_collected_cents))}
+    <p class="note" style="margin-top:12px">Principal is return of your capital, not earnings. Escrow belongs to the buyer until disbursed. Processing fees pass straight through. Gain on a land contract is often reported on the installment method — ask your CPA.</p>
+  </div>`;
+}
+async function renderBS(){
+  const d=await api('/api/admin/reports/balance-sheet'), a=d.assets, l=d.liabilities;
+  $('rpt-body').innerHTML=`
+  <div class="cards">
+    <div class="stat"><div class="n">${fmt(a.total_cents)}</div><div class="l">Total assets</div></div>
+    <div class="stat"><div class="n">${fmt(l.total_cents)}</div><div class="l">Total liabilities</div></div>
+    <div class="stat"><div class="n" style="color:${d.equity_cents>=0?'var(--brand)':'var(--red)'}">${fmt(d.equity_cents)}</div><div class="l">Owner's equity</div></div>
+  </div>
+  <div class="card"><h2>Balance Sheet <span class="note" style="font-weight:400">as of ${fdate(d.as_of)}</span></h2>
+    <p style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin:14px 0 4px">Assets</p>
+    ${rline('Notes receivable — buyer loan balances', fmt(a.notes_receivable_cents))}
+    ${rline('Properties held, at cost', fmt(a.properties_held_at_cost_cents))}
+    ${d.properties_held.map(pr=>rline(esc(pr.address), fmt(pr.basis_cents), {sub:true})).join('')}
+    ${rline('Total assets', fmt(a.total_cents), {total:true})}
+    <p style="font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin:22px 0 4px">Liabilities</p>
+    ${rline('Notes payable to private lenders', fmt(l.lender_notes_payable_cents))}
+    ${rline('Escrow held for buyers', fmt(l.escrow_held_for_buyers_cents))}
+    ${rline('Total liabilities', fmt(l.total_cents), {total:true})}
+    ${rline("Owner's equity", fmt(d.equity_cents), {total:true, color:d.equity_cents>=0?'var(--brand)':'var(--red)'})}
+    <p class="note" style="margin-top:14px">Properties are carried at what you have in them, not market value, so equity here is conservative.</p>
+  </div>`;
+}
+
 // ---------- settings ----------
 let IS_OWNER=false;
 async function loadSettings(){
   const d=await api('/api/admin/company');
   IS_OWNER=d.is_owner;
   $('co-input').value=d.company.name||''; $('co-email').value=d.company.contact_email||''; $('co-phone').value=d.company.contact_phone||'';
-  for(const el of ['co-input','co-email','co-phone']) $(el).disabled=!IS_OWNER;
+  $('co-mgmt').value=d.company.mgmt_company_name||''; $('co-rep').value=d.company.rep_name||'';
+  $('co-repphone').value=d.company.rep_phone||''; $('co-mail').value=d.company.mailing_address||'';
+  $('co-mailcity').value=d.company.mailing_city||''; $('co-mailstate').value=d.company.mailing_state||'';
+  $('co-mailzip').value=d.company.mailing_zip||'';
+  for(const el of ['co-input','co-email','co-phone','co-mgmt','co-rep','co-repphone','co-mail','co-mailcity','co-mailstate','co-mailzip']) $(el).disabled=!IS_OWNER;
   $('co-save').style.display=IS_OWNER?'':'none';
   $('staff-add-btn').style.display=IS_OWNER?'':'none';
   $('staff-rows').innerHTML=d.staff.map(u=>
@@ -925,16 +1478,13 @@ async function loadSettings(){
   try{
     const df=await api('/api/admin/defaults');
     $('df-email').value=df.buyer_email||''; $('df-phone').value=df.buyer_phone||'';
-    $('df-late').value=df.late_fee_cents!=null?(df.late_fee_cents/100).toFixed(2):'';
-    $('df-grace').value=df.grace_days!=null?df.grace_days:'';
   }catch{}
 }
 async function saveDefaults(){
   $('df-ok').classList.add('hidden');
   await api('/api/admin/setup',{method:'POST',body:JSON.stringify({
     default_buyer_email:$('df-email').value, default_buyer_phone:$('df-phone').value,
-    default_late_fee_cents:$('df-late').value!==''?Math.round(parseFloat($('df-late').value)*100):null,
-    default_grace_days:$('df-grace').value!==''?parseInt($('df-grace').value):null })});
+    })});
   $('df-ok').textContent='Saved.'; $('df-ok').classList.remove('hidden');
 }
 async function changeMyPassword(){
@@ -955,6 +1505,10 @@ async function saveCompany(){
   try{
     await api('/api/admin/company',{method:'PUT',body:JSON.stringify({
       name:$('co-input').value, contact_email:$('co-email').value, contact_phone:$('co-phone').value })});
+    await api('/api/admin/setup',{method:'POST',body:JSON.stringify({
+      mgmt_company_name:$('co-mgmt').value, rep_name:$('co-rep').value, rep_phone:$('co-repphone').value,
+      mailing_address:$('co-mail').value, mailing_city:$('co-mailcity').value,
+      mailing_state:$('co-mailstate').value, mailing_zip:$('co-mailzip').value })});
     $('set-ok').textContent='Saved.'; $('set-ok').classList.remove('hidden'); loadDash();
   }catch(e){ $('set-err').textContent=e.message; $('set-err').classList.remove('hidden'); }
 }
@@ -1325,7 +1879,14 @@ async function sendCustomNotice(){
     closeModal(); loadNoticesAdmin();
   }catch(e){ $('cn-err').textContent=e.message; $('cn-err').classList.remove('hidden'); }
 }
-function modal(html){ $('modal-content').innerHTML=html; $('modal').classList.remove('hidden'); }
+function modal(html){
+  $('modal-content').innerHTML=html; $('modal').classList.remove('hidden');
+  setTimeout(()=>{
+    wireInputs();
+    attachAddressLookup('np-addr',{city:'np-city',state:'np-state',zip:'np-zip'});
+    attachAddressLookup('sl-addr',{city:'sl-city',state:'sl-state',zip:'sl-zip'});
+  },0);
+}
 function closeModal(){ $('modal').classList.add('hidden'); }
 function recordPaymentModal(){
   modal(`<h2>Record a payment</h2>
@@ -1686,9 +2247,12 @@ async function openThread(loanId,title){
   $('msg-threads').classList.add('hidden'); $('msg-thread').classList.remove('hidden');
   $('mt-title').textContent=title||'Conversation';
   const msgs=await api(`/api/admin/loans/${loanId}/messages`);
-  $('mt-list').innerHTML=msgs.map(m=>
-    `<div class="msg ${m.sender_role==='admin'?'me':'them'}">${esc(m.body)}<div class="t">${m.sender_role==='admin'?'You':esc(m.sender_name)} · ${new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div></div>`
-  ).join('')||'<p class="note">No messages yet.</p>';
+  $('mt-list').innerHTML=msgs.map(m=>{
+    const when=new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+    if(m.body_html) return `<div style="margin:0 0 12px auto;max-width:94%">${m.body_html}
+      <div class="note" style="text-align:right;margin-top:4px">Sent by ${esc(m.sender_name)} · ${when}</div></div>`;
+    return `<div class="msg ${m.sender_role==='admin'?'me':'them'}">${esc(m.body)}<div class="t">${m.sender_role==='admin'?'You':esc(m.sender_name)} · ${when}</div></div>`;
+  }).join('')||'<p class="note">No messages yet.</p>';
   $('mt-list').scrollTop=$('mt-list').scrollHeight;
   loadDash();
 }
@@ -1725,8 +2289,13 @@ async function maybeWizard(){
   $('wz-co').value = st.company.name || '';
   $('wz-coemail').value = st.company.contact_email || st.user.email || '';
   $('wz-cophone').value = st.company.contact_phone || '';
-  if (st.company.default_late_fee_cents) $('wz-late').value = (st.company.default_late_fee_cents/100).toFixed(2);
-  if (st.company.default_grace_days != null) $('wz-grace').value = st.company.default_grace_days;
+  $('wz-mgmt').value = st.company.mgmt_company_name || '';
+  $('wz-rep').value = st.company.rep_name || st.user.name || '';
+  $('wz-repphone').value = st.company.rep_phone || st.user.phone || '';
+  $('wz-mail').value = st.company.mailing_address || '';
+  $('wz-mailcity').value = st.company.mailing_city || '';
+  $('wz-mailstate').value = st.company.mailing_state || '';
+  $('wz-mailzip').value = st.company.mailing_zip || '';
   wzStep = st.must_change_password ? 1 : 2;
   $('wizard').classList.remove('hidden');
   wzRender();
@@ -1757,15 +2326,17 @@ async function wzNext(){
     if (wzStep === 3){
       if (!$('wz-co').value.trim()) return fail('Please enter your company name.');
       const body = { company_name:$('wz-co').value.trim(),
-        contact_email:$('wz-coemail').value, contact_phone:$('wz-cophone').value };
+        contact_email:$('wz-coemail').value, contact_phone:$('wz-cophone').value,
+        mgmt_company_name:$('wz-mgmt').value, rep_name:$('wz-rep').value,
+        rep_phone:$('wz-repphone').value, mailing_address:$('wz-mail').value,
+        mailing_city:$('wz-mailcity').value, mailing_state:$('wz-mailstate').value,
+        mailing_zip:$('wz-mailzip').value };
       const f = $('wz-logo').files[0];
       if (f){ body.logo_filename = f.name; body.logo_base64 = await fileToB64(f); }
       await api('/api/admin/setup',{method:'POST',body:JSON.stringify(body)});
     }
     if (wzStep === wzMax){
       await api('/api/admin/setup',{method:'POST',body:JSON.stringify({
-        default_late_fee_cents: Math.round((parseFloat($('wz-late').value)||0)*100),
-        default_grace_days: parseInt($('wz-grace').value||5),
         pass_fees_to_buyer: $('wz-fees').checked,
         fee_label: $('wz-feelabel').value || 'Processing fee',
         finish: true })});

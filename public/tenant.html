@@ -161,9 +161,11 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--brand)}
 .nav{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--line);
   display:flex;padding-bottom:env(safe-area-inset-bottom);z-index:20;
   box-shadow:0 -2px 14px rgba(0,0,0,.05)}
-.nav button{flex:1;background:none;border:none;padding:11px 2px 9px;cursor:pointer;
-  color:var(--mut);font-size:11.5px;font-weight:600;position:relative;min-height:62px}
-.nav button .ico{font-size:23px;display:block;margin-bottom:3px;filter:grayscale(1) opacity(.55)}
+.nav button{flex:1;background:none;border:none;padding:11px 1px 9px;cursor:pointer;
+  color:var(--mut);font-size:10.5px;font-weight:600;position:relative;min-height:62px;
+  letter-spacing:-.2px}
+.nav #nb-out:active{color:var(--red)}
+.nav button .ico{font-size:21px;display:block;margin-bottom:3px;filter:grayscale(1) opacity(.55)}
 .nav button.on{color:var(--brand);font-weight:700}
 .nav button.on .ico{filter:none}
 .nav button.on::before{content:'';position:absolute;top:0;left:22%;right:22%;height:3px;
@@ -182,6 +184,26 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--brand)}
   box-shadow:0 3px 10px rgba(84,163,47,.32)}
 .profile .nm{font-size:17px;font-weight:700;letter-spacing:-.3px}
 .profile .em{font-size:14px;color:var(--mut);margin-top:2px;word-break:break-all}
+
+/* ---------- letterhead: your servicer's branding on every message ---------- */
+.pp-letter{border:1px solid var(--line);border-radius:16px;overflow:hidden;background:#fff;margin-bottom:12px}
+.pp-letterhead{display:flex;align-items:center;gap:10px;padding:13px 16px;
+  background:var(--brand-pale);border-bottom:1px solid var(--line)}
+.pp-colog{height:28px;width:auto}
+.pp-coname{font-weight:700;font-size:14.5px;color:var(--brand)}
+.pp-subject{padding:13px 16px 0;font-size:16.5px;font-weight:700;letter-spacing:-.3px}
+.pp-body{padding:13px 16px;font-size:15px;line-height:1.65}
+.pp-body p{margin-bottom:11px}
+.pp-body ul,.pp-body ol{margin:0 0 11px 20px}
+.pp-body li{margin-bottom:5px}
+.pp-body a{color:var(--brand);font-weight:600}
+.pp-contact{padding:0 16px 12px;font-size:12.5px;color:var(--mut);line-height:1.6}
+.pp-footer{display:flex;align-items:center;gap:7px;padding:10px 16px;border-top:1px solid var(--line);
+  background:#fafcf8;font-size:11.5px;color:var(--mut)}
+.pp-ppmark{height:15px;width:auto;opacity:.75}
+.appfoot{text-align:center;padding:24px 16px 6px;font-size:11.5px;color:var(--mut);
+  display:flex;align-items:center;justify-content:center;gap:6px}
+.appfoot img{height:15px;width:auto;opacity:.7}
 
 /* ---------- misc ---------- */
 .note{font-size:13.5px;color:var(--mut);line-height:1.55}
@@ -286,6 +308,29 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
 
       <button class="btn primary" id="accept-btn" onclick="acceptTerms()" disabled>Accept &amp; continue</button>
       <button class="btn quiet" onclick="logout()">Not now — sign out</button>
+    </div>
+  </main>
+</div>
+
+<!-- ══════════ LOCATION ASK — shown once, right after sign-in ══════════ -->
+<div id="v-loc" class="hidden">
+  <main class="stack">
+    <div class="center" style="margin-bottom:24px">
+      <div style="font-size:52px">📍</div>
+      <h1 class="big" style="font-size:24px;margin-top:8px">Share your location?</h1>
+    </div>
+    <div class="card">
+      <p style="font-size:15.5px;line-height:1.6;margin-bottom:14px">
+        Turning this on lets your servicer confirm your account and deliver documents to the
+        right place. It takes one tap.
+      </p>
+      <div class="row"><span class="k">📌 What's shared</span><span class="v" style="white-space:normal;text-align:right;font-weight:400">Your approximate location when you open the app</span></div>
+      <div class="row"><span class="k">👤 Who sees it</span><span class="v" style="white-space:normal;text-align:right;font-weight:400">Only your servicer</span></div>
+      <div class="row"><span class="k">🚫 Never</span><span class="v" style="white-space:normal;text-align:right;font-weight:400">Sold, or used for advertising</span></div>
+      <div class="row"><span class="k">🔄 Change anytime</span><span class="v" style="white-space:normal;text-align:right;font-weight:400">Turning it off deletes your history</span></div>
+      <button class="btn primary" style="margin-top:18px" onclick="locAskYes()">Turn on location sharing</button>
+      <button class="btn quiet" onclick="locAskNo()">Not now</button>
+      <p class="note center" style="margin-top:14px">Every part of Porch Pay works either way — paying, messaging, documents, all of it.</p>
     </div>
   </main>
 </div>
@@ -482,6 +527,10 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
         <button class="btn quiet" style="margin-top:10px" onclick="logout()">Sign out</button>
       </div>
     </section>
+    <div class="appfoot">
+      <img src="/logo-mark.png" alt="">
+      <span>Powered by <b>Porch Pay</b></span>
+    </div>
   </main>
 
   <nav class="nav">
@@ -490,6 +539,7 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
     <button id="nb-loan" onclick="go('loan')"><span class="ico">📊</span>Loan</button>
     <button id="nb-docs" onclick="go('docs')"><span class="ico">📁</span>Docs</button>
     <button id="nb-msgs" onclick="go('msgs')"><span class="ico">💬</span>Messages<span id="nav-dot" class="dot hidden"></span></button>
+    <button id="nb-out" onclick="logout()"><span class="ico">🚪</span>Sign out</button>
   </nav>
 </div>
 
@@ -507,7 +557,7 @@ async function api(path, opts={}) {
   if (!res.ok) throw new Error(json.error || 'Something went wrong');
   return json;
 }
-function show(id){ for(const v of ['v-login','v-newpw','v-terms','v-app']) $(v).classList.toggle('hidden', v!==id); }
+function show(id){ for(const v of ['v-login','v-newpw','v-terms','v-loc','v-app']) $(v).classList.toggle('hidden', v!==id); }
 
 // ---------- boot & auth ----------
 async function boot(){
@@ -548,6 +598,29 @@ async function acceptTerms(){
   } catch(e){ $('terms-err').textContent=e.message; $('terms-err').classList.remove('hidden'); }
 }
 
+// Asked once, right after the buyer accepts the terms — not buried in Settings.
+// The phone still shows its own permission prompt; that is enforced by the operating
+// system and cannot be skipped by any app.
+async function maybeAskLocation(){
+  if (!navigator.geolocation) return false;
+  if (DATA && DATA.location_consent_at) return false;
+  try { if (localStorage.getItem('pp-loc-asked')) return false; } catch {}
+  show('v-loc');
+  return true;
+}
+async function locAskYes(){
+  try { localStorage.setItem('pp-loc-asked','1'); } catch {}
+  try{
+    await api('/api/tenant/location/consent',{method:'POST',body:JSON.stringify({consent:true})});
+    locOn=true; sendPing();
+  }catch{}
+  show('v-app'); render();
+}
+function locAskNo(){
+  try { localStorage.setItem('pp-loc-asked','1'); } catch {}
+  show('v-app'); render();
+}
+
 async function enter(){
   const p = new URLSearchParams(location.search);
   if (p.get('setup_session')) {
@@ -560,9 +633,11 @@ async function enter(){
   }
   try { DATA = await api('/api/tenant/loan'); }
   catch(e){ if(e.message==='terms') return; DATA=null; }
-  show('v-app');
   ME = await api('/api/me').catch(()=>ME);
-  render(); loadNotices(); pollMsgs();
+  loadNotices(); pollMsgs();
+  if (await maybeAskLocation()) { setInterval(pollMsgs, 20000); return; }
+  show('v-app');
+  render();
   setInterval(pollMsgs, 20000);
 }
 
@@ -622,8 +697,12 @@ function render(){
 
   // breakdown
   const catN={taxes:'Property taxes',insurance:'Insurance',utilities:'Utilities',servicing_fee:'Servicing fee',hoa:'HOA dues',other:'Other'};
+  // Every component on its own line so nothing looks like a mystery charge.
   const bd=[['Principal &amp; interest',fmt(loan.payment_cents)]];
-  if(loan.escrow_cents) bd.push(['Escrow (taxes &amp; insurance)',fmt(loan.escrow_cents)]);
+  if(loan.monthly_taxes_cents) bd.push(['Property taxes <small>held in escrow</small>',fmt(loan.monthly_taxes_cents)]);
+  if(loan.monthly_insurance_cents) bd.push(['Insurance <small>held in escrow</small>',fmt(loan.monthly_insurance_cents)]);
+  if(!loan.monthly_taxes_cents && !loan.monthly_insurance_cents && loan.escrow_cents)
+    bd.push(['Escrow (taxes &amp; insurance)',fmt(loan.escrow_cents)]);
   recurring.forEach(c=>bd.push([esc(catN[c.category]||c.description),fmt(c.amount_cents)]));
   $('l-breakdown').innerHTML=bd.map(([k,v])=>`<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('')
     +`<div class="row total"><span class="k" style="font-weight:700;color:var(--ink)">Total each month</span><span class="v" style="font-size:19px">${fmt(monthly)}</span></div>`;
@@ -870,7 +949,7 @@ async function loadNotices(){
   $('notices-list').innerHTML=NOTICES.map(n=>`
     <details onclick="markRead(${n.id})">
       <summary style="color:${n.read_at?'var(--mut)':'var(--red)'}">${n.read_at?'':'● '}${esc(n.subject)}</summary>
-      <div class="body">${esc(n.body)}</div>
+      <div class="body">${n.body_html ? n.body_html : esc(n.body)}</div>
     </details>`).join('');
 }
 async function markRead(id){
@@ -898,10 +977,12 @@ async function pollMsgs(){
     const msgs=await api('/api/tenant/messages');
     const unread=msgs.some(m=>m.sender_role!=='tenant'&&!m.read_by_tenant);
     $('nav-dot').classList.toggle('hidden',!unread||tab==='msgs');
-    $('m-list').innerHTML=msgs.length?msgs.map(m=>
-      `<div class="msg ${m.sender_role==='tenant'?'me':'them'}">${esc(m.body)}
-       <div class="t">${m.sender_role==='tenant'?'You':esc(m.sender_name)} · ${new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</div></div>`
-    ).join(''):'<div class="card"><p class="note">No messages yet. Say hello — your servicer sees it right away.</p></div>';
+    $('m-list').innerHTML=msgs.length?msgs.map(m=>{
+      const when=new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+      if(m.body_html) return `${m.body_html}<div class="note" style="margin:-6px 0 14px 4px">${when}</div>`;
+      return `<div class="msg ${m.sender_role==='tenant'?'me':'them'}">${esc(m.body)}
+       <div class="t">${m.sender_role==='tenant'?'You':esc(m.sender_name)} · ${when}</div></div>`;
+    }).join(''):'<div class="card"><p class="note">No messages yet. Say hello — your servicer sees it right away.</p></div>';
     if(tab==='msgs') window.scrollTo(0,document.body.scrollHeight);
   }catch{}
 }

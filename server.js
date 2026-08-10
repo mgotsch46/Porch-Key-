@@ -10,6 +10,8 @@ const pay = require('./payments');
 const ai = require('./ai');
 const sms = require('./sms');
 const reports = require('./reports');
+const tpl = require('./templates');
+const addr = require('./address');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -253,12 +255,18 @@ function runNoticeSweep() {
       if (daysPast <= loan.grace_days) continue;
       const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
       const tenant = get('SELECT * FROM users WHERE id=?', loan.tenant_user_id);
-      const tpl = noticeTemplates(loan, property, tenant, status.owed_now_cents, dueDate, daysPast);
+      const noticeSet = noticeTemplates(loan, property, tenant, status.owed_now_cents, dueDate, daysPast);
       const sendNotice = (type) => {
         if (get('SELECT id FROM notices WHERE loan_id=? AND type=? AND period=?', loan.id, type, period)) return;
-        const t = tpl[type];
-        run('INSERT INTO notices (loan_id, type, period, subject, body) VALUES (?,?,?,?,?)',
-          loan.id, type, period, t.subject, t.body);
+        const t = noticeSet[type];
+        const co = get('SELECT * FROM companies WHERE id=?', loan.company_id);
+        const noticeHtml = tpl.brandedShell({
+          company: co, subject: t.subject,
+          bodyHtml: t.body.split('\n\n').map(par => `<p>${tpl.escapeHtml(par)}</p>`).join(''),
+          baseUrl: process.env.BASE_URL || '',
+        });
+        run('INSERT INTO notices (loan_id, type, period, subject, body, body_html) VALUES (?,?,?,?,?,?)',
+          loan.id, type, period, t.subject, t.body, noticeHtml);
         // also drop it into the message thread so the buyer sees it immediately
         run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
           loan.id, get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') ORDER BY id LIMIT 1", loan.company_id).id,
@@ -420,13 +428,19 @@ app.get('/api/admin/summary', adminOnly, (req, res) => {
 });
 
 // ---------- company & staff management ----------
+// Only contact prefill lives at the company level. Late fee, grace period and the
+// payment date are set per property, because they come out of that property's contract.
 app.get('/api/admin/defaults', adminOnly, (req, res) => {
   const c = get('SELECT * FROM companies WHERE id=?', req.companyId);
   res.json({
     buyer_email: c.default_buyer_email || '',
     buyer_phone: c.default_buyer_phone || '',
-    late_fee_cents: c.default_late_fee_cents || 0,
-    grace_days: c.default_grace_days ?? 5,
+    owner_name: c.mgmt_company_name || c.name || '',
+    mgmt_company_name: c.mgmt_company_name || '',
+    rep_name: c.rep_name || '', rep_phone: c.rep_phone || '',
+    mailing_address: c.mailing_address || '', mailing_city: c.mailing_city || '',
+    mailing_state: c.mailing_state || '', mailing_zip: c.mailing_zip || '',
+    owner_types: OWNER_TYPES,
   });
 });
 app.get('/api/admin/company', adminOnly, (req, res) => {
@@ -439,7 +453,7 @@ app.put('/api/admin/company', ownerOnly, (req, res) => {
   const c = get('SELECT * FROM companies WHERE id=?', req.companyId);
   run('UPDATE companies SET name=?, contact_email=?, contact_phone=? WHERE id=?',
     req.body.name || c.name, req.body.contact_email ?? c.contact_email,
-    req.body.contact_phone ?? c.contact_phone, c.id);
+    req.body.contact_phone !== undefined ? addr.formatPhone(req.body.contact_phone) : c.contact_phone, c.id);
   res.json(get('SELECT * FROM companies WHERE id=?', c.id));
 });
 app.post('/api/admin/staff', ownerOnly, (req, res) => {
@@ -466,8 +480,10 @@ app.get('/api/admin/setup-state', adminOnly, (req, res) => {
     setup_complete: !!c.setup_complete,
     must_change_password: !!req.user.must_change_password,
     company: { name: c.name, contact_email: c.contact_email, contact_phone: c.contact_phone,
-      logo_path: c.logo_path, default_late_fee_cents: c.default_late_fee_cents,
-      default_grace_days: c.default_grace_days, pass_fees_to_buyer: c.pass_fees_to_buyer,
+      logo_path: c.logo_path, pass_fees_to_buyer: c.pass_fees_to_buyer,
+      mgmt_company_name: c.mgmt_company_name, rep_name: c.rep_name, rep_phone: c.rep_phone,
+      mailing_address: c.mailing_address, mailing_city: c.mailing_city,
+      mailing_state: c.mailing_state, mailing_zip: c.mailing_zip,
       fee_label: c.fee_label },
     user: { name: req.user.name, phone: req.user.phone, email: req.user.email },
   });
@@ -481,7 +497,7 @@ app.post('/api/admin/setup', adminOnly, (req, res, next) => {
     }
     if (b.name || b.phone !== undefined) {
       run('UPDATE users SET name=COALESCE(?,name), phone=? WHERE id=?',
-        b.name || null, b.phone !== undefined ? b.phone : req.user.phone, req.user.id);
+        b.name || null, b.phone !== undefined ? addr.formatPhone(b.phone) : req.user.phone, req.user.id);
     }
     if (b.logo_base64 && b.logo_filename) {
       const stored = 'logo-' + crypto.randomUUID() + path.extname(b.logo_filename);
@@ -490,12 +506,16 @@ app.post('/api/admin/setup', adminOnly, (req, res, next) => {
     }
     const c = get('SELECT * FROM companies WHERE id=?', req.companyId);
     run(`UPDATE companies SET name=?, contact_email=?, contact_phone=?,
-          default_late_fee_cents=?, default_grace_days=?, pass_fees_to_buyer=?, fee_label=?
-         WHERE id=?`,
+          pass_fees_to_buyer=?, fee_label=?,
+          mgmt_company_name=?, rep_name=?, rep_phone=?,
+          mailing_address=?, mailing_city=?, mailing_state=?, mailing_zip=? WHERE id=?`,
       b.company_name || c.name, b.contact_email ?? c.contact_email, b.contact_phone ?? c.contact_phone,
-      b.default_late_fee_cents ?? c.default_late_fee_cents, b.default_grace_days ?? c.default_grace_days,
       b.pass_fees_to_buyer === undefined ? c.pass_fees_to_buyer : (b.pass_fees_to_buyer ? 1 : 0),
-      b.fee_label || c.fee_label, req.companyId);
+      b.fee_label || c.fee_label,
+      b.mgmt_company_name ?? c.mgmt_company_name, b.rep_name ?? c.rep_name,
+      b.rep_phone !== undefined ? addr.formatPhone(b.rep_phone) : c.rep_phone,
+      b.mailing_address ?? c.mailing_address, b.mailing_city ?? c.mailing_city,
+      b.mailing_state ?? c.mailing_state, b.mailing_zip ?? c.mailing_zip, req.companyId);
     if (b.default_buyer_email !== undefined || b.default_buyer_phone !== undefined) {
       run('UPDATE companies SET default_buyer_email=?, default_buyer_phone=? WHERE id=?',
         b.default_buyer_email ?? c.default_buyer_email, b.default_buyer_phone ?? c.default_buyer_phone, req.companyId);
@@ -619,8 +639,10 @@ app.get('/api/admin/properties', adminOnly, (req, res) => {
 app.post('/api/admin/properties', adminOnly, (req, res) => {
   const { address, city, state, zip, trust_name, trustee, notes } = req.body || {};
   if (!address) return res.status(400).json({ error: 'Address required' });
-  const r = run('INSERT INTO properties (company_id, address, city, state, zip, trust_name, trustee, notes) VALUES (?,?,?,?,?,?,?,?)',
-    req.companyId, address, city || null, state || null, zip || null, trust_name || null, trustee || null, notes || null);
+  const r = run(`INSERT INTO properties (company_id, address, city, state, zip, trust_name, trustee, notes, lat, lng, county)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    req.companyId, address, city || null, state || null, zip || null, trust_name || null,
+    trustee || null, notes || null, req.body.lat || null, req.body.lng || null, req.body.county || null);
   res.json(get('SELECT * FROM properties WHERE id=?', r.lastInsertRowid));
 });
 app.put('/api/admin/properties/:id', adminOnly, (req, res) => {
@@ -646,6 +668,43 @@ app.get('/api/admin/reports/returns/:propertyId', adminOnly, (req, res) => {
   const r = reports.propertyReturns(req.companyId, req.params.propertyId);
   if (!r) return res.status(404).json({ error: 'Property not found' });
   res.json(r);
+});
+
+// ---------- address lookup ----------
+app.get('/api/admin/address-suggest', adminOnly, async (req, res, next) => {
+  try { res.json(await addr.suggest(req.query.q || '')); } catch (e) { next(e); }
+});
+app.get('/api/admin/address-details', adminOnly, async (req, res, next) => {
+  try { res.json(await addr.details(req.query.id, req.query.provider) || {}); } catch (e) { next(e); }
+});
+
+// ---------- amortization calculator ----------
+// Give any three of principal, rate, term and payment; get the fourth plus the schedule.
+app.get('/api/admin/amortize', adminOnly, (req, res) => {
+  const q = req.query;
+  res.json(loanEngine.solveLoan({
+    principal_cents: q.principal_cents, payment_cents: q.payment_cents,
+    interest_rate_bps: q.interest_rate_bps, term_months: q.term_months,
+    first_payment_date: q.first_payment_date,
+  }));
+});
+
+// Final payment date from a start date and term, and the reverse.
+app.get('/api/admin/maturity', adminOnly, (req, res) => {
+  const { first_payment_date, term_months, final_payment_date } = req.query;
+  if (final_payment_date && first_payment_date) {
+    return res.json({ term_months: loanEngine.termFromDates(first_payment_date, final_payment_date) });
+  }
+  res.json({ final_payment_date: loanEngine.finalPaymentDate(first_payment_date, Number(term_months)) });
+});
+
+// Live principal & interest calculation for the sale form.
+app.get('/api/admin/calc-payment', adminOnly, (req, res) => {
+  const principal = Number(req.query.principal_cents) || 0;
+  const rate = Number(req.query.interest_rate_bps) || 0;
+  const term = Number(req.query.term_months) || 0;
+  if (!principal || !term) return res.json({ payment_cents: 0 });
+  res.json({ payment_cents: loanEngine.calcPayment(principal, rate, term) });
 });
 
 // ---------- property profile: costs, basis, and the sale ----------
@@ -687,7 +746,7 @@ app.get('/api/admin/properties/:id', adminOnly, (req, res) => {
     tenant,
     pml_loans: pml,
     pml_balance_cents: pml.filter(p => p.status === 'active').reduce((t, p) => t + p.principal_balance_cents, 0),
-    phases: PHASES, phase_labels: PHASE_LABELS,
+    phases: PHASES, phase_labels: PHASE_LABELS, owner_types: OWNER_TYPES,
     doc_folders: (() => {
       const docs = all(`SELECT id, filename, category, title, effective_date, visible_to_tenant, created_at
         FROM documents WHERE property_id=? OR loan_id=? ORDER BY id DESC`, prop.id, loan ? loan.id : -1);
@@ -715,11 +774,14 @@ app.put('/api/admin/properties/:id/details', adminOnly, (req, res) => {
   const b = req.body || {};
   run(`UPDATE properties SET status=?, acquired_date=?, purchase_price_cents=?,
         target_sale_price_cents=?, beds=?, baths=?, sqft=?, year_built=?, notes=?,
-        late_fee_cents=?, grace_days=? WHERE id=?`,
+        late_fee_cents=?, grace_days=?, due_day=?,
+        owner_name=?, owner_type=?, trustee=? WHERE id=?`,
     b.status || p.status, b.acquired_date ?? p.acquired_date,
     b.purchase_price_cents ?? p.purchase_price_cents, b.target_sale_price_cents ?? p.target_sale_price_cents,
     b.beds ?? p.beds, b.baths ?? p.baths, b.sqft ?? p.sqft, b.year_built ?? p.year_built,
-    b.notes ?? p.notes, b.late_fee_cents ?? p.late_fee_cents, b.grace_days ?? p.grace_days, p.id);
+    b.notes ?? p.notes, b.late_fee_cents ?? p.late_fee_cents, b.grace_days ?? p.grace_days,
+    b.due_day ?? p.due_day,
+    b.owner_name ?? p.owner_name, b.owner_type ?? p.owner_type, b.trustee ?? p.trustee, p.id);
   res.json(get('SELECT * FROM properties WHERE id=?', p.id));
 });
 
@@ -765,9 +827,17 @@ app.post('/api/admin/properties/:id/sell', adminOnly, async (req, res, next) => 
     const temp = 'TB-' + crypto.randomInt(100000, 999999) + '!';
     const u = run(`INSERT INTO users (company_id, email, password_hash, role, name, phone, must_change_password)
       VALUES (?,?,?,?,?,?,1)`, req.companyId, email, hashPassword(temp), 'tenant',
-      b.buyer_name, b.buyer_phone || null);
+      b.buyer_name, addr.formatPhone(b.buyer_phone) || null);
+    // Principal & interest is computed from the note terms unless you deliberately override it.
     const payment = b.payment_cents ||
       loanEngine.calcPayment(b.principal_cents, b.interest_rate_bps, b.term_months);
+    const taxes = b.monthly_taxes_cents || 0;
+    const insurance = b.monthly_insurance_cents || 0;
+    const utilities = b.monthly_utilities_cents || 0;
+    const servicing = b.monthly_servicing_cents || 0;
+    const misc = b.monthly_misc_cents || 0;
+    // Taxes and insurance are the buyer's money until disbursed, so they sit in escrow.
+    const escrow = taxes + insurance;
     const l = run(`INSERT INTO loans (company_id, property_id, tenant_user_id, loan_type,
         sale_price_cents, down_payment_cents, principal_cents, interest_rate_bps, term_months,
         payment_cents, escrow_cents, late_fee_cents, grace_days, first_payment_date, due_day,
@@ -775,11 +845,30 @@ app.post('/api/admin/properties/:id/sell', adminOnly, async (req, res, next) => 
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       req.companyId, prop.id, u.lastInsertRowid, b.loan_type || 'land_contract',
       b.sale_price_cents, b.down_payment_cents || 0, b.principal_cents, b.interest_rate_bps,
-      b.term_months, payment, b.escrow_cents || 0,
-      b.late_fee_cents ?? prop.late_fee_cents ?? co.default_late_fee_cents ?? 0,
-      b.grace_days ?? prop.grace_days ?? co.default_grace_days ?? 5,
-      b.first_payment_date, Number(String(b.first_payment_date).slice(8, 10)),
+      b.term_months, payment, escrow,
+      b.late_fee_cents ?? prop.late_fee_cents ?? 0,
+      b.grace_days ?? prop.grace_days ?? 5,
+      b.first_payment_date,
+      b.due_day ?? prop.due_day ?? Number(String(b.first_payment_date).slice(8, 10)),
       b.principal_cents, b.beneficial_interest_pct || null);
+    const loanId = l.lastInsertRowid;
+    run('UPDATE loans SET final_payment_date=? WHERE id=?',
+      loanEngine.finalPaymentDate(b.first_payment_date, b.term_months), loanId);
+    run(`UPDATE loans SET monthly_taxes_cents=?, monthly_insurance_cents=?, monthly_utilities_cents=?,
+          monthly_servicing_cents=?, monthly_misc_cents=?, misc_label=? WHERE id=?`,
+      taxes, insurance, utilities, servicing, misc, b.misc_label || 'Other monthly charge', loanId);
+    // Utilities, the servicing fee and anything miscellaneous are billed as recurring
+    // charges — they are income to you, not money held for the buyer.
+    for (const [amount, category, label] of [
+      [utilities, 'utilities', 'Utilities'],
+      [servicing, 'servicing_fee', 'Servicing fee'],
+      [misc, 'other', b.misc_label || 'Other monthly charge'],
+    ]) {
+      if (amount > 0) {
+        run(`INSERT INTO charges (loan_id, description, category, amount_cents, recurring, start_date)
+             VALUES (?,?,?,?,1,?)`, loanId, label, category, amount, b.first_payment_date);
+      }
+    }
     run("UPDATE properties SET status='sold', phase='sold', phase_updated_at=datetime('now') WHERE id=?", prop.id);
 
     const inv = run(`INSERT INTO invitations (company_id, loan_id, user_id, phone, temp_password, channel)
@@ -871,7 +960,7 @@ app.post('/api/admin/tenants', adminOnly, (req, res) => {
   if (get('SELECT id FROM users WHERE email=?', email.toLowerCase().trim())) return res.status(400).json({ error: 'Email already exists' });
   const temp = 'TB-' + crypto.randomInt(100000, 999999) + '!';
   const r = run('INSERT INTO users (company_id, email, password_hash, role, name, phone, must_change_password) VALUES (?,?,?,?,?,?,1)',
-    req.companyId, email.toLowerCase().trim(), hashPassword(temp), 'tenant', name, phone || null);
+    req.companyId, email.toLowerCase().trim(), hashPassword(temp), 'tenant', name, addr.formatPhone(phone) || null);
   res.json({ id: r.lastInsertRowid, name, email, phone, temp_password: temp });
 });
 app.post('/api/admin/tenants/:id/reset-password', adminOnly, (req, res) => {
@@ -1021,6 +1110,10 @@ const CATEGORY_LABELS = {
 };
 
 // Property lifecycle. Selling to a buyer moves it to 'sold' automatically.
+const OWNER_TYPES = {
+  individual: 'Individual', llc: 'LLC', land_trust: 'Land Trust',
+  corporation: 'Corporation', partnership: 'Partnership', other: 'Other',
+};
 const PHASES = ['acquired', 'rehab', 'ready', 'listed', 'sold', 'paid_off'];
 const PHASE_LABELS = {
   acquired: 'Acquired', rehab: 'In rehab', ready: 'Ready to sell',
@@ -1177,6 +1270,68 @@ app.put('/api/admin/expenses/:id', adminOnly, (req, res) => {
   res.json(get('SELECT * FROM expenses WHERE id=?', e.id));
 });
 
+// ---------- message templates ----------
+// Everything a template needs to render for a given loan: company, buyer, balances.
+function mergeContextForLoan(req, loanId) {
+  const loan = loanId ? get('SELECT * FROM loans WHERE id=?', loanId) : null;
+  const company = get('SELECT * FROM companies WHERE id=?', req.companyId);
+  const property = loan ? get('SELECT * FROM properties WHERE id=?', loan.property_id) : null;
+  const buyer = loan && loan.tenant_user_id ? get('SELECT * FROM users WHERE id=?', loan.tenant_user_id) : null;
+  let status = null, payoff = null;
+  if (loan) {
+    const ledger = all('SELECT * FROM ledger WHERE loan_id=?', loan.id);
+    status = loanEngine.loanStatus(loan, ledger, today());
+    payoff = loanEngine.payoffQuote(loan, today());
+  }
+  return { company, buyer, loan, property, status, payoff, baseUrl: baseUrlOf(req) };
+}
+
+app.get('/api/admin/templates', adminOnly, (req, res) => {
+  tpl.seedTemplates(req.companyId);
+  res.json({
+    merge_fields: tpl.MERGE_FIELDS,
+    templates: all(`SELECT * FROM message_templates WHERE company_id=? AND archived=0
+      ORDER BY is_starter DESC, name`, req.companyId),
+  });
+});
+app.post('/api/admin/templates', adminOnly, (req, res) => {
+  const { name, subject, body_html, category } = req.body || {};
+  if (!name || !body_html) return res.status(400).json({ error: 'Name and message body are required' });
+  const r = run(`INSERT INTO message_templates (company_id, name, category, subject, body_html)
+    VALUES (?,?,?,?,?)`, req.companyId, name, category || 'general', subject || null,
+    tpl.sanitizeHtml(body_html));
+  res.json(get('SELECT * FROM message_templates WHERE id=?', r.lastInsertRowid));
+});
+app.put('/api/admin/templates/:id', adminOnly, (req, res) => {
+  const t = get('SELECT * FROM message_templates WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  const b = req.body || {};
+  run(`UPDATE message_templates SET name=?, category=?, subject=?, body_html=? WHERE id=?`,
+    b.name || t.name, b.category || t.category, b.subject ?? t.subject,
+    b.body_html ? tpl.sanitizeHtml(b.body_html) : t.body_html, t.id);
+  res.json(get('SELECT * FROM message_templates WHERE id=?', t.id));
+});
+app.delete('/api/admin/templates/:id', adminOnly, (req, res) => {
+  const t = get('SELECT * FROM message_templates WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  run('UPDATE message_templates SET archived=1 WHERE id=?', t.id);
+  res.json({ ok: true });
+});
+// Preview a template with real values merged in, in the branded shell.
+app.post('/api/admin/templates/preview', adminOnly, (req, res) => {
+  const ctx = mergeContextForLoan(req, req.body.loan_id || null);
+  const values = tpl.buildMergeValues(ctx);
+  const bodyRaw = req.body.body_html || '';
+  const subject = tpl.applyMerge(req.body.subject || '', values);
+  const merged = tpl.applyMerge(tpl.sanitizeHtml(bodyRaw), values);
+  res.json({
+    subject,
+    html: tpl.brandedShell({ company: ctx.company, bodyHtml: merged, subject, baseUrl: ctx.baseUrl }),
+    text: tpl.htmlToText(merged),
+    values,
+  });
+});
+
 // ---------- messages (shared) ----------
 app.get('/api/admin/messages', adminOnly, (req, res) => {
   const threads = all(`
@@ -1194,9 +1349,26 @@ app.get('/api/admin/loans/:id/messages', adminOnly, (req, res) => {
   res.json(all('SELECT m.*, u.name AS sender_name, u.role AS sender_role FROM messages m JOIN users u ON u.id=m.sender_user_id WHERE m.loan_id=? ORDER BY m.id', req.params.id));
 });
 app.post('/api/admin/loans/:id/messages', adminOnly, (req, res) => {
-  if (!ownedLoan(req, req.params.id)) return res.status(404).json({ error: 'Loan not found' });
-  if (!req.body.body) return res.status(400).json({ error: 'Message required' });
-  run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)', req.params.id, req.user.id, req.body.body);
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  const b = req.body || {};
+  if (!b.body && !b.body_html) return res.status(400).json({ error: 'Message required' });
+
+  // A plain typed message stays plain. A template or HTML body is merged, sanitised,
+  // and wrapped in the company's letterhead before it is stored.
+  if (b.body_html) {
+    const ctx = mergeContextForLoan(req, loan.id);
+    const values = tpl.buildMergeValues(ctx);
+    const subject = tpl.applyMerge(b.subject || '', values);
+    const merged = tpl.applyMerge(tpl.sanitizeHtml(b.body_html), values);
+    const html = tpl.brandedShell({ company: ctx.company, bodyHtml: merged, subject, baseUrl: ctx.baseUrl });
+    run(`INSERT INTO messages (loan_id, sender_user_id, body, body_html, subject, template_id, read_by_admin)
+         VALUES (?,?,?,?,?,?,1)`, loan.id, req.user.id, tpl.htmlToText(merged), html,
+      subject || null, b.template_id || null);
+  } else {
+    run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
+      loan.id, req.user.id, b.body);
+  }
   res.json({ ok: true });
 });
 
@@ -1360,7 +1532,12 @@ app.post('/api/admin/loans/:id/notices', adminOnly, (req, res) => {
   const { subject, body } = req.body || {};
   if (!ownedLoan(req, req.params.id)) return res.status(404).json({ error: 'Loan not found' });
   if (!subject || !body) return res.status(400).json({ error: 'Subject and body required' });
-  run('INSERT INTO notices (loan_id, type, subject, body) VALUES (?,?,?,?)', req.params.id, 'custom', subject, body);
+  const co = get('SELECT * FROM companies WHERE id=?', req.companyId);
+  const html = tpl.brandedShell({ company: co, subject,
+    bodyHtml: String(body).split('\n\n').map(par => `<p>${tpl.escapeHtml(par)}</p>`).join(''),
+    baseUrl: baseUrlOf(req) });
+  run('INSERT INTO notices (loan_id, type, subject, body, body_html) VALUES (?,?,?,?,?)',
+    req.params.id, 'custom', subject, body, html);
   run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
     req.params.id, req.user.id, `📄 ${subject} — open the Notices section on your Home screen to read this notice.`);
   res.json({ ok: true });

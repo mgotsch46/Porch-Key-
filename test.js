@@ -318,7 +318,7 @@ async function main() {
   ok(r.status === 200, 'company deal defaults saved');
   r = await req('/api/admin/defaults');
   ok(r.json.buyer_email === 'prefill@test.com' && r.json.buyer_phone === '(555) 111-2222', 'defaults returned for prefill');
-  ok(r.json.late_fee_cents === 5000, 'company default late fee returned');
+  ok(r.json.late_fee_cents === undefined, 'no company-wide late fee — it lives on the property');
 
   r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '9 Birch Ln' }) });
   const p3 = r.json.id;
@@ -339,7 +339,7 @@ async function main() {
     buyer_name: 'Eli Buyer', buyer_email: 'eli@test.com', sale_price_cents: 6000000,
     principal_cents: 5500000, interest_rate_bps: 900, term_months: 180, first_payment_date: '2026-10-01' }) });
   r = await req('/api/admin/loans/' + r.json.loan_id);
-  ok(r.json.loan.late_fee_cents === 5000, 'property with no late fee falls back to company default');
+  ok(r.json.loan.late_fee_cents === 0, 'property with no late fee set carries none, not a company default');
 
   console.log('— property phases, doc sets, agreement types, lender scheduling');
   r = await req(`/api/admin/properties/${p2}`);
@@ -402,6 +402,128 @@ async function main() {
   ok(Array.isArray(r.json.pml_loans), 'dashboard lists active lender loans');
   ok(r.json.monthly_spread_cents === r.json.tb_total_monthly_cents - r.json.pml_total_monthly_cents,
     'dashboard spread = buyer payments less lender payments');
+
+  console.log('— message templates and branding');
+  r = await req('/api/admin/templates');
+  ok(r.json.templates.length >= 6, 'starter templates seeded');
+  ok(r.json.merge_fields.some(f => f.key === 'first_name'), 'merge fields listed');
+  ok(r.json.merge_fields.some(f => f.key === 'rep_phone'), 'representative merge fields available');
+
+  r = await req('/api/admin/setup', { method: 'POST', body: JSON.stringify({
+    mgmt_company_name: 'RenewEQ Management', rep_name: 'Marisa G', rep_phone: '(555) 222-3333',
+    mailing_address: 'PO Box 9', mailing_city: 'Detroit', mailing_state: 'MI', mailing_zip: '48226' }) });
+  ok(r.status === 200, 'management company details saved');
+
+  r = await req('/api/admin/templates', { method: 'POST', body: JSON.stringify({
+    name: 'Test notice', subject: 'Hello {{first_name}}',
+    body_html: '<p>Your balance is {{balance}}. Call {{rep_name}} at {{rep_phone}}.</p>' }) });
+  const tplId = r.json.id;
+  ok(r.status === 200, 'custom template created');
+
+  r = await req('/api/admin/templates/preview', { method: 'POST', body: JSON.stringify({
+    loan_id: soldLoan, subject: 'Hello {{first_name}}',
+    body_html: '<p>Your balance is {{balance}}. Call {{rep_name}} at {{rep_phone}}.</p>' }) });
+  ok(r.json.subject === 'Hello Carlos', 'subject merge fields resolve');
+  ok(r.json.html.includes('Marisa G') && r.json.html.includes('555-222-3333'),
+    'representative details merge in, phone normalised to dashes');
+  ok(r.json.html.includes('pp-letterhead'), 'message wrapped in company letterhead');
+  ok(r.json.html.includes('Porch Pay'), 'Porch Pay mark present on correspondence');
+  ok(r.json.html.includes('PO Box 9'), 'mailing address appears on correspondence');
+  ok(!r.json.html.includes('{{'), 'no unresolved merge fields left');
+
+  // sanitiser
+  r = await req('/api/admin/templates/preview', { method: 'POST', body: JSON.stringify({
+    subject: 'x', body_html: '<p onclick="steal()">hi</p><script>alert(1)</script><a href="javascript:bad()">x</a>' }) });
+  ok(!r.json.html.includes('<script'), 'script tags stripped from templates');
+  ok(!r.json.html.includes('onclick'), 'inline event handlers stripped');
+  ok(!r.json.html.includes('javascript:'), 'javascript: links neutralised');
+
+  r = await req(`/api/admin/loans/${soldLoan}/messages`, { method: 'POST', body: JSON.stringify({
+    subject: 'Hello {{first_name}}', body_html: '<p>Balance {{balance}}</p>', template_id: tplId }) });
+  ok(r.status === 200, 'template message sent to buyer');
+  r = await req(`/api/admin/loans/${soldLoan}/messages`);
+  const htmlMsg = r.json.find(m => m.body_html);
+  ok(!!htmlMsg, 'html message stored');
+  ok(htmlMsg.body_html.includes('pp-letterhead') && htmlMsg.body.includes('Balance'),
+    'stored message has both branded html and a plain-text fallback');
+
+  console.log('— owner entity and per-property terms');
+  r = await req(`/api/admin/properties/${p5}/details`, { method: 'PUT', body: JSON.stringify({
+    owner_name: 'Oak Holdings LLC', owner_type: 'land_trust', trustee: 'First Trust Co', due_day: 5 }) });
+  ok(r.json.owner_name === 'Oak Holdings LLC' && r.json.owner_type === 'land_trust', 'owner name and type saved');
+  ok(r.json.trustee === 'First Trust Co', 'trustee saved');
+  ok(r.json.due_day === 5, 'payment due day set per property');
+  r = await req(`/api/admin/properties/${p5}`);
+  ok(r.json.owner_types && r.json.owner_types.land_trust === 'Land Trust', 'owner types offered to the UI');
+
+  console.log('— auto P&I and separate monthly line items');
+  r = await req('/api/admin/calc-payment?principal_cents=10000000&interest_rate_bps=950&term_months=360');
+  ok(Math.abs(r.json.payment_cents - 84085) <= 2, `P&I auto-calculates ($${(r.json.payment_cents/100).toFixed(2)})`);
+
+  r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '5 Split St' }) });
+  const p6 = r.json.id;
+  r = await req(`/api/admin/properties/${p6}/sell`, { method: 'POST', body: JSON.stringify({
+    buyer_name: 'Gus Buyer', buyer_email: 'gus@test.com',
+    sale_price_cents: 9000000, principal_cents: 8000000, interest_rate_bps: 900,
+    term_months: 360, first_payment_date: '2026-10-01',
+    monthly_taxes_cents: 21000, monthly_insurance_cents: 9500,
+    monthly_utilities_cents: 4000, monthly_servicing_cents: 2500,
+    monthly_misc_cents: 3000, misc_label: 'HOA dues' }) });
+  const splitLoan = r.json.loan_id;
+  r = await req('/api/admin/loans/' + splitLoan);
+  const sl = r.json.loan;
+  ok(sl.payment_cents > 0 && !sl.payment_cents_overridden, 'P&I set automatically on the sale');
+  ok(Math.abs(sl.payment_cents - 64367) <= 60, `P&I matches the note terms ($${(sl.payment_cents/100).toFixed(2)})`);
+  ok(sl.monthly_taxes_cents === 21000, 'taxes stored as their own line');
+  ok(sl.monthly_insurance_cents === 9500, 'insurance stored as its own line');
+  ok(sl.escrow_cents === 30500, 'escrow = taxes + insurance (money held for the buyer)');
+  ok(sl.monthly_servicing_cents === 2500, 'servicing fee stored separately');
+  const ch = r.json.charges || [];
+  ok(ch.some(c => c.category === 'utilities' && c.amount_cents === 4000), 'utilities billed as a recurring charge');
+  ok(ch.some(c => c.category === 'servicing_fee' && c.amount_cents === 2500), 'servicing fee billed as a recurring charge');
+  ok(ch.some(c => c.description === 'HOA dues' && c.amount_cents === 3000), 'misc fee uses its custom label');
+  const totalMonthly = sl.payment_cents + sl.escrow_cents + ch.filter(c=>c.recurring).reduce((t,c)=>t+c.amount_cents,0);
+  ok(totalMonthly === sl.payment_cents + 30500 + 9500, `total monthly adds up ($${(totalMonthly/100).toFixed(2)})`);
+
+  console.log('— amortization calculator: solve for any variable');
+  const A = async (params) => (await req('/api/admin/amortize?' + new URLSearchParams(params))).json;
+  let c = await A({ principal_cents: 10000000, interest_rate_bps: 950, term_months: 360 });
+  ok(c.solved_for === 'payment' && Math.abs(c.payment_cents - 84085) <= 2, 'solves for payment');
+  ok(c.schedule.length === 360, 'returns the full schedule');
+  ok(c.total_interest_cents > 0 && c.total_paid_cents > c.principal_cents, 'totals computed');
+
+  c = await A({ payment_cents: 84085, interest_rate_bps: 950, term_months: 360 });
+  ok(c.solved_for === 'principal' && Math.abs(c.principal_cents - 10000000) <= 200, 'solves for principal');
+
+  c = await A({ principal_cents: 10000000, payment_cents: 84085, interest_rate_bps: 950 });
+  ok(c.solved_for === 'term' && c.term_months === 360, 'solves for term');
+
+  c = await A({ principal_cents: 10000000, payment_cents: 84085, term_months: 360 });
+  ok(c.solved_for === 'rate' && Math.abs(c.interest_rate_bps - 950) <= 3, 'solves for interest rate');
+
+  c = await A({ principal_cents: 10000000, interest_rate_bps: 950 });
+  ok(!!c.error, 'refuses with only two values');
+  c = await A({ principal_cents: 10000000, payment_cents: 50000, interest_rate_bps: 950 });
+  ok(!!c.error, 'flags a payment that never covers the interest');
+  c = await A({ principal_cents: 12000000, interest_rate_bps: 0, term_months: 120 });
+  ok(c.payment_cents === 100000, 'handles a zero-interest loan');
+
+  console.log('— final payment date');
+  r = await req('/api/admin/maturity?first_payment_date=2026-06-01&term_months=360');
+  ok(r.json.final_payment_date === '2056-05-01', 'final payment date computed from term');
+  r = await req('/api/admin/maturity?first_payment_date=2026-06-01&final_payment_date=2056-05-01');
+  ok(r.json.term_months === 360, 'term back-solved from the final payment date');
+  r = await req('/api/admin/loans/' + splitLoan);
+  ok(!!r.json.loan.final_payment_date, 'sale stores the final payment date on the loan');
+
+  console.log('— phone formatting and address lookup');
+  r = await req('/api/admin/tenants', { method: 'POST', body: JSON.stringify({
+    name: 'Phone Test', email: 'phone@test.com', phone: '(555) 123.4567' }) });
+  const phoneId = r.json.id;
+  r = await req('/api/admin/tenants');
+  ok(r.json.find(t => t.id === phoneId).phone === '555-123-4567', 'phone normalised to dashes on save');
+  r = await req('/api/admin/address-suggest?q=abc');
+  ok(Array.isArray(r.json.suggestions), 'address lookup returns a list even for a short query');
 
   console.log('— multi-company isolation');
   r = await req('/api/signup', { method: 'POST', body: JSON.stringify({

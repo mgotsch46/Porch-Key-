@@ -32,7 +32,7 @@ git add -A
 if errorlevel 1 goto failed
 
 echo  Committing...
-git commit -m "Properties-only with phases, three document sets, three agreement types, dashboard income and lender loans, lender payment scheduling"
+git commit -m "Location ask at sign-in, sign out in bottom nav, calculator, address autocomplete, phone formatting, message templates"
 
 echo  Pushing to GitHub...
 echo.
@@ -46,8 +46,6 @@ echo  ========================================
 echo.
 echo   Railway is rebuilding. Wait about 90 seconds, then reload:
 echo     https://porchpay-production.up.railway.app/admin
-echo.
-echo   New Deal is gone. Everything starts at Properties now.
 echo.
 pause
 exit /b 0

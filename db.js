@@ -298,6 +298,19 @@ CREATE TABLE IF NOT EXISTS linked_accounts (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Reusable HTML message templates, per company.
+CREATE TABLE IF NOT EXISTS message_templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  name TEXT NOT NULL,
+  category TEXT DEFAULT 'general',
+  subject TEXT,
+  body_html TEXT NOT NULL,
+  is_starter INTEGER DEFAULT 0,
+  archived INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 -- Late / legal notices with read receipts
 CREATE TABLE IF NOT EXISTS notices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -357,6 +370,15 @@ addColumnIfMissing('companies', 'fee_label', "TEXT DEFAULT 'Processing fee'");
 // Always editable per deal.
 addColumnIfMissing('companies', 'default_buyer_email', 'TEXT');
 addColumnIfMissing('companies', 'default_buyer_phone', 'TEXT');
+// The management company and the person buyers actually deal with. Prefilled onto
+// every property and used on all correspondence; overridable per property.
+addColumnIfMissing('companies', 'mgmt_company_name', 'TEXT');
+addColumnIfMissing('companies', 'rep_name', 'TEXT');
+addColumnIfMissing('companies', 'rep_phone', 'TEXT');
+addColumnIfMissing('companies', 'mailing_address', 'TEXT');
+addColumnIfMissing('companies', 'mailing_city', 'TEXT');
+addColumnIfMissing('companies', 'mailing_state', 'TEXT');
+addColumnIfMissing('companies', 'mailing_zip', 'TEXT');
 addColumnIfMissing('ledger', 'fee_cents', 'INTEGER DEFAULT 0');
 addColumnIfMissing('expenses', 'linked_account_id', 'INTEGER');
 addColumnIfMissing('expenses', 'external_id', 'TEXT');
@@ -372,8 +394,29 @@ addColumnIfMissing('properties', 'year_built', 'INTEGER');
 // setting is only a starting suggestion when you add a new property.
 addColumnIfMissing('properties', 'late_fee_cents', 'INTEGER');
 addColumnIfMissing('properties', 'grace_days', 'INTEGER');
+addColumnIfMissing('properties', 'due_day', 'INTEGER');   // day of month payments are due
+// Who holds title to this property, and in what form.
+addColumnIfMissing('properties', 'owner_name', 'TEXT');
+addColumnIfMissing('properties', 'owner_type', "TEXT DEFAULT 'llc'");
+// What the buyer pays each month, broken out. Taxes and insurance are escrowed —
+// that money is held for them. The other three are fees to the servicer.
+addColumnIfMissing('loans', 'monthly_taxes_cents', 'INTEGER DEFAULT 0');
+addColumnIfMissing('loans', 'monthly_insurance_cents', 'INTEGER DEFAULT 0');
+addColumnIfMissing('loans', 'monthly_utilities_cents', 'INTEGER DEFAULT 0');
+addColumnIfMissing('loans', 'monthly_servicing_cents', 'INTEGER DEFAULT 0');
+addColumnIfMissing('loans', 'monthly_misc_cents', 'INTEGER DEFAULT 0');
+addColumnIfMissing('loans', 'misc_label', "TEXT DEFAULT 'Other monthly charge'");
+addColumnIfMissing('loans', 'final_payment_date', 'TEXT');   // maturity, from first payment + term
+addColumnIfMissing('properties', 'lat', 'REAL');
+addColumnIfMissing('properties', 'lng', 'REAL');
+addColumnIfMissing('properties', 'county', 'TEXT');   // individual | llc | land_trust | corporation | partnership | other
 // Lifecycle phase. A property moves through these; selling to a buyer sets 'sold'.
 addColumnIfMissing('properties', 'phase', "TEXT DEFAULT 'acquired'");
+// Messages can carry rendered HTML alongside the plain-text body.
+addColumnIfMissing('messages', 'body_html', 'TEXT');
+addColumnIfMissing('messages', 'subject', 'TEXT');
+addColumnIfMissing('messages', 'template_id', 'INTEGER');
+addColumnIfMissing('notices', 'body_html', 'TEXT');
 addColumnIfMissing('properties', 'phase_updated_at', 'TEXT');
 // Scheduled lender payments: when they are due and whether to auto-record them.
 addColumnIfMissing('pml_loans', 'payment_day', 'INTEGER');
