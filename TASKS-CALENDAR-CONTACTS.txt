@@ -1,0 +1,128 @@
+TASKS, CALENDAR, CONTACTS AND NOTES — what was built
+====================================================
+
+
+TASKS
+-----
+A task can be tied to a property or stand on its own. Both work; the property is
+optional on every task.
+
+Each task has: a title, a type (boots on the ground, rehab, legal, filing, closing,
+insurance, taxes, showing, inspection, collections, general), a priority, a due date
+and optional time, notes, and who it is assigned to if you have staff.
+
+The list groups itself the way you actually work: Overdue, Today, Next 7 days, Later,
+No date, then Done. Four counters sit across the top. Overdue turns red and puts a
+badge on the Tasks tab.
+
+REPEATING
+Weekly, every 2 weeks, monthly, quarterly or yearly, with an optional stop date. Tick
+one off and the next one is created automatically — you never have to remember to
+re-create it. Month-end arithmetic is handled properly: a task on the 31st repeating
+monthly lands on the 28th in February, not in March.
+
+REMINDERS
+Any task can pop up a notification a set number of days ahead — on the day, 1, 3, 7,
+14 or 30 days before. Same delivery as the payment reminders you already have.
+
+WHERE TO FIND THEM
+Tasks page (nav), the calendar, and a Tasks card on each property showing just that
+property's work with the completed ones tucked into a fold-out.
+
+
+CALENDAR
+--------
+Month grid on a desktop, a plain agenda list on a phone — the grid is unreadable at
+that width, so it switches automatically.
+
+Four layers, each with its own colour and its own on/off switch:
+
+  green   Your tasks
+  blue    Payments due in from buyers, with the amount
+  purple  Payments out to your private money lenders, plus balloon dates
+  amber   Insurance expiry and property tax due dates
+
+Switch all three automatic layers off and you are left with only what you put there.
+Anything past due shows red on both the grid and the list.
+
+Click any day to add a task on that date. Each row in the agenda has a button into the
+thing it refers to — the loan, the lender, the property, the task.
+
+The insurance and tax dates come from the property. Open a property → Owner & payment
+terms → Renewal dates. Fill those in once and they appear every year.
+
+
+CONTACTS
+--------
+Your people, kept once and attached to whichever houses they work on: boots on the
+ground, contractors, attorneys, title, insurance agents, lenders, inspectors, agents,
+accountants, utilities.
+
+Each contact holds a name, role, business name, mobile, email, address and notes. Add
+one from the Contacts page, or straight from a property — creating it there attaches it
+in the same step.
+
+On every property there is now a "Who works on this house" card listing the people
+attached, with a Text button beside each.
+
+
+TEXTING VENDORS — and how it differs from buyer texting
+-------------------------------------------------------
+These are deliberately different, and the Messages page now says so plainly with two
+tabs: "In-app — buyers" and "Text — vendors".
+
+  BUYERS get exactly one text, ever: the invitation to download the app. It goes from
+  a send-only number, says it is unmonitored, and carries the STOP opt-out carriers
+  require. If they reply, they get an automatic answer pointing them into the app.
+  Everything after that happens in-app, where it is recorded against the loan and
+  costs nothing per message.
+
+  VENDORS get real two-way SMS. You text them, they text back, and their reply lands
+  in the thread in the app with a notification to you. Carrier charges apply per
+  message.
+
+Both use the same Twilio number. The app decides which behaviour applies by looking up
+the incoming number: known contact → route to the thread, anyone else → auto-reply.
+
+Every vendor text is signed automatically with your name and company, and if you pick a
+property the address goes at the top, so nobody has to ask "which house?".
+
+TEXT SEVERAL AT ONCE
+Where a property has more than one contact with a mobile, there is a "Text several at
+once" button. One message, sent individually — they never see each other's numbers.
+Failures are reported per person rather than silently swallowed.
+
+WITHOUT TWILIO
+Nothing is blocked. Write the message and you get the exact text back to copy and send
+from your own phone, and it is still recorded in the thread marked "not sent".
+
+
+NOTES
+-----
+A free-form notes section under the history on both properties and loans. The phone
+call, the handshake, the lockbox code, the thing you will not remember in March.
+
+Each note records who wrote it and when, and marks itself edited if changed. Pin the
+important ones and they float to the top. Internal only — a buyer never sees a note.
+
+
+THE DASHBOARD
+-------------
+A strip across the top now surfaces anything wanting you: overdue tasks, tasks due
+today, new vendor texts, unread buyer messages, invitations waiting to go out. Each one
+is a button straight into the right place. It disappears when there is nothing.
+
+This matters on a phone, where the sidebar badges are hidden behind More.
+
+
+ONE SETUP STEP, WHEN YOU OPEN TWILIO
+------------------------------------
+In the phone number settings, set "A message comes in" to:
+
+    POST  https://porchpay-production.up.railway.app/sms/incoming
+
+Without it, vendor replies vanish silently. Everything else works either way.
+
+Also worth knowing: business texting in the US requires A2P 10DLC registration through
+Twilio. It takes a few days and unregistered traffic gets filtered by the carriers, so
+start it early.

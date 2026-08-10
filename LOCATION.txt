@@ -1,0 +1,72 @@
+LOCATION SHARING — what gets recorded, and what it is good for
+==============================================================
+
+Short version: nothing is recorded unless the buyer switches it on, it records a
+position only when they open the app, and switching it off deletes the history.
+
+
+HOW IT WORKS
+------------
+1. The buyer is asked once, at sign-in, on a screen that explains in plain words
+   what is collected and why. Nothing is recorded before they say yes.
+2. Saying yes then triggers the phone's own permission prompt. Both have to be
+   granted. Neither you nor the app can grant them on their behalf.
+3. From then on, each time they open the app it records one position: latitude,
+   longitude, accuracy, and the timestamp.
+4. They can switch it off any time under Settings. Doing so deletes every position
+   already recorded — not hides, deletes.
+
+
+WHAT IT IS NOT
+--------------
+It is NOT continuous tracking. There is no background tracking, no geofence, no
+"where are they right now" lookup. If the buyer does not open the app for three
+weeks, there is a three-week hole in the record. That is by design: continuous
+background location would need a native app, App Store review of a persistent
+location entitlement, and a much harder justification under state privacy law.
+
+
+WHAT YOU SEE
+------------
+On the loan page there is a card, "Where the buyer's phone has been":
+
+  - a status chip: at the property / a mile or two away / further out
+  - when the last position was recorded, and how long ago
+  - a link opening it in Google Maps
+  - the full list of recorded positions, newest first, each with the distance from
+    the property, the GPS accuracy, and its own map link
+
+Distance is straight-line from the property's own coordinates, which get saved
+when you pick the address from the suggestion list. If a property was entered by
+typing the address without picking a suggestion, it has no coordinates and the
+distance column shows a dash — re-pick the address to fix it.
+
+
+READING IT HONESTLY
+-------------------
+Phone GPS is good to roughly 30–100 feet outdoors and considerably worse indoors,
+so anything under a quarter mile counts as "at the home". The accuracy column is
+worth a glance: a fix reported as accurate to 3,000 feet came off a cell tower,
+not a satellite, and should not be leaned on.
+
+A pattern of positions consistently far from the property is worth a conversation.
+It is not proof of anything on its own, and it is not a substitute for a drive-by
+or a written occupancy provision in your agreement.
+
+
+THE LEGAL SIDE — worth reading before you rely on this
+------------------------------------------------------
+Precise geolocation is "sensitive personal information" under the California,
+Colorado, Connecticut, Virginia and several other state privacy acts. Practically,
+that means:
+
+  - consent has to be freely given. It cannot be a condition of using the app or
+    of servicing the loan. The app is built this way; keep it that way in how you
+    talk about it with buyers.
+  - the stated purpose has to match the actual use. The consent screen says it is
+    for confirming occupancy and helping locate the nearest cash-payment retailer.
+    Using it for something else undercuts the consent.
+  - buyers can ask for their data and ask for it deleted. Both are built in.
+
+Have your attorney look at the consent wording and confirm it matches your
+agreement's occupancy provisions before you rely on this in any dispute.

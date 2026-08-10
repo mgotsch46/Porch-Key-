@@ -32,7 +32,7 @@ git add -A
 if errorlevel 1 goto failed
 
 echo  Committing...
-git commit -m "Location ask at sign-in, sign out in bottom nav, calculator, address autocomplete, phone formatting, message templates"
+git commit -m "Tasks with property tagging, in-app calendar, contacts with two-way vendor texting, notes on properties and loans, in-app vs text split"
 
 echo  Pushing to GitHub...
 echo.

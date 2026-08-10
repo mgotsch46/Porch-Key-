@@ -22,7 +22,10 @@ function amortizationSchedule(loan) {
   for (let n = 1; n <= loan.term_months && bal > 0; n++) {
     const interest = Math.round(bal * r);
     let principal = loan.payment_cents - interest;
-    if (principal > bal) principal = bal; // final payment
+    // The last scheduled payment settles whatever is left. A fixed, rounded payment
+    // never lands exactly on zero, so the final one absorbs the few dollars of
+    // rounding drift — which is how the note actually pays off.
+    if (principal > bal || n === loan.term_months) principal = bal;
     bal -= principal;
     rows.push({
       n,
@@ -262,5 +265,25 @@ function termFromDates(firstPaymentDate, finalDate) {
   return months + 1;
 }
 
-module.exports = { calcPayment, calcPrincipal, calcTerm, calcRate, solveLoan,
+// Roll a monthly schedule into calendar years — how most people want to read it.
+function yearlySchedule(schedule) {
+  const years = new Map();
+  for (const row of schedule) {
+    const y = row.date.slice(0, 4);
+    if (!years.has(y)) {
+      years.set(y, { year: y, payments: 0, payment_cents: 0, interest_cents: 0,
+        principal_cents: 0, balance_cents: row.balance_cents, first_n: row.n, last_n: row.n });
+    }
+    const b = years.get(y);
+    b.payments += 1;
+    b.payment_cents += row.payment_cents;
+    b.interest_cents += row.interest_cents;
+    b.principal_cents += row.principal_cents;
+    b.balance_cents = row.balance_cents;   // balance at the end of that year
+    b.last_n = row.n;
+  }
+  return [...years.values()];
+}
+
+module.exports = { calcPayment, calcPrincipal, calcTerm, calcRate, solveLoan, yearlySchedule,
   finalPaymentDate, termFromDates, amortizationSchedule, paymentsDue, nextDueDate, loanStatus, allocatePayment, payoffQuote, addMonthsUTC };

@@ -2,6 +2,10 @@
 // TWILIO_FROM_NUMBER to send automatically. Without them the app still creates the
 // invitation and hands the admin a ready-to-send message they can paste into their
 // own phone — nothing blocks on Twilio being configured.
+//
+// The outbound number is send-only. Buyers who reply get one automatic answer pointing
+// them back into the app, and every message carries a STOP line because US carriers
+// require an opt-out on automated business texting.
 
 const smsEnabled = () =>
   !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
@@ -52,7 +56,19 @@ Temporary password: ${tempPassword}
 
 You'll pick your own password on first sign-in. iPhone: tap Share then "Add to Home Screen". Android: tap the menu then "Install app".
 
-In the app you can see your balance and payment schedule, pay by card, bank, Cash App or cash at a store, and message us any time.`;
+In the app you can see your balance and payment schedule, pay by card, bank, Cash App or cash at a store, and message us any time.
+
+This is an automated message from an unmonitored number — please don't reply here. Message us in the app instead. Reply STOP to opt out of texts.`;
 }
 
-module.exports = { smsEnabled, sendSms, normalizePhone, inviteMessage };
+// What anyone who texts the number back receives. Sent once per conversation by Twilio's
+// webhook, so a buyer who replies is not left thinking nobody heard them.
+const AUTO_REPLY = `This number doesn't receive messages. To reach ${'{company}'}, open the Porch Pay app and use Messages — we answer there. Reply STOP to opt out.`;
+
+function autoReplyTwiml(companyName) {
+  const body = AUTO_REPLY.replace('{company}', companyName || 'your servicer');
+  const esc = (t) => String(t).replace(/[<>&'"]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;' }[c]));
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${esc(body)}</Message></Response>`;
+}
+
+module.exports = { smsEnabled, sendSms, normalizePhone, inviteMessage, autoReplyTwiml };

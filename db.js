@@ -605,6 +605,114 @@ function ensureSeed() {
     }
   }
 }
+
+// ---------- tasks & calendar ----------
+// Work items, optionally pinned to a property or a loan. Everything here is internal:
+// buyers never see a task. A task with a date lands on the calendar; one without sits
+// in the list until it is given a date or ticked off.
+db.exec(`
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  property_id INTEGER REFERENCES properties(id),      -- NULL = a one-off, not tied to a house
+  loan_id INTEGER REFERENCES loans(id),
+  title TEXT NOT NULL,
+  notes TEXT,
+  category TEXT NOT NULL DEFAULT 'general',
+  priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high')),
+  due_date TEXT,                                      -- YYYY-MM-DD, NULL = no date yet
+  due_time TEXT,                                      -- HH:MM, NULL = all day
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done')),
+  completed_at TEXT,
+  completed_by INTEGER REFERENCES users(id),
+  assigned_to INTEGER REFERENCES users(id),
+  repeat_every TEXT NOT NULL DEFAULT 'none'
+    CHECK (repeat_every IN ('none','weekly','biweekly','monthly','quarterly','yearly')),
+  repeat_until TEXT,
+  remind_days_before INTEGER,                          -- pop-up this many days ahead
+  reminded_at TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_company_due ON tasks(company_id, due_date);
+CREATE INDEX IF NOT EXISTS idx_tasks_property ON tasks(property_id);
+`);
+
+// Renewal dates that belong to the house rather than to a task, so the calendar can
+// surface them without anyone having to remember to create a reminder.
+addColumnIfMissing('properties', 'insurance_expires', 'TEXT');
+addColumnIfMissing('properties', 'insurance_carrier', 'TEXT');
+addColumnIfMissing('properties', 'tax_due_date', 'TEXT');
+
+
+// ---------- contacts ----------
+// The people you deal with on a house: boots on the ground, the attorney, the insurance
+// agent, the title company. Kept once at company level and attached to whichever
+// properties they work on, so a number is typed in once and reused.
+db.exec(`
+CREATE TABLE IF NOT EXISTS contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'other',
+  business_name TEXT,
+  phone TEXT,
+  email TEXT,
+  address TEXT, city TEXT, state TEXT, zip TEXT,
+  notes TEXT,
+  archived_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS property_contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  property_id INTEGER NOT NULL REFERENCES properties(id),
+  contact_id INTEGER NOT NULL REFERENCES contacts(id),
+  role_note TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(property_id, contact_id)
+);
+
+-- Every text to or from a contact, so the history survives phone changes and staff changes.
+CREATE TABLE IF NOT EXISTS contact_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  contact_id INTEGER REFERENCES contacts(id),
+  property_id INTEGER REFERENCES properties(id),
+  direction TEXT NOT NULL CHECK (direction IN ('out','in')),
+  phone TEXT NOT NULL,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'sent',
+  error TEXT,
+  sent_by INTEGER REFERENCES users(id),
+  read_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cmsg_contact ON contact_messages(contact_id, id);
+CREATE INDEX IF NOT EXISTS idx_cmsg_company ON contact_messages(company_id, id);
+`);
+
+
+// ---------- notes ----------
+// Free-form notes an admin jots against a property or a loan — the phone call, the
+// handshake agreement, the thing you will not remember in March. Internal only.
+db.exec(`
+CREATE TABLE IF NOT EXISTS notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  property_id INTEGER REFERENCES properties(id),
+  loan_id INTEGER REFERENCES loans(id),
+  contact_id INTEGER REFERENCES contacts(id),
+  body TEXT NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now')),
+  edited_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notes_property ON notes(property_id, id);
+CREATE INDEX IF NOT EXISTS idx_notes_loan ON notes(loan_id, id);
+`);
+
 ensureSeed();
 
 // Emergency password reset. Set RESET_OWNER_PASSWORD (optionally RESET_OWNER_EMAIL) and

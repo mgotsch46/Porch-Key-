@@ -55,6 +55,48 @@ async function main() {
   ok(r.json.status.payments_due >= 2, 'payments due counted (loan started 2026-06)');
   ok(r.json.status.is_past_due, 'loan shows past due before any payments');
 
+  console.log('— yearly amortization rollup');
+  r = await req('/api/admin/loans/' + loanId);
+  const yr = r.json.schedule_yearly;
+  ok(Array.isArray(yr) && yr.length >= 30, `yearly rollup returned (${yr && yr.length} years)`);
+  ok(yr[0].year === '2026' && yr[0].payments === 7, 'first year covers Jun–Dec = 7 payments');
+  const monthlyInt = r.json.schedule.reduce((t, x) => t + x.interest_cents, 0);
+  const yearlyInt = yr.reduce((t, x) => t + x.interest_cents, 0);
+  ok(monthlyInt === yearlyInt, 'yearly interest totals match the monthly schedule exactly');
+  ok(yr[yr.length - 1].balance_cents === 0, 'final year ends at a zero balance');
+  r = await req(`/api/admin/amortize?principal_cents=10000000&interest_rate_bps=950&term_months=360&first_payment_date=2026-06-01`);
+  ok(Array.isArray(r.json.schedule_yearly) && r.json.schedule_yearly.length >= 30, 'calculator returns a yearly rollup too');
+
+  console.log('— editing the buyer');
+  r = await req('/api/admin/tenants/' + tbId, { method: 'PUT', body: JSON.stringify({ name: 'Jane A. Buyer', phone: '5555550142' }) });
+  ok(r.status === 200 && r.json.name === 'Jane A. Buyer', 'buyer name updated');
+  ok(r.json.phone === '555-555-0142', 'phone reformatted with dashes on edit');
+  r = await req('/api/admin/tenants/' + tbId, { method: 'PUT', body: JSON.stringify({ email: 'admin@test.com' }) });
+  ok(r.status === 400, 'cannot move a buyer onto an email already in use');
+  r = await req('/api/admin/tenants/' + tbId, { method: 'PUT', body: JSON.stringify({ email: 'jane.buyer@test.com' }) });
+  ok(r.status === 200, 'buyer email changed');
+  const relog = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'jane.buyer@test.com', password: tempPw }) }, '');
+  ok(relog.status === 200, 'buyer signs in with the new email');
+  r = await req('/api/admin/tenants/' + tbId, { method: 'PUT', body: JSON.stringify({ email: 'jane@test.com', name: 'Jane Buyer' }) });
+  ok(r.status === 200 && r.json.email === 'jane@test.com', 'buyer restored for the remaining tests');
+
+  console.log('— editing loan terms');
+  r = await req('/api/admin/loans/' + loanId, { method: 'PUT', body: JSON.stringify({
+    interest_rate_bps: 800, term_months: 240, recalc_payment: 1 }) });
+  ok(r.status === 200, 'loan terms saved');
+  r = await req('/api/admin/loans/' + loanId);
+  ok(r.json.loan.interest_rate_bps === 800 && r.json.loan.term_months === 240, 'rate and term persisted');
+  ok(Math.abs(r.json.loan.payment_cents - 83644) <= 3, `P&I recalculated to ~$836.44 (got $${(r.json.loan.payment_cents/100).toFixed(2)})`);
+  ok(r.json.schedule.length === 240, 'schedule follows the new term');
+  ok(r.json.loan.final_payment_date === '2046-05-01', 'final payment date recalculated from the new term');
+  r = await req('/api/admin/loans/' + loanId, { method: 'PUT', body: JSON.stringify({
+    monthly_taxes_cents: 20000, monthly_insurance_cents: 9000 }) });
+  r = await req('/api/admin/loans/' + loanId);
+  ok(r.json.loan.escrow_cents === 29000, 'escrow follows taxes + insurance automatically');
+  r = await req('/api/admin/loans/' + loanId, { method: 'PUT', body: JSON.stringify({
+    interest_rate_bps: 950, term_months: 360, recalc_payment: 1, monthly_taxes_cents: 0, monthly_insurance_cents: 25000 }) });
+  ok(r.status === 200, 'terms restored for the remaining tests');
+
   console.log('— recurring & one-time charges');
   r = await req(`/api/admin/loans/${loanId}/charges`, { method: 'POST', body: JSON.stringify({ description: 'Servicing fee', category: 'servicing_fee', amount_cents: 2500, recurring: true, start_date: '2026-06-01' }) });
   ok(r.status === 200, 'add recurring servicing fee');
@@ -201,9 +243,182 @@ async function main() {
   ok(r.status === 200, 'location ping accepted after consent');
   r = await req(`/api/admin/tenants/${tbId}/location`);
   ok(r.json.consent_at && r.json.last_ping && r.json.last_ping.lat === 40.1, 'admin sees consented last location');
+  // Distance from the home is the point of this — put the property on the map first.
+  await req('/api/admin/properties/' + propId, { method: 'PUT', body: JSON.stringify({ lat: 40.1, lng: -83.0 }) });
+  r = await req(`/api/admin/tenants/${tbId}/location`);
+  ok(r.json.miles_from_home === 0, 'a ping at the property reads as zero miles away');
+  ok(r.json.home && r.json.home.geocoded, 'the buyer\'s property is geocoded');
+  // Now a ping about 8 miles north.
+  await req('/api/tenant/location', { method: 'POST', body: JSON.stringify({ lat: 40.216, lng: -83.0, accuracy_m: 40 }) }, tbCookie);
+  r = await req(`/api/admin/tenants/${tbId}/location`);
+  ok(Math.abs(r.json.miles_from_home - 8) < 0.3, `distance from the home computes (${r.json.miles_from_home} mi)`);
+  ok(r.json.history.length === 2 && r.json.ping_count === 2, 'full position history returned, newest first');
+  ok(r.json.history[0].miles_from_home > r.json.history[1].miles_from_home, 'history ordered newest first');
+  ok(r.json.history[0].accuracy_m === 40, 'accuracy recorded so a stale fix can be spotted');
+
   r = await req('/api/tenant/location/consent', { method: 'POST', body: JSON.stringify({ consent: false }) }, tbCookie);
   r = await req(`/api/admin/tenants/${tbId}/location`);
   ok(!r.json.consent_at && !r.json.last_ping, 'revoking consent deletes location history');
+  ok(r.json.ping_count === 0 && r.json.history.length === 0, 'no position history survives a revoke');
+  r = await req('/api/tenant/location', { method: 'POST', body: JSON.stringify({ lat: 40.1, lng: -83.0 }) }, tbCookie);
+  ok(r.status === 403, 'nothing is recorded again until they opt back in');
+
+  console.log('— tasks');
+  r = await req('/api/admin/tasks', { method: 'POST', body: JSON.stringify({
+    title: 'Change the locks', property_id: propId, category: 'bog', priority: 'high',
+    due_date: '2026-08-01', notes: 'Front and back' }) });
+  ok(r.status === 200 && r.json.id, 'create a task tied to a property');
+  const taskId = r.json.id;
+  ok(r.json.category_icon === '👟' && r.json.category_label === 'Boots on the ground', 'task carries its category label');
+  ok(r.json.is_overdue === true, 'a task dated in the past reads as overdue');
+  r = await req('/api/admin/tasks', { method: 'POST', body: JSON.stringify({ title: 'Call the accountant' }) });
+  ok(r.status === 200 && !r.json.property_id && !r.json.due_date, 'one-off task with no property and no date');
+  const looseTask = r.json.id;
+  r = await req('/api/admin/tasks', { method: 'POST', body: JSON.stringify({ title: '' }) });
+  ok(r.status === 400, 'a task needs a title');
+  r = await req('/api/admin/tasks?status=open');
+  ok(r.json.tasks.length >= 2, 'task list returns open tasks');
+  ok(r.json.counts.overdue >= 1 && r.json.counts.undated >= 1, 'counts split overdue from undated');
+  ok(r.json.tasks[0].due_date !== null, 'dated tasks sort ahead of undated ones');
+  r = await req('/api/admin/tasks?property_id=' + propId);
+  ok(r.json.tasks.every(t => t.property_id === propId), 'filtering by property works');
+  r = await req('/api/admin/tasks/' + taskId, { method: 'PUT', body: JSON.stringify({ due_date: '2026-12-15', priority: 'normal' }) });
+  ok(r.json.due_date === '2026-12-15' && !r.json.is_overdue, 'moving the date clears overdue');
+
+  console.log('— repeating tasks');
+  r = await req('/api/admin/tasks', { method: 'POST', body: JSON.stringify({
+    title: 'Quarterly drive-by', property_id: propId, category: 'inspection',
+    due_date: '2026-09-30', repeat_every: 'quarterly' }) });
+  const repId = r.json.id;
+  r = await req(`/api/admin/tasks/${repId}/complete`, { method: 'POST', body: '{}' });
+  ok(r.json.task.status === 'done' && r.json.task.completed_by, 'ticking off records who did it');
+  ok(r.json.next && r.json.next.due_date === '2026-12-30', 'a quarterly task schedules its next occurrence');
+  ok(r.json.next.repeat_every === 'quarterly', 'the chain keeps repeating');
+  r = await req(`/api/admin/tasks/${r.json.next.id}/complete`, { method: 'POST', body: '{}' });
+  ok(r.json.next.due_date === '2027-03-30', 'and again the quarter after');
+  // month-end arithmetic: 31 Jan + 1 month must not become 3 March
+  r = await req('/api/admin/tasks', { method: 'POST', body: JSON.stringify({
+    title: 'Month end', due_date: '2027-01-31', repeat_every: 'monthly' }) });
+  r = await req(`/api/admin/tasks/${r.json.id}/complete`, { method: 'POST', body: '{}' });
+  ok(r.json.next.due_date === '2027-02-28', '31 Jan repeating monthly lands on 28 Feb, not in March');
+  // a repeat that has run out
+  r = await req('/api/admin/tasks', { method: 'POST', body: JSON.stringify({
+    title: 'Weekly until', due_date: '2026-09-01', repeat_every: 'weekly', repeat_until: '2026-09-05' }) });
+  r = await req(`/api/admin/tasks/${r.json.id}/complete`, { method: 'POST', body: '{}' });
+  ok(r.json.next === null, 'repeating stops at the until date');
+  r = await req(`/api/admin/tasks/${looseTask}/complete`, { method: 'POST', body: JSON.stringify({ reopen: false }) });
+  r = await req(`/api/admin/tasks/${looseTask}/complete`, { method: 'POST', body: JSON.stringify({ reopen: true }) });
+  ok(r.json.task.status === 'open' && !r.json.task.completed_at, 'a completed task can be reopened');
+
+  console.log('— calendar');
+  r = await req('/api/admin/properties/' + propId + '/details', { method: 'PUT', body: JSON.stringify({
+    insurance_expires: '2026-12-05', insurance_carrier: 'State Farm', tax_due_date: '2026-12-20' }) });
+  ok(r.json.insurance_expires === '2026-12-05', 'renewal dates save on the property');
+  r = await req('/api/admin/calendar?from=2026-12-01&to=2026-12-31');
+  const src = (s) => r.json.events.filter(e => e.source === s);
+  ok(src('task').some(e => e.task_id === taskId), 'the dated task is on the calendar');
+  ok(src('renewal').some(e => e.title.includes('State Farm')), 'insurance renewal is on the calendar');
+  ok(src('renewal').some(e => e.title.includes('taxes')), 'property taxes are on the calendar');
+  ok(src('payment').length >= 1, 'buyer payments due appear');
+  ok(src('payment')[0].amount_cents > 0, 'payment events carry the amount owed');
+  const sorted = r.json.events.every((e, i, a) => i === 0 || a[i - 1].date <= e.date);
+  ok(sorted, 'calendar events come back in date order');
+  r = await req('/api/admin/calendar?from=2026-12-01&to=2026-12-31&payments=0&renewals=0&pml=0');
+  ok(r.json.events.every(e => e.source === 'task'), 'switching layers off leaves only your own tasks');
+  r = await req('/api/admin/calendar?from=2026-12-01&to=2026-12-31&tasks=0');
+  ok(!r.json.events.some(e => e.source === 'task'), 'the task layer can be switched off too');
+  r = await req('/api/admin/calendar?from=2027-01-01&to=2027-01-31');
+  const janPay = r.json.events.filter(e => e.source === 'payment');
+  ok(janPay.length >= 1 && janPay.every(e => e.date.startsWith('2027-01')), 'monthly payments recur into later months');
+
+  console.log('— contacts');
+  r = await req('/api/admin/contacts', { method: 'POST', body: JSON.stringify({
+    name: 'Ray Ramirez', role: 'bog', business_name: 'Ray Property Services',
+    phone: '5135551234', property_id: propId }) });
+  ok(r.status === 200 && r.json.id, 'create a contact and attach it to a property in one step');
+  const rayId = r.json.id;
+  ok(r.json.phone === '513-555-1234', 'contact phone formatted with dashes');
+  ok(r.json.role_label === 'Boots on the ground', 'contact carries its role label');
+  r = await req('/api/admin/contacts', { method: 'POST', body: JSON.stringify({ name: 'No Details' }) });
+  ok(r.status === 400, 'a contact needs a phone or an email');
+  r = await req('/api/admin/contacts', { method: 'POST', body: JSON.stringify({
+    name: 'Dana Reed', role: 'legal', email: 'dana@law.test' }) });
+  const danaId = r.json.id;
+  r = await req(`/api/admin/properties/${propId}/contacts`);
+  ok(r.json.contacts.length === 1 && r.json.contacts[0].id === rayId, 'the property lists who works on it');
+  r = await req(`/api/admin/properties/${propId}/contacts`, { method: 'POST', body: JSON.stringify({
+    contact_id: danaId, role_note: 'Handles the forfeiture filings' }) });
+  r = await req(`/api/admin/properties/${propId}/contacts`);
+  ok(r.json.contacts.length === 2, 'attach an existing contact to a property');
+  r = await req(`/api/admin/properties/${propId}/contacts`, { method: 'POST', body: JSON.stringify({ contact_id: danaId }) });
+  r = await req(`/api/admin/properties/${propId}/contacts`);
+  ok(r.json.contacts.length === 2, 'attaching the same person twice does not duplicate them');
+  r = await req(`/api/admin/properties/${propId}/contacts/${danaId}`, { method: 'DELETE' });
+  r = await req(`/api/admin/properties/${propId}/contacts`);
+  ok(r.json.contacts.length === 1, 'detaching a contact from a property works');
+  r = await req('/api/admin/contacts');
+  ok(r.json.contacts.find(c => c.id === danaId), 'detaching does not delete the contact itself');
+
+  console.log('— texting a vendor');
+  r = await req(`/api/admin/contacts/${rayId}/messages`, { method: 'POST', body: JSON.stringify({
+    body: 'Can you check the back door?', property_id: propId }) });
+  ok(r.status === 400 && r.json.text, 'without Twilio, the text comes back to copy');
+  ok(r.json.text.includes('123 Oak St'), 'the property address is put at the top of the text');
+  ok(/—\s/.test(r.json.text), 'the text is signed so the vendor knows who it is from');
+  r = await req(`/api/admin/contacts/${rayId}/messages`);
+  ok(r.json.messages.length === 1 && r.json.messages[0].status === 'not_sent',
+    'an unsent text is still recorded, marked not sent');
+  r = await req(`/api/admin/contacts/${danaId}/messages`, { method: 'POST', body: JSON.stringify({ body: 'hello' }) });
+  ok(r.status === 400 && /mobile number/.test(r.json.error), 'texting somebody with no mobile is refused clearly');
+
+  console.log('— a vendor texts back');
+  let inbound = await fetch(BASE + '/sms/incoming', { method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'From=%2B15135551234&Body=' + encodeURIComponent('On my way, back door is fine') });
+  let xml = await inbound.text();
+  ok(!/<Message>/.test(xml), 'a known vendor does NOT get the automatic brush-off');
+  r = await req(`/api/admin/contacts/${rayId}/messages`);
+  ok(r.json.messages.length === 2 && r.json.messages[1].direction === 'in',
+    'their reply lands in the thread');
+  ok(r.json.messages[1].body === 'On my way, back door is fine', 'the reply is stored as sent');
+  ok(r.json.messages[1].property_id === propId, 'the reply is filed against the property last discussed');
+  inbound = await fetch(BASE + '/sms/incoming', { method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'From=%2B19995550000&Body=who+is+this' });
+  xml = await inbound.text();
+  ok(/<Message>/.test(xml) && /Porch Pay app/.test(xml), 'an unknown number still gets the app auto-reply');
+  r = await req('/api/admin/contact-inbox');
+  ok(r.json.unread.length === 0, 'opening the thread marks vendor replies read');
+
+  console.log('— broadcast to the crew');
+  r = await req(`/api/admin/properties/${propId}/broadcast`, { method: 'POST', body: JSON.stringify({
+    contact_ids: [rayId], body: 'Roof guy comes Thursday' }) });
+  ok(r.json.failed === 1 && /not connected/i.test(r.json.results[0].error),
+    'broadcast reports per-person failures rather than silently dropping them');
+  r = await req(`/api/admin/properties/${propId}/broadcast`, { method: 'POST', body: JSON.stringify({
+    contact_ids: [], body: 'nobody' }) });
+  ok(r.status === 400, 'broadcast needs at least one recipient');
+
+  console.log('— notes');
+  r = await req('/api/admin/notes', { method: 'POST', body: JSON.stringify({
+    property_id: propId, body: 'Seller left the shed key under the mat.' }) });
+  ok(r.status === 200 && r.json.author_name, 'add a note to a property, stamped with who wrote it');
+  const noteId = r.json.id;
+  r = await req('/api/admin/notes', { method: 'POST', body: JSON.stringify({ loan_id: loanId, body: 'Buyer called about November.' }) });
+  ok(r.status === 200, 'add a note to a loan');
+  r = await req('/api/admin/notes', { method: 'POST', body: JSON.stringify({ property_id: propId, body: '   ' }) });
+  ok(r.status === 400, 'an empty note is refused');
+  r = await req('/api/admin/notes?property_id=' + propId);
+  ok(r.json.notes.length === 1, 'property notes and loan notes stay separate');
+  r = await req('/api/admin/notes/' + noteId, { method: 'PUT', body: JSON.stringify({ pinned: 1 }) });
+  ok(r.json.pinned === 1, 'a note can be pinned');
+  r = await req('/api/admin/notes', { method: 'POST', body: JSON.stringify({ property_id: propId, body: 'Second note' }) });
+  r = await req('/api/admin/notes?property_id=' + propId);
+  ok(r.json.notes[0].id === noteId, 'pinned notes sort to the top');
+  r = await req('/api/admin/notes/' + noteId, { method: 'PUT', body: JSON.stringify({ body: 'Shed key is under the mat.' }) });
+  ok(r.json.edited_at, 'editing a note records that it was edited');
+  r = await req('/api/admin/notes/' + noteId, { method: 'DELETE' });
+  ok(r.status === 200, 'a note can be deleted');
 
   console.log('— property-first workflow (costs, basis, sale)');
   r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '77 Maple Ave', city: 'Dayton', state: 'OH' }) });
@@ -248,6 +463,19 @@ async function main() {
   ok(r.status === 200, 'admin can mark an invite sent manually');
   r = await req('/api/admin/invitations');
   ok(r.json.invitations.some(i => i.id === inviteId && i.status === 'sent'), 'invitation shows as sent');
+  r = await req(`/api/admin/invitations/${inviteId}/send`, { method: 'POST', body: '{}' });
+  ok(r.status === 409 && r.json.already_sent, 'a second send is blocked — the invite text goes out once');
+  r = await req(`/api/admin/invitations/${inviteId}/send`, { method: 'POST', body: JSON.stringify({ resend: true }) });
+  ok(r.status !== 409, 'a deliberate resend is still allowed');
+  r = await req(`/api/admin/invitations/${inviteId}/preview`);
+  ok(/unmonitored number/i.test(r.json.text), 'invite says the number is unmonitored');
+  ok(/STOP/.test(r.json.text), 'invite carries the STOP opt-out carriers require');
+  const twiml = await fetch(BASE + '/sms/incoming', { method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'From=%2B15558675309&Body=hello' });
+  const buyerXml = await twiml.text();
+  ok(twiml.status === 200 && /<Response><Message>/.test(buyerXml), 'texting the number back gets an automatic reply');
+  ok(/Porch Pay app/.test(buyerXml), 'the auto-reply points them into the app');
 
   console.log('— processing fees passed to the buyer');
   const carlosPw = (await req('/api/admin/tenants')).json.find(t => t.email === 'carlos@test.com');
@@ -623,6 +851,47 @@ async function main() {
   ok(r.status === 404, 'rival cannot read company A buyer location');
   r = await req(`/api/admin/loans/${loanId}/notices`, {}, rivalCookie);
   ok(r.status === 404, 'rival cannot read company A notices');
+
+  // tasks, contacts, notes and the calendar must be just as sealed
+  r = await req('/api/admin/tasks?status=all', {}, rivalCookie);
+  ok(r.json.tasks.length === 0, 'rival sees none of company A tasks');
+  r = await req('/api/admin/tasks/' + taskId, { method: 'PUT', body: JSON.stringify({ title: 'hijacked' }) }, rivalCookie);
+  ok(r.status === 404, 'rival cannot edit a company A task');
+  r = await req(`/api/admin/tasks/${taskId}/complete`, { method: 'POST', body: '{}' }, rivalCookie);
+  ok(r.status === 404, 'rival cannot tick off a company A task');
+  r = await req('/api/admin/tasks/' + taskId, { method: 'DELETE' }, rivalCookie);
+  ok(r.status === 404, 'rival cannot delete a company A task');
+  r = await req('/api/admin/tasks', { method: 'POST', body: JSON.stringify({
+    title: 'sneaky', property_id: propId }) }, rivalCookie);
+  ok(r.status === 400, 'rival cannot pin a task onto a company A property');
+
+  r = await req('/api/admin/contacts', {}, rivalCookie);
+  ok(r.json.contacts.length === 0, 'rival sees none of company A contacts');
+  r = await req(`/api/admin/contacts/${rayId}/messages`, {}, rivalCookie);
+  ok(r.status === 404, 'rival cannot read company A vendor texts');
+  r = await req(`/api/admin/contacts/${rayId}/messages`, { method: 'POST', body: JSON.stringify({ body: 'hi' }) }, rivalCookie);
+  ok(r.status === 404, 'rival cannot text a company A contact');
+  r = await req('/api/admin/contacts/' + rayId, { method: 'PUT', body: JSON.stringify({ name: 'stolen' }) }, rivalCookie);
+  ok(r.status === 404, 'rival cannot edit a company A contact');
+  r = await req(`/api/admin/properties/${propId}/contacts`, {}, rivalCookie);
+  ok(r.status === 404, 'rival cannot list who works on a company A property');
+  r = await req(`/api/admin/properties/${propId}/broadcast`, { method: 'POST', body: JSON.stringify({
+    contact_ids: [rayId], body: 'hi' }) }, rivalCookie);
+  ok(r.status === 404, 'rival cannot broadcast about a company A property');
+  r = await req('/api/admin/contact-inbox', {}, rivalCookie);
+  ok(r.json.unread.length === 0, 'rival vendor inbox is empty');
+
+  r = await req('/api/admin/notes?property_id=' + propId, {}, rivalCookie);
+  ok(r.json.notes.length === 0, 'rival sees none of company A notes');
+  r = await req('/api/admin/notes', { method: 'POST', body: JSON.stringify({
+    property_id: propId, body: 'planted' }) }, rivalCookie);
+  ok(r.status === 400, 'rival cannot plant a note on a company A property');
+  r = await req('/api/admin/notes', { method: 'POST', body: JSON.stringify({
+    loan_id: loanId, body: 'planted' }) }, rivalCookie);
+  ok(r.status === 400, 'rival cannot plant a note on a company A loan');
+
+  r = await req('/api/admin/calendar?from=2026-12-01&to=2026-12-31', {}, rivalCookie);
+  ok(r.json.events.length === 0, 'rival calendar shows nothing of company A');
   // cross-company write attempt: rival property + company A loan
   r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '9 Rival Rd' }) }, rivalCookie);
   const rivalProp = r.json.id;

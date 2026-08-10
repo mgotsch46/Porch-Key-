@@ -152,6 +152,53 @@ app.post('/api/paynearme/webhook', express.raw({ type: '*/*' }), (req, res) => {
 });
 
 app.use(express.json({ limit: '60mb' }));
+app.use(express.urlencoded({ extended: false }));   // Twilio posts form-encoded
+
+// Twilio inbound webhook. The invitation number is send-only, so anyone who texts it
+// back gets one automatic answer pointing them into the app rather than silence.
+// Point Twilio's "A message comes in" setting at POST {your domain}/sms/incoming.
+// Twilio handles STOP/START/HELP itself, before this ever runs.
+app.post('/sms/incoming', (req, res) => {
+  const from = sms.normalizePhone(req.body && req.body.From);
+  const body = String((req.body && req.body.Body) || '').trim();
+  const bare = from ? from.replace(/^\+1/, '') : '';
+  const digitsOf = (col) => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col},'-',''),' ',''),'(',''),')',''),'+1','')`;
+
+  // A vendor writing back. Their reply belongs in the thread, not in an auto-response —
+  // this is a real two-way conversation and somebody is waiting on the answer.
+  if (bare) {
+    const contact = get(`SELECT * FROM contacts WHERE archived_at IS NULL AND phone IS NOT NULL
+      AND ${digitsOf('phone')} = ? ORDER BY id LIMIT 1`, bare);
+    if (contact) {
+      const lastProp = get(`SELECT property_id FROM contact_messages
+        WHERE contact_id=? AND property_id IS NOT NULL ORDER BY id DESC LIMIT 1`, contact.id);
+      run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
+           VALUES (?,?,?,'in',?,?,'received')`,
+        contact.company_id, contact.id, lastProp ? lastProp.property_id : null, from, body);
+      // Tell the staff who can act on it.
+      for (const u of all(`SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin')
+          AND deleted_at IS NULL`, contact.company_id)) {
+        notify.notify(u.id, {
+          kind: 'message',
+          title: `💬 ${contact.name}`,
+          body: body.slice(0, 140),
+          url: '/admin#contacts',
+        }).catch(() => {});
+      }
+      return res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+    }
+  }
+
+  // Otherwise it is a buyer replying to their one-time invitation. Point them at the app.
+  let companyName = null;
+  if (bare) {
+    const u = get(`SELECT c.name FROM users u JOIN companies c ON c.id=u.company_id
+      WHERE u.phone IS NOT NULL AND u.deleted_at IS NULL
+        AND ${digitsOf('u.phone')} = ? LIMIT 1`, bare);
+    if (u) companyName = u.name;
+  }
+  res.type('text/xml').send(sms.autoReplyTwiml(companyName));
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -437,6 +484,12 @@ app.get('/api/admin/summary', adminOnly, (req, res) => {
       WHERE company_id=? AND COALESCE(phase,'acquired') NOT IN ('sold','paid_off') ORDER BY id DESC`, req.companyId),
     integrations: { stripe: pay.stripeEnabled(), ai: ai.aiEnabled(), paynearme: pay.pnmEnabled(), sms: sms.smsEnabled() },
     pending_invitations: get("SELECT COUNT(*) c FROM invitations WHERE company_id=? AND status IN ('pending','failed')", req.companyId).c,
+    overdue_tasks: get(`SELECT COUNT(*) c FROM tasks WHERE company_id=? AND status='open'
+      AND due_date IS NOT NULL AND due_date < date('now')`, req.companyId).c,
+    tasks_today: get(`SELECT COUNT(*) c FROM tasks WHERE company_id=? AND status='open'
+      AND due_date = date('now')`, req.companyId).c,
+    unread_vendor_texts: get(`SELECT COUNT(*) c FROM contact_messages
+      WHERE company_id=? AND direction='in' AND read_at IS NULL`, req.companyId).c,
   });
 });
 
@@ -674,9 +727,595 @@ app.put('/api/admin/properties/:id', adminOnly, (req, res) => {
   const p = ownedProperty(req, req.params.id);
   if (!p) return res.status(404).json({ error: 'Not found' });
   const b = { ...p, ...req.body };
-  run('UPDATE properties SET address=?, city=?, state=?, zip=?, trust_name=?, trustee=?, notes=? WHERE id=?',
-    b.address, b.city, b.state, b.zip, b.trust_name, b.trustee, b.notes, p.id);
+  run(`UPDATE properties SET address=?, city=?, state=?, zip=?, trust_name=?, trustee=?, notes=?,
+       lat=?, lng=?, county=? WHERE id=?`,
+    b.address, b.city, b.state, b.zip, b.trust_name, b.trustee, b.notes,
+    b.lat ?? null, b.lng ?? null, b.county ?? null, p.id);
   res.json(get('SELECT * FROM properties WHERE id=?', p.id));
+});
+
+// ---------- tasks & calendar ----------
+// A to-do list that knows about your properties. Tasks are internal: nothing here is
+// ever visible to a buyer. Anything with a date shows on the calendar; the calendar
+// also layers in dates the app already knows — payments due, lender payments out, and
+// insurance and tax renewals — each of which can be switched off.
+
+const TASK_CATEGORIES = {
+  general: { label: 'General', icon: '📌' },
+  rehab: { label: 'Rehab / repairs', icon: '🔨' },
+  bog: { label: 'Boots on the ground', icon: '👟' },
+  showing: { label: 'Showing / marketing', icon: '🪧' },
+  closing: { label: 'Closing', icon: '🖊️' },
+  filing: { label: 'Filing & recording', icon: '🗂️' },
+  insurance: { label: 'Insurance', icon: '🛡️' },
+  taxes: { label: 'Taxes', icon: '🏛️' },
+  legal: { label: 'Legal', icon: '⚖️' },
+  collections: { label: 'Collections', icon: '📞' },
+  inspection: { label: 'Inspection', icon: '🔍' },
+};
+
+const todayStr = () => new Date().toISOString().slice(0, 10);
+
+function addDaysStr(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+function addMonthsStr(dateStr, months) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  const day = d.getUTCDate();
+  d.setUTCDate(1);
+  d.setUTCMonth(d.getUTCMonth() + months);
+  const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  d.setUTCDate(Math.min(day, last));   // 31st in a 30-day month lands on the 30th
+  return d.toISOString().slice(0, 10);
+}
+// When a repeating task is ticked off, this is when the next one is due.
+function nextOccurrence(dateStr, repeat) {
+  if (!dateStr || repeat === 'none') return null;
+  switch (repeat) {
+    case 'weekly': return addDaysStr(dateStr, 7);
+    case 'biweekly': return addDaysStr(dateStr, 14);
+    case 'monthly': return addMonthsStr(dateStr, 1);
+    case 'quarterly': return addMonthsStr(dateStr, 3);
+    case 'yearly': return addMonthsStr(dateStr, 12);
+    default: return null;
+  }
+}
+
+function taskRow(t) {
+  const cat = TASK_CATEGORIES[t.category] || TASK_CATEGORIES.general;
+  return {
+    ...t,
+    category_label: cat.label,
+    category_icon: cat.icon,
+    is_overdue: t.status === 'open' && !!t.due_date && t.due_date < todayStr(),
+    is_today: t.status === 'open' && t.due_date === todayStr(),
+  };
+}
+
+const TASK_SELECT = `SELECT t.*, p.address AS property_address, p.city AS property_city,
+  u.name AS assigned_name, cu.name AS completed_by_name
+  FROM tasks t
+  LEFT JOIN properties p ON p.id = t.property_id
+  LEFT JOIN users u ON u.id = t.assigned_to
+  LEFT JOIN users cu ON cu.id = t.completed_by`;
+
+app.get('/api/admin/tasks', adminOnly, (req, res) => {
+  const q = req.query;
+  const where = ['t.company_id = ?'];
+  const args = [req.companyId];
+  if (q.property_id) { where.push('t.property_id = ?'); args.push(q.property_id); }
+  if (q.status && q.status !== 'all') { where.push('t.status = ?'); args.push(q.status); }
+  if (q.category) { where.push('t.category = ?'); args.push(q.category); }
+  if (q.assigned_to) { where.push('t.assigned_to = ?'); args.push(q.assigned_to); }
+  if (q.from) { where.push('t.due_date >= ?'); args.push(q.from); }
+  if (q.to) { where.push('t.due_date <= ?'); args.push(q.to); }
+  // Undated tasks last, then soonest first, then high priority first.
+  const rows = all(`${TASK_SELECT} WHERE ${where.join(' AND ')}
+    ORDER BY t.status ASC, (t.due_date IS NULL) ASC, t.due_date ASC,
+      CASE t.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END, t.id DESC`, ...args)
+    .map(taskRow);
+
+  const today = todayStr();
+  res.json({
+    tasks: rows,
+    categories: TASK_CATEGORIES,
+    counts: {
+      open: rows.filter(t => t.status === 'open').length,
+      overdue: rows.filter(t => t.is_overdue).length,
+      today: rows.filter(t => t.is_today).length,
+      week: rows.filter(t => t.status === 'open' && t.due_date && t.due_date >= today
+        && t.due_date <= addDaysStr(today, 7)).length,
+      undated: rows.filter(t => t.status === 'open' && !t.due_date).length,
+    },
+  });
+});
+
+app.post('/api/admin/tasks', adminOnly, (req, res) => {
+  const b = req.body || {};
+  const title = String(b.title || '').trim();
+  if (!title) return res.status(400).json({ error: 'Give the task a title' });
+  if (b.property_id && !ownedProperty(req, b.property_id)) {
+    return res.status(400).json({ error: 'That property is not yours' });
+  }
+  const r = run(`INSERT INTO tasks (company_id, property_id, loan_id, title, notes, category,
+      priority, due_date, due_time, assigned_to, repeat_every, repeat_until, remind_days_before, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    req.companyId, b.property_id || null, b.loan_id || null, title, b.notes || null,
+    b.category || 'general', b.priority || 'normal', b.due_date || null, b.due_time || null,
+    b.assigned_to || null, b.repeat_every || 'none', b.repeat_until || null,
+    b.remind_days_before != null ? Number(b.remind_days_before) : null, req.user.id);
+  res.json(taskRow(get(`${TASK_SELECT} WHERE t.id=?`, r.lastInsertRowid)));
+});
+
+app.put('/api/admin/tasks/:id', adminOnly, (req, res) => {
+  const t = get('SELECT * FROM tasks WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!t) return res.status(404).json({ error: 'Task not found' });
+  const b = req.body || {};
+  if (b.property_id && !ownedProperty(req, b.property_id)) {
+    return res.status(400).json({ error: 'That property is not yours' });
+  }
+  const allowed = ['property_id', 'loan_id', 'title', 'notes', 'category', 'priority',
+    'due_date', 'due_time', 'assigned_to', 'repeat_every', 'repeat_until', 'remind_days_before'];
+  const sets = [], vals = [];
+  for (const k of allowed) if (b[k] !== undefined) { sets.push(`${k}=?`); vals.push(b[k] === '' ? null : b[k]); }
+  // Moving the date should let the reminder fire again for the new one.
+  if (b.due_date !== undefined && b.due_date !== t.due_date) { sets.push('reminded_at=?'); vals.push(null); }
+  if (sets.length) run(`UPDATE tasks SET ${sets.join(',')} WHERE id=?`, ...vals, t.id);
+  res.json(taskRow(get(`${TASK_SELECT} WHERE t.id=?`, t.id)));
+});
+
+// Tick off. A repeating task quietly creates its next occurrence so the chain continues.
+app.post('/api/admin/tasks/:id/complete', adminOnly, (req, res) => {
+  const t = get('SELECT * FROM tasks WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!t) return res.status(404).json({ error: 'Task not found' });
+  const reopen = req.body && req.body.reopen;
+  if (reopen) {
+    run("UPDATE tasks SET status='open', completed_at=NULL, completed_by=NULL WHERE id=?", t.id);
+    return res.json({ task: taskRow(get(`${TASK_SELECT} WHERE t.id=?`, t.id)), next: null });
+  }
+  run("UPDATE tasks SET status='done', completed_at=datetime('now'), completed_by=? WHERE id=?",
+    req.user.id, t.id);
+
+  let next = null;
+  const nextDate = nextOccurrence(t.due_date, t.repeat_every);
+  if (nextDate && (!t.repeat_until || nextDate <= t.repeat_until)) {
+    const r = run(`INSERT INTO tasks (company_id, property_id, loan_id, title, notes, category,
+        priority, due_date, due_time, assigned_to, repeat_every, repeat_until, remind_days_before, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      t.company_id, t.property_id, t.loan_id, t.title, t.notes, t.category, t.priority,
+      nextDate, t.due_time, t.assigned_to, t.repeat_every, t.repeat_until,
+      t.remind_days_before, req.user.id);
+    next = taskRow(get(`${TASK_SELECT} WHERE t.id=?`, r.lastInsertRowid));
+  }
+  res.json({ task: taskRow(get(`${TASK_SELECT} WHERE t.id=?`, t.id)), next });
+});
+
+app.delete('/api/admin/tasks/:id', adminOnly, (req, res) => {
+  const t = get('SELECT id FROM tasks WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!t) return res.status(404).json({ error: 'Task not found' });
+  run('DELETE FROM tasks WHERE id=?', t.id);
+  res.json({ ok: true });
+});
+
+// ---------- the calendar ----------
+// Your tasks, plus three layers the app can work out for itself. Each layer is a
+// query parameter so the front end can switch it off and show only what you put there.
+app.get('/api/admin/calendar', adminOnly, (req, res) => {
+  const from = req.query.from || todayStr();
+  const to = req.query.to || addDaysStr(from, 60);
+  const want = (name) => req.query[name] !== '0' && req.query[name] !== 'false';
+  const events = [];
+
+  // 1. Tasks with a date on them.
+  if (want('tasks')) {
+    for (const t of all(`${TASK_SELECT} WHERE t.company_id=? AND t.due_date BETWEEN ? AND ?`,
+      req.companyId, from, to)) {
+      const cat = TASK_CATEGORIES[t.category] || TASK_CATEGORIES.general;
+      events.push({
+        source: 'task', id: 'task-' + t.id, task_id: t.id,
+        date: t.due_date, time: t.due_time || null,
+        title: t.title, icon: cat.icon, category: t.category,
+        property_id: t.property_id, property_address: t.property_address,
+        status: t.status, priority: t.priority,
+        overdue: t.status === 'open' && t.due_date < todayStr(),
+      });
+    }
+  }
+
+  // 2. What buyers owe, on their own due day.
+  if (want('payments')) {
+    const loans = all(`SELECT l.*, p.address, u.name AS buyer_name FROM loans l
+      JOIN properties p ON p.id=l.property_id
+      LEFT JOIN users u ON u.id=l.tenant_user_id
+      WHERE l.company_id=? AND l.status='active'`, req.companyId);
+    for (const l of loans) {
+      const ledger = all('SELECT * FROM ledger WHERE loan_id=? ORDER BY entry_date, id', l.id);
+      const status = loanEngine.loanStatus(l, ledger, today());
+      for (const d of monthlyDatesBetween(l.first_payment_date, l.due_day, from, to, l.term_months)) {
+        const past = d < todayStr();
+        events.push({
+          source: 'payment', id: `pay-${l.id}-${d}`, loan_id: l.id, date: d, time: null,
+          title: `${l.buyer_name || 'Buyer'} — payment due`,
+          amount_cents: l.payment_cents + (l.escrow_cents || 0),
+          icon: '💵', property_id: l.property_id, property_address: l.address,
+          overdue: past && status.is_past_due,
+        });
+      }
+    }
+  }
+
+  // 3. What you owe your lenders.
+  if (want('pml')) {
+    const pmls = all(`SELECT pl.*, p.address FROM pml_loans pl
+      JOIN properties p ON p.id=pl.property_id
+      WHERE pl.company_id=? AND pl.status='active'`, req.companyId);
+    for (const pl of pmls) {
+      for (const d of monthlyDatesBetween(pl.first_payment_date, null, from, to, pl.term_months)) {
+        events.push({
+          source: 'pml', id: `pml-${pl.id}-${d}`, pml_loan_id: pl.id, date: d, time: null,
+          title: `Pay ${pl.lender_name}`, amount_cents: pl.payment_cents,
+          icon: '🏦', property_id: pl.property_id, property_address: pl.address,
+          overdue: false,
+        });
+      }
+      if (pl.balloon_date && pl.balloon_date >= from && pl.balloon_date <= to) {
+        events.push({
+          source: 'pml', id: `pml-balloon-${pl.id}`, pml_loan_id: pl.id, date: pl.balloon_date,
+          title: `BALLOON due — ${pl.lender_name}`, amount_cents: pl.principal_balance_cents,
+          icon: '🎈', property_id: pl.property_id, property_address: pl.address, overdue: false,
+        });
+      }
+    }
+  }
+
+  // 4. Renewals that belong to the house.
+  if (want('renewals')) {
+    for (const p of all(`SELECT id, address, insurance_expires, insurance_carrier, tax_due_date
+      FROM properties WHERE company_id=?`, req.companyId)) {
+      if (p.insurance_expires && p.insurance_expires >= from && p.insurance_expires <= to) {
+        events.push({
+          source: 'renewal', id: `ins-${p.id}`, date: p.insurance_expires, icon: '🛡️',
+          title: `Insurance expires${p.insurance_carrier ? ' — ' + p.insurance_carrier : ''}`,
+          property_id: p.id, property_address: p.address,
+          overdue: p.insurance_expires < todayStr(),
+        });
+      }
+      if (p.tax_due_date && p.tax_due_date >= from && p.tax_due_date <= to) {
+        events.push({
+          source: 'renewal', id: `tax-${p.id}`, date: p.tax_due_date, icon: '🏛️',
+          title: 'Property taxes due', property_id: p.id, property_address: p.address,
+          overdue: p.tax_due_date < todayStr(),
+        });
+      }
+    }
+  }
+
+  events.sort((a, b) => a.date.localeCompare(b.date) || (a.time || '').localeCompare(b.time || ''));
+  res.json({ from, to, events, categories: TASK_CATEGORIES });
+});
+
+// Every occurrence of a monthly obligation that falls inside a window.
+function monthlyDatesBetween(firstDate, dueDay, from, to, termMonths) {
+  if (!firstDate) return [];
+  const out = [];
+  let d = firstDate;
+  // Jump forward in whole months rather than stepping one at a time from the start.
+  const monthsApart = (a, b) => {
+    const [ay, am] = a.split('-').map(Number), [by, bm] = b.split('-').map(Number);
+    return (by - ay) * 12 + (bm - am);
+  };
+  const skip = Math.max(0, monthsApart(firstDate, from));
+  if (skip) d = addMonthsStr(firstDate, skip);
+  let n = skip;
+  while (d <= to && (!termMonths || n < termMonths)) {
+    if (d >= from) {
+      // due_day overrides the day-of-month when the property sets one.
+      out.push(dueDay ? d.slice(0, 8) + String(dueDay).padStart(2, '0') : d);
+    }
+    n += 1;
+    d = addMonthsStr(firstDate, n);
+  }
+  return out.filter(x => x >= from && x <= to);
+}
+
+// Tasks coming up get the same pop-up treatment as payment reminders.
+async function runTaskReminderSweep() {
+  const today = todayStr();
+  const due = all(`SELECT t.*, p.address FROM tasks t LEFT JOIN properties p ON p.id=t.property_id
+    WHERE t.status='open' AND t.due_date IS NOT NULL AND t.remind_days_before IS NOT NULL
+      AND t.reminded_at IS NULL
+      AND date(t.due_date, '-' || t.remind_days_before || ' days') <= ?`, today);
+  for (const t of due) {
+    const who = t.assigned_to || t.created_by;
+    if (!who) continue;
+    const when = t.due_date === today ? 'today' : `on ${t.due_date}`;
+    try {
+      await notify.notify(who, {
+        kind: 'general',
+        title: (TASK_CATEGORIES[t.category] || TASK_CATEGORIES.general).icon + ' ' + t.title,
+        body: `Due ${when}${t.address ? ' · ' + t.address : ''}`,
+        url: '/admin#tasks',
+        dedupeKey: `task-${t.id}-${t.due_date}`,
+      });
+    } catch (e) { console.error('Task reminder failed', t.id, e.message); }
+    run("UPDATE tasks SET reminded_at=datetime('now') WHERE id=?", t.id);
+  }
+  return due.length;
+}
+setInterval(runTaskReminderSweep, 6 * 60 * 60 * 1000);
+setTimeout(runTaskReminderSweep, 45000);
+app.post('/api/admin/tasks/run-reminders', adminOnly, async (req, res, next) => {
+  try { res.json({ ok: true, sent: await runTaskReminderSweep() }); } catch (e) { next(e); }
+});
+
+// ---------- contacts & vendor texting ----------
+// Two different kinds of texting live in this app and they behave differently on purpose.
+// Buyers get one outbound invitation from a send-only number. Vendors — boots on the
+// ground, the attorney, the agent — get a real two-way conversation, because you need
+// their reply. Inbound texts from a known contact land in their thread; anything from an
+// unknown number still gets the automatic "use the app" answer.
+
+const CONTACT_ROLES = {
+  bog: { label: 'Boots on the ground', icon: '👟' },
+  contractor: { label: 'Contractor', icon: '🔨' },
+  legal: { label: 'Attorney / legal', icon: '⚖️' },
+  title: { label: 'Title / closing', icon: '🖊️' },
+  insurance: { label: 'Insurance agent', icon: '🛡️' },
+  lender: { label: 'Private money lender', icon: '🏦' },
+  inspector: { label: 'Inspector', icon: '🔍' },
+  agent: { label: 'Real estate agent', icon: '🪧' },
+  tax: { label: 'Tax / accounting', icon: '🏛️' },
+  utility: { label: 'Utility company', icon: '💡' },
+  other: { label: 'Other', icon: '📇' },
+};
+
+const contactRow = (c) => ({
+  ...c,
+  role_label: (CONTACT_ROLES[c.role] || CONTACT_ROLES.other).label,
+  role_icon: (CONTACT_ROLES[c.role] || CONTACT_ROLES.other).icon,
+});
+
+app.get('/api/admin/contacts', adminOnly, (req, res) => {
+  const showArchived = req.query.archived === '1';
+  const rows = all(`SELECT c.*,
+      (SELECT COUNT(*) FROM property_contacts pc WHERE pc.contact_id=c.id) AS property_count,
+      (SELECT COUNT(*) FROM contact_messages m WHERE m.contact_id=c.id) AS message_count,
+      (SELECT COUNT(*) FROM contact_messages m WHERE m.contact_id=c.id
+         AND m.direction='in' AND m.read_at IS NULL) AS unread_count
+    FROM contacts c
+    WHERE c.company_id=? AND c.archived_at IS ${showArchived ? 'NOT' : ''} NULL
+    ORDER BY c.name`, req.companyId).map(contactRow);
+  res.json({ contacts: rows, roles: CONTACT_ROLES, sms_enabled: sms.smsEnabled() });
+});
+
+app.post('/api/admin/contacts', adminOnly, (req, res) => {
+  const b = req.body || {};
+  const name = String(b.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Give the contact a name' });
+  if (!b.phone && !b.email) return res.status(400).json({ error: 'Add a phone number or an email' });
+  const r = run(`INSERT INTO contacts (company_id, name, role, business_name, phone, email,
+      address, city, state, zip, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    req.companyId, name, b.role || 'other', b.business_name || null,
+    addr.formatPhone(b.phone) || null, b.email ? String(b.email).trim() : null,
+    b.address || null, b.city || null, b.state || null, b.zip || null, b.notes || null);
+  const c = contactRow(get('SELECT * FROM contacts WHERE id=?', r.lastInsertRowid));
+  // Created from inside a property? Attach it there and then.
+  if (b.property_id && ownedProperty(req, b.property_id)) {
+    run('INSERT OR IGNORE INTO property_contacts (property_id, contact_id, role_note) VALUES (?,?,?)',
+      b.property_id, c.id, b.role_note || null);
+  }
+  res.json(c);
+});
+
+app.put('/api/admin/contacts/:id', adminOnly, (req, res) => {
+  const c = get('SELECT * FROM contacts WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!c) return res.status(404).json({ error: 'Contact not found' });
+  const b = { ...c, ...req.body };
+  run(`UPDATE contacts SET name=?, role=?, business_name=?, phone=?, email=?,
+       address=?, city=?, state=?, zip=?, notes=? WHERE id=?`,
+    b.name, b.role, b.business_name, addr.formatPhone(b.phone) || null, b.email,
+    b.address, b.city, b.state, b.zip, b.notes, c.id);
+  res.json(contactRow(get('SELECT * FROM contacts WHERE id=?', c.id)));
+});
+
+// Archive rather than delete — the text history stays readable.
+app.post('/api/admin/contacts/:id/archive', adminOnly, (req, res) => {
+  const c = get('SELECT id FROM contacts WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!c) return res.status(404).json({ error: 'Contact not found' });
+  run(req.body && req.body.restore
+    ? 'UPDATE contacts SET archived_at=NULL WHERE id=?'
+    : "UPDATE contacts SET archived_at=datetime('now') WHERE id=?", c.id);
+  res.json({ ok: true });
+});
+
+// ---------- who works on this house ----------
+app.get('/api/admin/properties/:id/contacts', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  const rows = all(`SELECT c.*, pc.role_note, pc.id AS link_id,
+      (SELECT COUNT(*) FROM contact_messages m WHERE m.contact_id=c.id AND m.property_id=?) AS message_count,
+      (SELECT body FROM contact_messages m WHERE m.contact_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_message,
+      (SELECT created_at FROM contact_messages m WHERE m.contact_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_message_at,
+      (SELECT COUNT(*) FROM contact_messages m WHERE m.contact_id=c.id
+         AND m.direction='in' AND m.read_at IS NULL) AS unread_count
+    FROM property_contacts pc JOIN contacts c ON c.id=pc.contact_id
+    WHERE pc.property_id=? AND c.archived_at IS NULL
+    ORDER BY c.role, c.name`, p.id, p.id).map(contactRow);
+  res.json({ contacts: rows, roles: CONTACT_ROLES, sms_enabled: sms.smsEnabled() });
+});
+
+app.post('/api/admin/properties/:id/contacts', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  const c = get('SELECT id FROM contacts WHERE id=? AND company_id=?', req.body.contact_id, req.companyId);
+  if (!c) return res.status(404).json({ error: 'Contact not found' });
+  run('INSERT OR IGNORE INTO property_contacts (property_id, contact_id, role_note) VALUES (?,?,?)',
+    p.id, c.id, req.body.role_note || null);
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/properties/:pid/contacts/:cid', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.pid);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  run('DELETE FROM property_contacts WHERE property_id=? AND contact_id=?', p.id, req.params.cid);
+  res.json({ ok: true });
+});
+
+// ---------- texting a contact ----------
+app.get('/api/admin/contacts/:id/messages', adminOnly, (req, res) => {
+  const c = get('SELECT * FROM contacts WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!c) return res.status(404).json({ error: 'Contact not found' });
+  const rows = all(`SELECT m.*, p.address AS property_address, u.name AS sent_by_name
+    FROM contact_messages m
+    LEFT JOIN properties p ON p.id=m.property_id
+    LEFT JOIN users u ON u.id=m.sent_by
+    WHERE m.contact_id=? ORDER BY m.id`, c.id);
+  run("UPDATE contact_messages SET read_at=datetime('now') WHERE contact_id=? AND direction='in' AND read_at IS NULL", c.id);
+  res.json({ contact: contactRow(c), messages: rows, sms_enabled: sms.smsEnabled() });
+});
+
+app.post('/api/admin/contacts/:id/messages', adminOnly, async (req, res, next) => {
+  const c = get('SELECT * FROM contacts WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!c) return res.status(404).json({ error: 'Contact not found' });
+  const body = String((req.body && req.body.body) || '').trim();
+  if (!body) return res.status(400).json({ error: 'Nothing to send' });
+  const phone = sms.normalizePhone(req.body.phone || c.phone);
+  if (!phone) return res.status(400).json({ error: 'No mobile number on this contact' });
+  const propertyId = req.body.property_id && ownedProperty(req, req.body.property_id)
+    ? req.body.property_id : null;
+
+  // Sign it, so the vendor knows who is texting before they answer.
+  const co = get('SELECT name FROM companies WHERE id=?', req.companyId);
+  const prop = propertyId ? get('SELECT address FROM properties WHERE id=?', propertyId) : null;
+  const text = [
+    prop ? `${prop.address}:` : null,
+    body,
+    `— ${req.user.name || co.name}, ${co.name}`,
+  ].filter(Boolean).join('\n');
+
+  if (!sms.smsEnabled()) {
+    // No Twilio yet: record it and hand back the text to send from a phone.
+    const r = run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction,
+        phone, body, status, sent_by) VALUES (?,?,?,'out',?,?,'not_sent',?)`,
+      req.companyId, c.id, propertyId, phone, text, req.user.id);
+    return res.status(400).json({
+      error: 'Texting is not connected yet — copy this and send it from your phone',
+      text, phone, message_id: r.lastInsertRowid, sms_enabled: false,
+    });
+  }
+  try {
+    await sms.sendSms(phone, text);
+    const r = run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction,
+        phone, body, status, sent_by) VALUES (?,?,?,'out',?,?,'sent',?)`,
+      req.companyId, c.id, propertyId, phone, text, req.user.id);
+    res.json({ ok: true, message: get('SELECT * FROM contact_messages WHERE id=?', r.lastInsertRowid) });
+  } catch (e) {
+    run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction,
+        phone, body, status, error, sent_by) VALUES (?,?,?,'out',?,?,'failed',?,?)`,
+      req.companyId, c.id, propertyId, phone, text, e.message, req.user.id);
+    next(e);
+  }
+});
+
+// Text several people about one property in a single action — the whole crew at once.
+app.post('/api/admin/properties/:id/broadcast', adminOnly, async (req, res, next) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  const body = String((req.body && req.body.body) || '').trim();
+  const ids = (req.body && req.body.contact_ids) || [];
+  if (!body) return res.status(400).json({ error: 'Nothing to send' });
+  if (!ids.length) return res.status(400).json({ error: 'Pick at least one contact' });
+  const co = get('SELECT name FROM companies WHERE id=?', req.companyId);
+  const results = [];
+  for (const id of ids) {
+    const c = get('SELECT * FROM contacts WHERE id=? AND company_id=?', id, req.companyId);
+    if (!c) { results.push({ id, ok: false, error: 'Not found' }); continue; }
+    const phone = sms.normalizePhone(c.phone);
+    if (!phone) { results.push({ id, name: c.name, ok: false, error: 'No mobile number' }); continue; }
+    const text = `${p.address}:\n${body}\n— ${req.user.name || co.name}, ${co.name}`;
+    try {
+      if (!sms.smsEnabled()) throw new Error('Texting is not connected yet');
+      await sms.sendSms(phone, text);
+      run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction,
+          phone, body, status, sent_by) VALUES (?,?,?,'out',?,?,'sent',?)`,
+        req.companyId, c.id, p.id, phone, text, req.user.id);
+      results.push({ id, name: c.name, ok: true });
+    } catch (e) {
+      run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction,
+          phone, body, status, error, sent_by) VALUES (?,?,?,'out',?,?,'failed',?,?)`,
+        req.companyId, c.id, p.id, phone, text, e.message, req.user.id);
+      results.push({ id, name: c.name, ok: false, error: e.message });
+    }
+  }
+  res.json({ results, sent: results.filter(r => r.ok).length, failed: results.filter(r => !r.ok).length });
+});
+
+// Everything unread from vendors, wherever it came from.
+app.get('/api/admin/contact-inbox', adminOnly, (req, res) => {
+  res.json({
+    unread: all(`SELECT m.*, c.name AS contact_name, c.role, p.address AS property_address
+      FROM contact_messages m
+      LEFT JOIN contacts c ON c.id=m.contact_id
+      LEFT JOIN properties p ON p.id=m.property_id
+      WHERE m.company_id=? AND m.direction='in' AND m.read_at IS NULL
+      ORDER BY m.id DESC`, req.companyId),
+  });
+});
+
+// ---------- notes ----------
+// Pinned notes float to the top; everything else is newest first. Notes are internal —
+// a buyer never sees one.
+const NOTE_SELECT = `SELECT n.*, u.name AS author_name, p.address AS property_address
+  FROM notes n LEFT JOIN users u ON u.id=n.created_by
+  LEFT JOIN properties p ON p.id=n.property_id`;
+
+app.get('/api/admin/notes', adminOnly, (req, res) => {
+  const where = ['n.company_id = ?'];
+  const args = [req.companyId];
+  if (req.query.property_id) { where.push('n.property_id = ?'); args.push(req.query.property_id); }
+  if (req.query.loan_id) { where.push('n.loan_id = ?'); args.push(req.query.loan_id); }
+  if (req.query.contact_id) { where.push('n.contact_id = ?'); args.push(req.query.contact_id); }
+  res.json({
+    notes: all(`${NOTE_SELECT} WHERE ${where.join(' AND ')}
+      ORDER BY n.pinned DESC, n.id DESC LIMIT 200`, ...args),
+  });
+});
+
+app.post('/api/admin/notes', adminOnly, (req, res) => {
+  const b = req.body || {};
+  const body = String(b.body || '').trim();
+  if (!body) return res.status(400).json({ error: 'Write something first' });
+  if (b.property_id && !ownedProperty(req, b.property_id)) {
+    return res.status(400).json({ error: 'That property is not yours' });
+  }
+  if (b.loan_id && !ownedLoan(req, b.loan_id)) {
+    return res.status(400).json({ error: 'That loan is not yours' });
+  }
+  const r = run(`INSERT INTO notes (company_id, property_id, loan_id, contact_id, body, pinned, created_by)
+    VALUES (?,?,?,?,?,?,?)`,
+    req.companyId, b.property_id || null, b.loan_id || null, b.contact_id || null,
+    body, b.pinned ? 1 : 0, req.user.id);
+  res.json(get(`${NOTE_SELECT} WHERE n.id=?`, r.lastInsertRowid));
+});
+
+app.put('/api/admin/notes/:id', adminOnly, (req, res) => {
+  const n = get('SELECT * FROM notes WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!n) return res.status(404).json({ error: 'Note not found' });
+  const b = req.body || {};
+  const body = b.body !== undefined ? String(b.body).trim() : n.body;
+  if (!body) return res.status(400).json({ error: 'A note cannot be empty' });
+  run("UPDATE notes SET body=?, pinned=?, edited_at=datetime('now') WHERE id=?",
+    body, b.pinned !== undefined ? (b.pinned ? 1 : 0) : n.pinned, n.id);
+  res.json(get(`${NOTE_SELECT} WHERE n.id=?`, n.id));
+});
+
+app.delete('/api/admin/notes/:id', adminOnly, (req, res) => {
+  const n = get('SELECT id FROM notes WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!n) return res.status(404).json({ error: 'Note not found' });
+  run('DELETE FROM notes WHERE id=?', n.id);
+  res.json({ ok: true });
 });
 
 // ---------- reports: P&L, balance sheet, returns ----------
@@ -707,11 +1346,13 @@ app.get('/api/admin/address-details', adminOnly, async (req, res, next) => {
 // Give any three of principal, rate, term and payment; get the fourth plus the schedule.
 app.get('/api/admin/amortize', adminOnly, (req, res) => {
   const q = req.query;
-  res.json(loanEngine.solveLoan({
+  const r = loanEngine.solveLoan({
     principal_cents: q.principal_cents, payment_cents: q.payment_cents,
     interest_rate_bps: q.interest_rate_bps, term_months: q.term_months,
     first_payment_date: q.first_payment_date,
-  }));
+  });
+  if (r.schedule) r.schedule_yearly = loanEngine.yearlySchedule(r.schedule);
+  res.json(r);
 });
 
 // Final payment date from a start date and term, and the reverse.
@@ -800,13 +1441,16 @@ app.put('/api/admin/properties/:id/details', adminOnly, (req, res) => {
   run(`UPDATE properties SET status=?, acquired_date=?, purchase_price_cents=?,
         target_sale_price_cents=?, beds=?, baths=?, sqft=?, year_built=?, notes=?,
         late_fee_cents=?, grace_days=?, due_day=?,
-        owner_name=?, owner_type=?, trustee=? WHERE id=?`,
+        owner_name=?, owner_type=?, trustee=?,
+        insurance_expires=?, insurance_carrier=?, tax_due_date=? WHERE id=?`,
     b.status || p.status, b.acquired_date ?? p.acquired_date,
     b.purchase_price_cents ?? p.purchase_price_cents, b.target_sale_price_cents ?? p.target_sale_price_cents,
     b.beds ?? p.beds, b.baths ?? p.baths, b.sqft ?? p.sqft, b.year_built ?? p.year_built,
     b.notes ?? p.notes, b.late_fee_cents ?? p.late_fee_cents, b.grace_days ?? p.grace_days,
     b.due_day ?? p.due_day,
-    b.owner_name ?? p.owner_name, b.owner_type ?? p.owner_type, b.trustee ?? p.trustee, p.id);
+    b.owner_name ?? p.owner_name, b.owner_type ?? p.owner_type, b.trustee ?? p.trustee,
+    b.insurance_expires ?? p.insurance_expires, b.insurance_carrier ?? p.insurance_carrier,
+    b.tax_due_date ?? p.tax_due_date, p.id);
   res.json(get('SELECT * FROM properties WHERE id=?', p.id));
 });
 
@@ -943,6 +1587,15 @@ app.get('/api/admin/invitations/:id/preview', adminOnly, (req, res) => {
 });
 app.post('/api/admin/invitations/:id/send', adminOnly, async (req, res, next) => {
   const d = inviteBody(req, req.params.id);
+  // One text per buyer. Resending needs a deliberate override so a stray double-click
+  // cannot text somebody twice — and so a temporary password is not sprayed around.
+  if (d.inv && d.inv.status === 'sent' && !req.body.resend) {
+    return res.status(409).json({
+      error: 'This buyer was already texted their invitation on ' + (d.inv.sent_at || 'a previous date') +
+             '. Send it again only if it never arrived.',
+      already_sent: true,
+    });
+  }
   if (!d) return res.status(404).json({ error: 'Not found' });
   const phone = sms.normalizePhone(req.body.phone || d.inv.phone);
   if (!phone) return res.status(400).json({ error: 'No mobile number on file for this buyer' });
@@ -988,6 +1641,21 @@ app.post('/api/admin/tenants', adminOnly, (req, res) => {
     req.companyId, email.toLowerCase().trim(), hashPassword(temp), 'tenant', name, addr.formatPhone(phone) || null);
   res.json({ id: r.lastInsertRowid, name, email, phone, temp_password: temp });
 });
+// Edit a buyer's details. Email changes move their login, so it is checked for clashes.
+app.put('/api/admin/tenants/:id', adminOnly, (req, res) => {
+  const u = get("SELECT * FROM users WHERE id=? AND role='tenant' AND company_id=? AND deleted_at IS NULL",
+    req.params.id, req.companyId);
+  if (!u) return res.status(404).json({ error: 'Buyer not found' });
+  const b = req.body || {};
+  const email = b.email ? String(b.email).toLowerCase().trim() : u.email;
+  if (email !== u.email && get('SELECT id FROM users WHERE email=?', email)) {
+    return res.status(400).json({ error: 'That email is already in use' });
+  }
+  run('UPDATE users SET name=?, email=?, phone=? WHERE id=?',
+    b.name || u.name, email, b.phone !== undefined ? addr.formatPhone(b.phone) : u.phone, u.id);
+  res.json(get('SELECT id, name, email, phone FROM users WHERE id=?', u.id));
+});
+
 app.post('/api/admin/tenants/:id/reset-password', adminOnly, (req, res) => {
   const u = get("SELECT id FROM users WHERE id=? AND role='tenant' AND company_id=?", req.params.id, req.companyId);
   if (!u) return res.status(404).json({ error: 'Buyer not found' });
@@ -1070,6 +1738,7 @@ app.get('/api/admin/loans/:id', adminOnly, (req, res) => {
   if (!loan) return res.status(404).json({ error: 'Not found' });
   const f = loanFull(loan);
   f.schedule = loanEngine.amortizationSchedule(loan);
+  f.schedule_yearly = loanEngine.yearlySchedule(f.schedule);
   f.payoff = loanEngine.payoffQuote(f.loan, today());
   f.documents = all('SELECT id, filename, kind, visible_to_tenant, created_at FROM documents WHERE loan_id=?', loan.id);
   res.json(f);
@@ -1077,9 +1746,35 @@ app.get('/api/admin/loans/:id', adminOnly, (req, res) => {
 app.put('/api/admin/loans/:id', adminOnly, (req, res) => {
   const loan = ownedLoan(req, req.params.id);
   if (!loan) return res.status(404).json({ error: 'Not found' });
-  const allowed = ['tenant_user_id', 'status', 'escrow_cents', 'late_fee_cents', 'grace_days', 'loan_type', 'beneficial_interest_pct', 'payment_cents'];
+  // Everything on the note can be corrected. Posted ledger entries are never rewritten —
+  // changing terms affects how future payments are applied, not history.
+  const allowed = ['tenant_user_id', 'status', 'escrow_cents', 'late_fee_cents', 'grace_days',
+    'loan_type', 'beneficial_interest_pct', 'payment_cents', 'sale_price_cents', 'down_payment_cents',
+    'principal_cents', 'interest_rate_bps', 'term_months', 'first_payment_date', 'due_day',
+    'principal_balance_cents', 'escrow_balance_cents', 'fees_due_cents',
+    'monthly_taxes_cents', 'monthly_insurance_cents', 'monthly_utilities_cents',
+    'monthly_servicing_cents', 'monthly_misc_cents', 'misc_label'];
+  const b = req.body || {};
   const sets = [], vals = [];
-  for (const k of allowed) if (req.body[k] !== undefined) { sets.push(`${k}=?`); vals.push(req.body[k]); }
+  for (const k of allowed) if (b[k] !== undefined) { sets.push(`${k}=?`); vals.push(b[k]); }
+
+  // Escrow is taxes + insurance, so keep it in step when either changes.
+  const taxes = b.monthly_taxes_cents ?? loan.monthly_taxes_cents ?? 0;
+  const insurance = b.monthly_insurance_cents ?? loan.monthly_insurance_cents ?? 0;
+  if (b.monthly_taxes_cents !== undefined || b.monthly_insurance_cents !== undefined) {
+    sets.push('escrow_cents=?'); vals.push(taxes + insurance);
+  }
+  // Recompute P&I from the terms when asked.
+  if (b.recalc_payment) {
+    const principal = b.principal_cents ?? loan.principal_cents;
+    const rate = b.interest_rate_bps ?? loan.interest_rate_bps;
+    const term = b.term_months ?? loan.term_months;
+    sets.push('payment_cents=?'); vals.push(loanEngine.calcPayment(principal, rate, term));
+  }
+  const first = b.first_payment_date ?? loan.first_payment_date;
+  const term2 = b.term_months ?? loan.term_months;
+  sets.push('final_payment_date=?'); vals.push(loanEngine.finalPaymentDate(first, term2));
+
   if (sets.length) run(`UPDATE loans SET ${sets.join(',')} WHERE id=?`, ...vals, loan.id);
   res.json(loanFull(get('SELECT * FROM loans WHERE id=?', loan.id)));
 });
@@ -2182,11 +2877,45 @@ app.post('/api/tenant/location', tenantReady, (req, res) => {
   run('DELETE FROM location_pings WHERE user_id=? AND id NOT IN (SELECT id FROM location_pings WHERE user_id=? ORDER BY id DESC LIMIT 50)', req.user.id, req.user.id);
   res.json({ ok: true });
 });
+// Straight-line distance between two points, in miles. Enough to answer the only
+// question that matters here: was the buyer at the home or somewhere else.
+function milesBetween(lat1, lng1, lat2, lng2) {
+  const R = 3958.8, rad = (d) => d * Math.PI / 180;
+  const dLat = rad(lat2 - lat1), dLng = rad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+
 app.get('/api/admin/tenants/:id/location', adminOnly, (req, res) => {
-  const u = get("SELECT location_consent_at FROM users WHERE id=? AND company_id=? AND role='tenant'", req.params.id, req.companyId);
+  const u = get("SELECT location_consent_at FROM users WHERE id=? AND company_id=? AND role='tenant'",
+    req.params.id, req.companyId);
   if (!u) return res.status(404).json({ error: 'Not found' });
-  const last = get('SELECT * FROM location_pings WHERE user_id=? ORDER BY id DESC LIMIT 1', req.params.id);
-  res.json({ consent_at: u.location_consent_at, last_ping: last || null });
+
+  const history = all(`SELECT lat, lng, accuracy_m, created_at FROM location_pings
+    WHERE user_id=? ORDER BY id DESC LIMIT 60`, req.params.id);
+  const last = history[0] || null;
+
+  // The home this buyer is buying, so distance means something.
+  const home = get(`SELECT p.address, p.city, p.state, p.lat, p.lng FROM loans l
+    JOIN properties p ON p.id=l.property_id
+    WHERE l.tenant_user_id=? AND l.company_id=? ORDER BY l.id DESC LIMIT 1`,
+    req.params.id, req.companyId);
+
+  const withDistance = history.map(h => ({
+    ...h,
+    miles_from_home: (home && home.lat && home.lng)
+      ? Number(milesBetween(h.lat, h.lng, home.lat, home.lng).toFixed(2)) : null,
+  }));
+
+  res.json({
+    consent_at: u.location_consent_at,
+    last_ping: last,
+    history: withDistance,
+    ping_count: get('SELECT COUNT(*) c FROM location_pings WHERE user_id=?', req.params.id).c,
+    home: home ? { address: home.address, city: home.city, state: home.state,
+      geocoded: !!(home.lat && home.lng) } : null,
+    miles_from_home: withDistance.length ? withDistance[0].miles_from_home : null,
+  });
 });
 
 // ---------- admin: cash slips (mark paid when cash received) ----------
