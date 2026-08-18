@@ -312,6 +312,23 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Every outbound email, sent or failed. For a late notice the record that it went out
+-- — and from which address — is part of the file, so failures are kept too rather than
+-- disappearing into the server log.
+CREATE TABLE IF NOT EXISTS email_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER REFERENCES companies(id),
+  loan_id INTEGER REFERENCES loans(id),
+  identity TEXT NOT NULL DEFAULT 'servicing' CHECK (identity IN ('servicing','legal')),
+  to_address TEXT NOT NULL,
+  from_address TEXT,
+  subject TEXT,
+  kind TEXT,                 -- late_notice | legal_notice | statement | receipt | general
+  status TEXT NOT NULL DEFAULT 'sent' CHECK (status IN ('sent','failed')),
+  error TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -416,6 +433,20 @@ addColumnIfMissing('companies', 'default_buyer_phone', 'TEXT');
 addColumnIfMissing('companies', 'twilio_sid', 'TEXT');
 addColumnIfMissing('companies', 'twilio_token', 'TEXT');
 addColumnIfMissing('companies', 'twilio_from', 'TEXT');
+
+// Outbound email, same idea as texting: each servicer uses their own mailbox and the
+// environment is only a fallback. Two from-addresses so routine correspondence and a
+// serious late notice do not arrive from the same place.
+addColumnIfMissing('companies', 'smtp_host', 'TEXT');
+addColumnIfMissing('companies', 'smtp_port', 'INTEGER');
+addColumnIfMissing('companies', 'smtp_user', 'TEXT');
+addColumnIfMissing('companies', 'smtp_pass', 'TEXT');
+addColumnIfMissing('companies', 'email_from_servicing', 'TEXT');  // statements, receipts, general
+addColumnIfMissing('companies', 'email_from_legal', 'TEXT');      // late notices at 30+ days
+addColumnIfMissing('companies', 'email_reply_to', 'TEXT');        // where replies to legal mail go
+// Only needed when legal@ is a separate mailbox rather than a "send as" alias.
+addColumnIfMissing('companies', 'email_legal_user', 'TEXT');
+addColumnIfMissing('companies', 'email_legal_pass', 'TEXT');
 
 addColumnIfMissing('companies', 'mgmt_company_name', 'TEXT');
 addColumnIfMissing('companies', 'rep_name', 'TEXT');
@@ -569,6 +600,8 @@ function CREATE_INDEXES() {
     CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_notif_dedupe ON notifications(user_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_exp_external ON expenses(external_id) WHERE external_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_email_log_loan ON email_log(loan_id, id);
+    CREATE INDEX IF NOT EXISTS idx_email_log_co ON email_log(company_id, id);
   `);
 }
 

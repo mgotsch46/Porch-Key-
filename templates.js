@@ -128,6 +128,87 @@ function brandedShell({ company, bodyHtml, subject, baseUrl }) {
 </div>`;
 }
 
+// ---------- email shell ----------
+// brandedShell above uses CSS classes, which is right for the app because the stylesheet
+// is already on the page. Email has no stylesheet: Gmail and Outlook drop anything they
+// cannot resolve, so a class-only letter arrives as bare unstyled text. This builds a
+// standalone document with every rule inlined and a table skeleton, because Outlook on
+// Windows still renders through Word and ignores CSS layout.
+const MAIL = {
+  brand: '#54A32F', brandPale: '#EFF8E7', ink: '#16220D', mut: '#6B7A5F',
+  line: '#E6EEDD', bg: '#F7FBF3', card: '#FFFFFF', accent: '#FFB020', red: '#D64545',
+  font: "'Space Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif",
+};
+
+function emailShell({ company, bodyHtml, subject, baseUrl, preheader, tone }) {
+  const name = escapeHtml(outboundName(company));
+  const base = baseUrl || '';
+  const logo = company && company.logo_path
+    ? `${base}/api/company-logo/${company.id}`
+    : `${base}/logo-mark.png`;
+  // A notice gets an amber rule across the top so it does not look like a receipt.
+  const rule = tone === 'notice' ? MAIL.accent : MAIL.brand;
+
+  const contact = [
+    company && (company.rep_name || company.rep_phone)
+      ? [company.rep_name, company.rep_phone].filter(Boolean).map(escapeHtml).join(' · ') : null,
+    company && company.mailing_address
+      ? escapeHtml([company.mailing_address, company.mailing_city, company.mailing_state, company.mailing_zip]
+          .filter(Boolean).join(', ')) : null,
+  ].filter(Boolean);
+
+  return `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light only">
+<meta name="supported-color-schemes" content="light only">
+<title>${escapeHtml(subject || name)}</title>
+</head>
+<body style="margin:0;padding:0;background:${MAIL.bg};-webkit-text-size-adjust:100%">
+${preheader ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0">${escapeHtml(preheader)}</div>` : ''}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:${MAIL.bg};padding:24px 12px">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:${MAIL.card};border:1px solid ${MAIL.line};border-radius:14px;overflow:hidden">
+
+  <tr><td style="height:4px;background:${rule};font-size:0;line-height:0">&nbsp;</td></tr>
+
+  <tr><td style="padding:18px 24px;background:${MAIL.brandPale};border-bottom:1px solid ${MAIL.line}">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+      <td style="padding-right:10px"><img src="${logo}" alt="" width="30" style="height:30px;width:auto;display:block;border:0"></td>
+      <td style="font-family:${MAIL.font};font-size:15px;font-weight:700;color:${MAIL.brand}">${name}</td>
+    </tr></table>
+  </td></tr>
+
+  ${subject ? `<tr><td style="padding:22px 24px 0;font-family:${MAIL.font};font-size:19px;font-weight:700;letter-spacing:-.3px;color:${MAIL.ink};line-height:1.3">${escapeHtml(subject)}</td></tr>` : ''}
+
+  <tr><td style="padding:16px 24px 22px;font-family:${MAIL.font};font-size:15px;line-height:1.65;color:${MAIL.ink}">${inlineBodyStyles(bodyHtml)}</td></tr>
+
+  ${contact.length ? `<tr><td style="padding:16px 24px;border-top:1px solid ${MAIL.line};font-family:${MAIL.font};font-size:13px;line-height:1.6;color:${MAIL.mut}">${contact.map(c => `<div>${c}</div>`).join('')}</td></tr>` : ''}
+
+  <tr><td style="padding:14px 24px 18px;background:${MAIL.bg};border-top:1px solid ${MAIL.line};font-family:${MAIL.font};font-size:12px;color:${MAIL.mut}">
+    Sent through <b style="color:${MAIL.mut}">Porch Pay</b>${base ? ` · <a href="${base}" style="color:${MAIL.brand};text-decoration:none">Open the app</a>` : ''}
+  </td></tr>
+
+</table>
+</td></tr></table>
+</body></html>`;
+}
+
+// Body HTML comes from templates the admin edits, so it carries bare <p>/<ul>/<a> tags.
+// Email clients apply wildly different defaults to those, so give each one an explicit style.
+function inlineBodyStyles(html) {
+  return String(html || '')
+    .replace(/<p>/g, `<p style="margin:0 0 12px;font-size:15px;line-height:1.65;color:${MAIL.ink}">`)
+    .replace(/<ul>/g, `<ul style="margin:0 0 12px;padding-left:20px">`)
+    .replace(/<ol>/g, `<ol style="margin:0 0 12px;padding-left:20px">`)
+    .replace(/<li>/g, `<li style="margin-bottom:6px;font-size:15px;line-height:1.6;color:${MAIL.ink}">`)
+    .replace(/<a /g, `<a style="color:${MAIL.brand};text-decoration:underline" `)
+    .replace(/<h3>/g, `<h3 style="margin:18px 0 8px;font-size:16px;font-weight:700;color:${MAIL.ink}">`)
+    .replace(/<b>/g, `<b style="font-weight:700;color:${MAIL.ink}">`)
+    .replace(/<hr\s*\/?>/g, `<hr style="border:0;border-top:1px solid ${MAIL.line};margin:18px 0">`);
+}
+
 // Plain-text version for SMS and anywhere HTML would be wrong.
 function htmlToText(html) {
   return String(html || '')
@@ -225,6 +306,6 @@ function seedTemplates(companyId) {
 
 module.exports = {
   outboundName,
-  MERGE_FIELDS, buildMergeValues, applyMerge, sanitizeHtml, brandedShell, contactBlock,
+  MERGE_FIELDS, buildMergeValues, applyMerge, sanitizeHtml, brandedShell, emailShell, contactBlock,
   htmlToText, seedTemplates, escapeHtml, STARTERS,
 };

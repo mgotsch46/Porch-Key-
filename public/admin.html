@@ -1020,7 +1020,11 @@ a{color:var(--brand);font-weight:600}
       </div>
       <div class="card">
         <h2>&#128241; Texting</h2>
-        <div id="set-texting"><p class="note">Loading…</p></div>
+        <div id="set-texting"><p class="note">Loading…</p></div></div>
+
+      <div class="card">
+        <h2>&#9993;&#65039; Email</h2>
+        <div id="set-email"><p class="note">Loading…</p></div>
       </div>
       <div class="card">
         <h2>Buyer app</h2>
@@ -1311,7 +1315,7 @@ function nav(pg){
   if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();loadLinked();}
   if(pg==='msgs')openMsgs(); if(pg==='slips')loadSlips();
   if(pg==='pml'){loadProps();loadPML();}
-  if(pg==='settings'){loadSettings();loadTexting();wireAddressFields();}
+  if(pg==='settings'){loadSettings();loadTexting();loadEmail();wireAddressFields();}
   if(pg==='invites')loadInvites();
   if(pg==='reports')loadReports();
   if(pg==='calc')calcSolve();
@@ -2210,6 +2214,134 @@ async function sendTestText(){
     $('tt-ok').textContent='Sent. It should arrive within a few seconds.';
     $('tt-ok').classList.remove('hidden'); $('tt-err').classList.add('hidden');
   }catch(e){ $('tt-err').textContent=e.message; $('tt-err').classList.remove('hidden'); }
+}
+
+// ---------- email setup ----------
+// Two from-addresses on purpose. Routine mail comes from servicing; once an account is
+// far enough past due, notices come from the legal address instead. The switch happens
+// when the mail actually goes out, not when it was drafted.
+async function loadEmail(){
+  const el=$('set-email'); if(!el) return;
+  const t=await api('/api/admin/email');
+  if(t.connected){
+    const log=(t.recent||[]).slice(0,6).map(r=>`
+      <div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px">
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${r.identity==='legal'?'⚖️':'✉️'} ${esc(r.subject||'(no subject)')}
+          <span class="note">→ ${esc(r.to_address)}</span></span>
+        <span class="note" style="white-space:nowrap">${r.status==='sent'?'sent':'<b style="color:var(--bad,#b00)">failed</b>'}</span>
+      </div>`).join('') || '<p class="note">Nothing sent yet.</p>';
+    el.innerHTML=`
+      <p class="okmsg">Connected — statements, receipts and notices go out by email as well as in the app.</p>
+      <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+        <span class="note">Everyday mail from</span><b>${esc(t.from_servicing||'')}</b></div>
+      <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+        <span class="note">Notices ${t.legal_notice_days}+ days past due</span><b>${esc(t.from_legal||'')}</b></div>
+      ${t.reply_to?`<div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+        <span class="note">Replies to notices go to</span><b>${esc(t.reply_to)}</b></div>`:''}
+      <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+        <span class="note">Mail server</span><b>${t.source==='env'?'set on the server':esc(t.host||'')}</b></div>
+      ${t.from_legal && t.from_legal!==t.from_servicing && !t.legal_has_own_login ? `
+      <p class="note" style="margin:12px 0"><b>One thing to check in Gmail.</b> Because both addresses share one login,
+        ${esc(t.from_legal)} has to be added under Settings → Accounts → <i>Send mail as</i> and verified, or Google
+        will refuse it.</p>`:''}
+      <p class="note" style="margin:12px 0">Email is an extra channel. Every notice still lands in the buyer's app and
+        still pushes, so a mail problem never means a notice went undelivered.</p>
+      <h3 style="margin:16px 0 4px;font-size:14px">Recent mail</h3>${log}
+      <div class="actions" style="margin-top:12px">
+        <button class="small" onclick="testEmailModal()">Send a test email</button>
+        ${t.source==='company'?`<button class="small warn" onclick="disconnectEmail()">Disconnect</button>`:''}
+      </div>`;
+  } else {
+    el.innerHTML=`
+      <p class="note" style="margin-bottom:14px">Email is <b>not connected</b>, so statements and late notices only appear
+        inside the app. Connect a mailbox and they go out by email too — from your own domain, under two addresses.</p>
+      <details style="margin-bottom:16px">
+        <summary class="note" style="cursor:pointer;font-weight:700">How to get these values (Google Workspace)</summary>
+        <ol class="note" style="margin:10px 0 0 18px;line-height:1.9">
+          <li>Turn on <b>2-Step Verification</b> for the mailbox — Google will not issue an app password without it.</li>
+          <li>Go to Google Account → Security → <b>App passwords</b> and create one. You get 16 characters.
+              That is the password below, <i>not</i> your normal one.</li>
+          <li>Mail server is <code>smtp.gmail.com</code>, port <code>465</code>.</li>
+          <li>If both addresses share one mailbox, add the second under Gmail → Settings → Accounts →
+              <b>Send mail as</b> and verify it. Otherwise give it its own login further down.</li>
+          <li>Set up <b>SPF, DKIM and DMARC</b> on your domain. A late notice in someone's spam folder is a
+              notice you did not send, and email gives you no delivery proof to fall back on.</li>
+        </ol>
+      </details>
+      <div class="field"><label>Mail server</label>
+        <input id="em-host" placeholder="smtp.gmail.com" value="smtp.gmail.com" autocomplete="off"></div>
+      <div class="field"><label>Port</label>
+        <input id="em-port" placeholder="465" value="465" inputmode="numeric" autocomplete="off"></div>
+      <div class="field"><label>Username</label>
+        <input id="em-user" placeholder="servicing@yourdomain.com" autocomplete="off"></div>
+      <div class="field"><label>App password</label>
+        <input id="em-pass" type="password" placeholder="16-character app password" autocomplete="off"></div>
+      <div class="field"><label>Everyday mail comes from</label>
+        <input id="em-serv" placeholder="servicing@yourdomain.com" autocomplete="off"></div>
+      <div class="field"><label>Late notices come from</label>
+        <input id="em-legal" placeholder="legal@yourdomain.com" autocomplete="off">
+        <p class="note" style="margin-top:4px">Used once an account is ${t.legal_notice_days} or more days past due.
+          Leave blank to send everything from the address above.</p></div>
+      <div class="field"><label>Replies to notices go to</label>
+        <input id="em-reply" placeholder="servicing@yourdomain.com" autocomplete="off">
+        <p class="note" style="margin-top:4px">Someone who replies to a late notice is trying to sort it out. Point
+          them at an inbox that is actually watched.</p></div>
+      <details style="margin-bottom:16px">
+        <summary class="note" style="cursor:pointer;font-weight:700">The legal address has its own separate login</summary>
+        <div class="field" style="margin-top:10px"><label>Its username</label>
+          <input id="em-luser" placeholder="legal@yourdomain.com" autocomplete="off"></div>
+        <div class="field"><label>Its app password</label>
+          <input id="em-lpass" type="password" placeholder="leave blank to share the login above" autocomplete="off"></div>
+      </details>
+      <div id="em-err" class="err hidden"></div>
+      <div id="em-ok" class="okmsg hidden"></div>
+      <button class="primary" onclick="saveEmail()">Connect email</button>`;
+  }
+}
+async function saveEmail(){
+  const btn=event&&event.target; if(btn){ btn.disabled=true; btn.textContent='Checking with the mail server…'; }
+  try{
+    const r=await api('/api/admin/email',{method:'PUT',body:JSON.stringify({
+      host:$('em-host').value.trim(), port:$('em-port').value.trim(),
+      user:$('em-user').value.trim(), pass:$('em-pass').value.trim(),
+      from_servicing:$('em-serv').value.trim(), from_legal:$('em-legal').value.trim(),
+      reply_to:$('em-reply').value.trim(),
+      legal_user:($('em-luser')||{}).value, legal_pass:($('em-lpass')||{}).value })});
+    $('em-ok').textContent=`Connected. Everyday mail from ${r.from_servicing}, notices from ${r.from_legal}.`;
+    $('em-ok').classList.remove('hidden'); $('em-err').classList.add('hidden');
+    setTimeout(loadEmail, 1200);
+  }catch(e){
+    $('em-err').textContent=e.message; $('em-err').classList.remove('hidden');
+    if(btn){ btn.disabled=false; btn.textContent='Connect email'; }
+  }
+}
+async function disconnectEmail(){
+  if(!confirm('Disconnect email? Statements and notices will only appear inside the app.')) return;
+  await api('/api/admin/email',{method:'DELETE'});
+  loadEmail();
+}
+function testEmailModal(){
+  modal(`<h2>Send a test email</h2>
+    <p class="note" style="margin-bottom:12px">Test the legal address too. That is the one nobody notices is broken
+      until a notice has to go out.</p>
+    <div class="field"><label>Send to</label><input id="et-to" placeholder="you@yourdomain.com"></div>
+    <div class="field"><label>From which address</label>
+      <select id="et-id">
+        <option value="servicing">Everyday — servicing</option>
+        <option value="legal">Late notices — legal</option>
+      </select></div>
+    <div id="et-err" class="err hidden"></div>
+    <div id="et-ok" class="okmsg hidden"></div>
+    <button class="primary" onclick="sendTestEmail()">Send it</button>`);
+}
+async function sendTestEmail(){
+  try{
+    const r=await api('/api/admin/email/test',{method:'POST',body:JSON.stringify({
+      to:$('et-to').value, identity:$('et-id').value })});
+    $('et-ok').textContent=`Sent from ${r.from}. It should arrive within a minute.`;
+    $('et-ok').classList.remove('hidden'); $('et-err').classList.add('hidden');
+  }catch(e){ $('et-err').textContent=e.message; $('et-err').classList.remove('hidden'); }
 }
 
 // ---------- contacts ----------

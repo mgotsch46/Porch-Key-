@@ -9,6 +9,7 @@ const loanEngine = require('./loan');
 const pay = require('./payments');
 const ai = require('./ai');
 const sms = require('./sms');
+const email = require('./email');
 const reports = require('./reports');
 const tpl = require('./templates');
 const addr = require('./address');
@@ -274,7 +275,7 @@ function postStripePayment(session) {
 // late notice once a payment is past due + grace with nothing confirmed for that period,
 // and escalates to a legal notice after LEGAL_NOTICE_DAYS past due. Read receipts are
 // recorded when the buyer opens the notice in the app.
-const LEGAL_NOTICE_DAYS = Number(process.env.LEGAL_NOTICE_DAYS || 15);
+const LEGAL_NOTICE_DAYS = Number(process.env.LEGAL_NOTICE_DAYS || 30);
 
 function noticeTemplates(loan, property, tenant, amountDueCents, dueDate, daysPast) {
   const amt = '$' + (amountDueCents / 100).toFixed(2);
@@ -330,6 +331,26 @@ function runNoticeSweep() {
           notify.notify(loan.tenant_user_id, { kind: 'notice', title: t.subject,
             body: 'Open the app to read this notice.', url: '/', dedupeKey: `notice:${type}:${period}:${loan.id}` })
             .catch(() => {});
+        }
+        // Email it as well, from the servicing address for a late notice and the legal
+        // address once the account is LEGAL_NOTICE_DAYS or more past due. The in-app
+        // notice above is the delivery that always happens; this is the extra channel,
+        // so a mail failure is logged and never stops the sweep.
+        if (tenant && tenant.email && email.emailEnabled(co)) {
+          // A separate shell for email: noticeHtml above relies on the app's stylesheet,
+          // which no mail client has. This one carries its own styles inline.
+          const mailHtml = tpl.emailShell({
+            company: co, subject: t.subject,
+            bodyHtml: t.body.split('\n\n').map(par => `<p>${tpl.escapeHtml(par)}</p>`).join(''),
+            baseUrl: process.env.BASE_URL || '',
+            preheader: `Regarding ${property ? property.address : 'your account'} — $${(status.owed_now_cents / 100).toFixed(2)} past due.`,
+            tone: 'notice',
+          });
+          email.sendEmail(tenant.email, {
+            subject: t.subject, text: t.body, html: mailHtml,
+            kind: type, daysPastDue: daysPast,
+            loanId: loan.id, companyId: loan.company_id,
+          }, co).catch((e) => console.error(`Notice email failed for loan ${loan.id}:`, e.message));
         }
         console.log(`Sent ${type} for loan ${loan.id} period ${period}`);
       };
@@ -1611,6 +1632,89 @@ app.put('/api/admin/texting', ownerOnly, async (req, res, next) => {
 app.delete('/api/admin/texting', ownerOnly, (req, res) => {
   run('UPDATE companies SET twilio_sid=NULL, twilio_token=NULL, twilio_from=NULL WHERE id=?', req.companyId);
   res.json({ ok: true });
+});
+
+// ---------- email setup ----------
+// Same shape as texting. Two from-addresses: routine correspondence goes out under the
+// servicing address, and anything LEGAL_NOTICE_DAYS or more past due goes out under the
+// legal one. The password is never sent back to the browser.
+app.get('/api/admin/email', adminOnly, (req, res) => {
+  const co = myCompany(req);
+  const c = email.creds(co);
+  const legal = email.creds(co, 'legal');
+  res.json({
+    connected: !!c,
+    source: c ? c.source : null,
+    host: co.smtp_host || process.env.SMTP_HOST || null,
+    port: co.smtp_port || Number(process.env.SMTP_PORT || 465),
+    user: co.smtp_user || process.env.SMTP_USER || null,
+    from_servicing: c ? c.from : null,
+    from_legal: legal ? legal.from : null,
+    reply_to: legal ? legal.replyTo : null,
+    legal_has_own_login: !!co.email_legal_user,
+    legal_notice_days: LEGAL_NOTICE_DAYS,
+    recent: all(`SELECT id, identity, to_address, subject, kind, status, error, created_at
+                 FROM email_log WHERE company_id=? ORDER BY id DESC LIMIT 20`, req.companyId),
+  });
+});
+
+app.put('/api/admin/email', ownerOnly, async (req, res, next) => {
+  const b = req.body || {};
+  const host = String(b.host || '').trim();
+  const port = Number(b.port || 465);
+  const user = String(b.user || '').trim();
+  const pass = String(b.pass || '').trim();
+  const servicing = email.validAddress(b.from_servicing || user);
+  const legalAddr = email.validAddress(b.from_legal) || servicing;
+  const replyTo = b.reply_to ? email.validAddress(b.reply_to) : null;
+  const legalUser = String(b.legal_user || '').trim() || null;
+  const legalPass = String(b.legal_pass || '').trim() || null;
+
+  if (!host || !user || !pass) {
+    return res.status(400).json({ error: 'Mail server, username and password are all needed' });
+  }
+  if (!servicing) return res.status(400).json({ error: 'The servicing "from" address does not look valid' });
+
+  try {
+    await email.verifyCreds({ host, port, user, pass, from: servicing });   // fail before saving
+    // A separate legal mailbox is checked on its own, so a typo there surfaces now
+    // rather than the first time a real notice needs to go out.
+    if (legalUser && legalPass) {
+      await email.verifyCreds({ host, port, user: legalUser, pass: legalPass, from: legalAddr });
+    }
+    run(`UPDATE companies SET smtp_host=?, smtp_port=?, smtp_user=?, smtp_pass=?,
+           email_from_servicing=?, email_from_legal=?, email_reply_to=?,
+           email_legal_user=?, email_legal_pass=? WHERE id=?`,
+      host, port, user, pass, servicing, legalAddr, replyTo, legalUser, legalPass, req.companyId);
+    res.json({ ok: true, host, from_servicing: servicing, from_legal: legalAddr });
+  } catch (e) { next(e); }
+});
+
+app.delete('/api/admin/email', ownerOnly, (req, res) => {
+  run(`UPDATE companies SET smtp_host=NULL, smtp_port=NULL, smtp_user=NULL, smtp_pass=NULL,
+       email_from_servicing=NULL, email_from_legal=NULL, email_reply_to=NULL,
+       email_legal_user=NULL, email_legal_pass=NULL WHERE id=?`, req.companyId);
+  res.json({ ok: true });
+});
+
+// Send a real email to yourself to prove the path works. `identity` lets you test the
+// legal address specifically, since that is the one nobody notices is broken until a
+// notice has to go out.
+app.post('/api/admin/email/test', adminOnly, async (req, res, next) => {
+  const co = myCompany(req);
+  const to = email.validAddress(req.body && req.body.to);
+  const identity = (req.body && req.body.identity) === 'legal' ? 'legal' : 'servicing';
+  if (!to) return res.status(400).json({ error: 'Give an email address to test with' });
+  if (!email.emailEnabled(co)) return res.status(400).json({ error: 'Connect email first' });
+  try {
+    const r = await email.sendEmail(to, {
+      subject: `Porch Pay test — ${identity} address`,
+      text: `This is a test from ${tpl.outboundName(co)}.\n\nEmail is working, and this message was sent from the ${identity} address.`,
+      kind: identity === 'legal' ? 'legal_notice' : 'general',
+      companyId: req.companyId,
+    }, co);
+    res.json({ ok: true, to: r.to, from: r.from, identity: r.identity });
+  } catch (e) { next(e); }
 });
 
 // Send a real text to yourself to prove the whole path works.
