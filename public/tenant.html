@@ -300,7 +300,7 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
       <div class="legalbox" id="terms-summary">
         <p style="margin-bottom:10px"><b>Your loan information.</b> PorchPay shows your balance, payments, interest rate, term, escrow and documents. PorchPay is software — your loan is governed by the contract you signed with your servicer.</p>
         <p style="margin-bottom:10px"><b>Messaging and notices.</b> You agree to receive messages and notices about your loan through this app, including payment reminders and late notices. The app records when a notice is sent and when you open it. Electronic notice does not replace notices your servicer must legally send by mail or other means.</p>
-        <p style="margin-bottom:10px"><b>Payments.</b> Card, bank transfer and Cash App Pay are processed by Stripe. Cash at retail stores is processed by PayNearMe. We never see your card or bank account number. Payments credit when the processor confirms them.</p>
+        <p style="margin-bottom:10px"><b>Payments.</b> Card, bank transfer and Cash App Pay are processed by Stripe. We never see your card or bank account number. Payments credit when the processor confirms them.</p>
         <p style="margin-bottom:10px"><b>Your data.</b> We collect your name, contact details, loan and payment records, and messages. We do not sell your information or use it for advertising. You can export or delete your data any time from Settings.</p>
         <p style="margin:0"><b>Location is optional and off by default.</b> Every feature works without it. If you turn it on, your approximate location is shared with your servicer; turning it off deletes the history.</p>
       </div>
@@ -408,8 +408,6 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
             <span class="ico">💳</span><span><span class="t">New card or bank</span><span class="d">Debit, credit, or bank transfer</span></span><span class="tick">✓</span></button>
           <button class="method" id="m-cashapp" onclick="setMethod('cashapp')">
             <span class="ico">📱</span><span><span class="t">Cash App Pay</span><span class="d">Pay from your Cash App balance</span></span><span class="tick">✓</span></button>
-          <button class="method" id="m-cash" onclick="setMethod('cash')">
-            <span class="ico">🏪</span><span><span class="t">Cash at a store</span><span class="d">Walmart, 7-Eleven, CVS &amp; more</span></span><span class="tick">✓</span></button>
         </div>
         <div id="fee-box"></div>
         <button class="btn primary" id="pay-go" onclick="startPayment()">Continue</button>
@@ -799,14 +797,11 @@ function methodName(m){
 let savedPmId = null;
 function setMethod(m, pmId){
   payMethod=m; savedPmId = pmId || null;
-  ['card','cashapp','cash'].forEach(k=>$('m-'+k).classList.toggle('sel', k===m && !pmId));
+  ['card','cashapp'].forEach(k=>{ const b=$('m-'+k); if(b) b.classList.toggle('sel', k===m && !pmId); });
   document.querySelectorAll('#saved-methods .method').forEach(el=>
     el.classList.toggle('sel', !!pmId && el.dataset.pm === String(pmId)));
-  $('pay-go').textContent = m==='cash' ? 'Get my cash code'
-    : pmId ? 'Pay now' : 'Continue to secure payment';
-  $('pay-foot').textContent = m==='cash'
-    ? 'You get a code to show at the register. Bring cash to Walmart, 7-Eleven, CVS, Dollar General or Walgreens. The store charges its own fee.'
-    : 'Processed securely by Stripe. We never see your card or bank number.';
+  $('pay-go').textContent = pmId ? 'Pay now' : 'Continue to secure payment';
+  $('pay-foot').textContent = 'Processed securely by Stripe. We never see your card or bank number.';
   renderFee();
 }
 function pmIcon(t){ return t==='card' ? '\u{1F4B3}' : '\u{1F3E6}'; }
@@ -835,7 +830,7 @@ function renderSavedMethods(){
 async function renderFee(){
   const amt = totalCents();
   const fs = (DATA && DATA.fee_settings) || {};
-  if (!fs.pass || payMethod==='cash' || !amt){ $('fee-box').innerHTML=''; return; }
+  if (!fs.pass || !amt){ $('fee-box').innerHTML=''; return; }
   try {
     const q = await api('/api/tenant/fee-quote?amount_cents='+amt);
     const key = payMethod==='ach' ? 'ach' : payMethod==='cashapp' ? 'cashapp' : 'card';
@@ -925,14 +920,8 @@ async function startPayment(){
         : 'Payment complete. Thank you!');
       go('home'); return;
     }
-    if(payMethod==='cash'){
-      const s=await api('/api/tenant/pay/cash-slip',{method:'POST',body:JSON.stringify({amount_cents:amt})});
-      $('slip-box').innerHTML=slipHtml(s,true);
-      DATA=await api('/api/tenant/loan'); render();
-    } else {
-      const r=await api('/api/tenant/pay/checkout',{method:'POST',body:JSON.stringify({amount_cents:amt})});
-      location.href=r.url;
-    }
+    const r=await api('/api/tenant/pay/checkout',{method:'POST',body:JSON.stringify({amount_cents:amt})});
+    location.href=r.url;
   }catch(e){ if(e.message!=='terms'){ $('pay-err').textContent=e.message; $('pay-err').classList.remove('hidden'); } }
 }
 function slipHtml(s,fresh){
