@@ -675,10 +675,12 @@ function go(t){
     const b=$('nb-'+k); if(b) b.classList.toggle('on',k===t);
   }
   $('hdr').textContent = TITLES[t]||'Porch Pay';
-  if(t==='msgs') pollMsgs();
+  // Every other tab starts at the top. Messages starts at the newest message —
+  // that is the one you opened it to read.
+  if(t==='msgs'){ msgStick=true; window.scrollTo(0,0); pollMsgs(); }
+  else window.scrollTo(0,0);
   if(t==='docs') loadDocs();
   clearBadgeFor(t);
-  window.scrollTo(0,0);
 }
 
 // ---------- render ----------
@@ -1000,9 +1002,38 @@ async function pollMsgs(){
       return `<div class="msg ${m.sender_role==='tenant'?'me':'them'}">${esc(m.body)}
        <div class="t">${m.sender_role==='tenant'?'You':esc(m.sender_name)} · ${when}</div></div>`;
     }).join(''):'<div class="card"><p class="note">No messages yet. Say hello — your servicer sees it right away.</p></div>';
-    if(tab==='msgs') window.scrollTo(0,document.body.scrollHeight);
+    if(tab==='msgs' && msgStick) settleToBottom();
   }catch{}
 }
+
+// ---------- thread scrolling ----------
+// The thread refreshes every 20 seconds. Without this it would haul you back to the
+// newest message every time, mid-sentence, while you were reading something older.
+// msgStick stays true while you are at the bottom and goes false the moment you
+// scroll up to read; only then does the auto-scroll stop.
+let msgStick = true;
+function nearBottom(px){
+  return (document.documentElement.scrollHeight - window.innerHeight - window.scrollY) <= (px||80);
+}
+// Scroll after layout, then again once late-loading images have changed the height —
+// a notice with the company logo in it is taller than it was a frame ago.
+function settleToBottom(smooth){
+  requestAnimationFrame(()=>{
+    const go=()=>window.scrollTo({top:document.documentElement.scrollHeight,
+                                  behavior:smooth?'smooth':'auto'});
+    go();
+    const list=$('m-list');
+    if(list) list.querySelectorAll('img').forEach(img=>{
+      if(!img.complete) img.addEventListener('load',()=>{ if(msgStick) go(); },{once:true});
+    });
+    setTimeout(()=>{ if(msgStick) go(); },150);
+  });
+}
+window.addEventListener('scroll',()=>{ if(tab==='msgs') msgStick=nearBottom(); },{passive:true});
+// The on-screen keyboard resizes the viewport; re-pin so the composer is not hidden.
+if(window.visualViewport) window.visualViewport.addEventListener('resize',()=>{
+  if(tab==='msgs' && msgStick) settleToBottom();
+});
 function growMsgBox(){
   const t=$('m-input'); if(!t) return;
   t.style.height='auto';
@@ -1018,7 +1049,8 @@ async function sendMsg(){
   const v=t.value.trim(); if(!v) return;
   try{
     await api('/api/tenant/messages',{method:'POST',body:JSON.stringify({body:v})});
-    t.value=''; growMsgBox(); pollMsgs();
+    // Sending always takes you to the bottom, even if you were reading history.
+    t.value=''; growMsgBox(); msgStick=true; pollMsgs();
   }catch(e){
     alert('Could not send that just now. Your message is still here — try again in a moment.');
   }

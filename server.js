@@ -14,6 +14,17 @@ const reports = require('./reports');
 const tpl = require('./templates');
 const addr = require('./address');
 const notify = require('./notify');
+const journal = require('./journal');
+
+// Double-entry books. Created on boot alongside everything else in db.js, so an
+// existing deployment picks them up on the next restart with nothing to run by hand.
+journal.initSchema();
+
+// Migrate the old money tables into the journal the first time only. The old tables
+// stay in charge until the reconciliation is clean and reads are switched over, so a
+// bad migration cannot take the app down with it.
+const backfill = require('./backfill');
+backfill.maybeRunOnBoot();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1632,6 +1643,39 @@ app.put('/api/admin/texting', ownerOnly, async (req, res, next) => {
 app.delete('/api/admin/texting', ownerOnly, (req, res) => {
   run('UPDATE companies SET twilio_sid=NULL, twilio_token=NULL, twilio_from=NULL WHERE id=?', req.companyId);
   res.json({ ok: true });
+});
+
+// ---------- books ----------
+// Whether the double-entry journal agrees with the old tables, loan by loan. Until this
+// reads clean, nothing on any screen is served from the journal.
+app.get('/api/admin/books', adminOnly, (req, res) => {
+  const rec = backfill.reconcile(req.companyId);
+  res.json({
+    ...rec,
+    entries: get('SELECT COUNT(*) c FROM journal_entries WHERE company_id=?', req.companyId).c,
+    accounts: all(`SELECT a.code, a.name, a.type, a.fund,
+        COALESCE(SUM(jl.debit_cents),0) dr, COALESCE(SUM(jl.credit_cents),0) cr
+      FROM accounts a
+      LEFT JOIN journal_lines jl ON jl.account_code = a.code
+      LEFT JOIN journal_entries je ON je.id = jl.entry_id AND je.company_id = ?
+      GROUP BY a.code ORDER BY a.code`, req.companyId)
+      .map(a => ({ ...a, balance_cents: journal.signed(a.type, a.dr, a.cr) }))
+      .filter(a => a.balance_cents !== 0),
+  });
+});
+
+// Everything that has happened on one house — the buyer's note and the lender's note
+// side by side, which is the whole point of putting them in one journal.
+app.get('/api/admin/properties/:id/ledger', adminOnly, (req, res, next) => {
+  try {
+    const p = ownedProperty(req, Number(req.params.id));
+    if (!p) return res.status(404).json({ error: 'No such property' });
+    res.json({
+      property: p,
+      summary: journal.propertySummary(p.id),
+      rows: journal.propertyLedger(p.id, { from: req.query.from, to: req.query.to }),
+    });
+  } catch (e) { next(e); }
 });
 
 // ---------- email setup ----------

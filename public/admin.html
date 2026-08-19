@@ -2464,7 +2464,7 @@ async function contactThread(id, propertyId){
     <div id="ct-err" class="err hidden"></div>
     <div id="ct-ok" class="okmsg hidden"></div>
     <button class="primary" onclick="sendContactText(${id})">Send text</button>`);
-  const el=$('ct-thread'); if(el) el.scrollTop=el.scrollHeight;
+  pinThread($('ct-thread'));
 }
 
 async function sendContactText(id){
@@ -4405,9 +4405,25 @@ async function openThread(loanId,title){
       <div class="note" style="text-align:right;margin-top:4px">Sent by ${esc(m.sender_name)} · ${when}</div></div>`;
     return `<div class="msg ${m.sender_role==='admin'?'me':'them'}">${esc(m.body)}<div class="t">${m.sender_role==='admin'?'You':esc(m.sender_name)} · ${when}</div></div>`;
   }).join('')||'<p class="note">No messages yet.</p>';
-  $('mt-list').scrollTop=$('mt-list').scrollHeight;
+  pinThread($('mt-list'));
   if($('mt-input')){ $('mt-input').style.height=''; growComposer(); }
   loadDash();
+}
+
+// ---------- thread scrolling ----------
+// Setting scrollTop straight after innerHTML uses a scrollHeight the browser has not
+// finished computing, so a thread ending in a letter or an image lands short. Scroll
+// on the next frame, then again once images have settled.
+function pinThread(el, smooth){
+  if(!el) return;
+  const go=()=>{ el.scrollTop = el.scrollHeight; };
+  requestAnimationFrame(()=>{
+    if(smooth && el.scrollTo) el.scrollTo({top:el.scrollHeight,behavior:'smooth'}); else go();
+    el.querySelectorAll('img').forEach(img=>{
+      if(!img.complete) img.addEventListener('load',go,{once:true});
+    });
+    setTimeout(go,150);
+  });
 }
 // Grow with the text rather than making somebody write into a slot.
 function growComposer(){
