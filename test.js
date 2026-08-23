@@ -360,6 +360,30 @@ async function main() {
   ok(r.status === 200 && r.json.category === 'closing_receipts', 'closing receipts bucket accepts uploads');
   const receiptId = r.json.id;
 
+  console.log('— sharing is a deliberate click, never a default');
+  {
+    // Uploaded into a buyer-capable folder with no flag: stays admin-only, stays in
+    // its folder (not dumped into Private), and the buyer sees nothing.
+    r = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+      filename: 'quiet-policy.pdf', mime: 'application/pdf', data_base64: b64, loan_id: loanId,
+      category: 'insurance' }) });
+    ok(r.status === 200 && r.json.visible_to_tenant === 0, 'no flag means admin-only');
+    const quietId = r.json.id;
+    r = await req(`/api/admin/loans/${loanId}/documents`);
+    ok(r.json.insurance.documents.some(d => d.id === quietId), 'unshared doc stays in its own folder');
+    r = await req('/api/tenant/documents', {}, tbCookie);
+    ok(!r.json.some(f => f.documents.some(d => d.id === quietId)), 'buyer cannot see it');
+    // The deliberate click.
+    r = await req(`/api/admin/documents/${quietId}`, { method: 'PUT', body: JSON.stringify({ visible_to_tenant: true }) });
+    ok(r.status === 200 && r.json.visible_to_tenant === 1, 'shared by explicit choice');
+    r = await req('/api/tenant/documents', {}, tbCookie);
+    ok(r.json.find(f => f.category === 'insurance').documents.some(d => d.id === quietId), 'now the buyer sees it');
+    // And back again.
+    r = await req(`/api/admin/documents/${quietId}`, { method: 'PUT', body: JSON.stringify({ visible_to_tenant: false }) });
+    r = await req('/api/tenant/documents', {}, tbCookie);
+    ok(!r.json.some(f => f.documents.some(d => d.id === quietId)), 'unsharing pulls it back');
+  }
+
   console.log('— in-app viewer');
   r = await req(`/api/documents/${miscSharedId}/view`, {}, tbCookie);
   ok(r.status === 200, 'TB can view a shared doc inline');
@@ -508,6 +532,55 @@ async function main() {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ ApplicationSid: 'AP' + 'z'.repeat(32), To: '555-555-0142' }).toString() });
     ok(/cannot be completed/.test(await bad.text()), 'unknown TwiML app gets refused, not connected');
+  }
+
+  console.log('— voicemail, recording callbacks, and texted-in messages');
+  {
+    const form = (path, data) => fetch(`${BASE}${path}`, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(data).toString() });
+    // Voice settings save; greeting round-trips.
+    r = await req('/api/admin/voice-settings', { method: 'PUT', body: JSON.stringify({
+      record_calls: true, forward_calls: false, voicemail_greeting: 'Leave it after the beep.' }) });
+    ok(r.status === 200, 'voice settings saved');
+    r = await req('/api/admin/texting');
+    ok(r.json.record_calls === true && r.json.voicemail_greeting === 'Leave it after the beep.', 'settings round-trip');
+    // Incoming call with no forward goes straight to voicemail with the greeting.
+    // (Company has no twilio_from in tests — unknown number gets the polite refusal.)
+    let xml = await (await form('/api/voice/incoming', { To: '+15550001111', From: '+15552223333' })).text();
+    ok(/not in service/.test(xml), 'a call to an unknown number is refused politely');
+    // A recording callback lands and hangs onto the buyer's loan by phone match.
+    await req('/api/admin/tenants/' + tbId, { method: 'PUT', body: JSON.stringify({ phone: '555-777-8888' }) });
+    await form('/api/voice/recording?co=1&kind=call', {
+      RecordingSid: 'RE' + 'c'.repeat(32), CallSid: 'CA' + 'c'.repeat(32),
+      From: '+15551234567', To: '+15557778888', RecordingDuration: '42' });
+    r = await req('/api/admin/recordings');
+    const rec = r.json.recordings.find(x => x.recording_sid === 'RE' + 'c'.repeat(32));
+    ok(!!rec && rec.duration_sec === 42, 'recording remembered with its duration');
+    ok(rec.loan_id === loanId, 'recording matched to the buyer’s loan by phone number');
+    // The voicemail transcription callback fills in the words.
+    await form('/api/voice/vm-transcript?co=1', {
+      RecordingSid: 'RE' + 'c'.repeat(32), TranscriptionStatus: 'completed',
+      TranscriptionText: 'Please call me back about the furnace.' });
+    r = await req('/api/admin/recordings');
+    ok(r.json.recordings[0].transcript === 'Please call me back about the furnace.', 'transcript attached to the recording');
+    // Call transcripts without an Intelligence service explain what to set up —
+    // exercised on a recording that has no transcript yet.
+    await form('/api/voice/recording?co=1&kind=call', {
+      RecordingSid: 'RE' + 'd'.repeat(32), CallSid: 'CA' + 'd'.repeat(32),
+      From: '+15551234567', To: '+15550001234', RecordingDuration: '10' });
+    r = await req('/api/admin/recordings');
+    const bare = r.json.recordings.find(x => x.recording_sid === 'RE' + 'd'.repeat(32));
+    r = await req('/api/admin/recordings/' + bare.id + '/transcribe', { method: 'POST', body: '{}' });
+    ok(r.status === 400 && /Intelligence/.test(r.json.error), 'call transcription names the missing Twilio service');
+    // A buyer texting in lands in their message thread, tagged sms — not swallowed.
+    await form('/sms/incoming', { From: '555-777-8888', Body: 'Got the notice, can we talk?' });
+    r = await req(`/api/admin/loans/${loanId}/messages`);
+    const texted = r.json.find(m => m.body === 'Got the notice, can we talk?');
+    ok(!!texted, 'a buyer’s text lands in the message thread');
+    ok((texted.channels || '') === 'sms', 'and is tagged as having arrived by text');
+    // Reset recording flag so nothing else in the suite is affected.
+    await req('/api/admin/voice-settings', { method: 'PUT', body: JSON.stringify({ record_calls: false }) });
   }
 
   console.log('— in-app dialer guards');
@@ -1026,12 +1099,17 @@ async function main() {
   r = await req(`/api/admin/invitations/${inviteId}/preview`);
   ok(/unmonitored number/i.test(r.json.text), 'invite says the number is unmonitored');
   ok(/STOP/.test(r.json.text), 'invite carries the STOP opt-out carriers require');
+  // A buyer with a loan who texts back gets THREADED now, not auto-replied — their
+  // words land in Messages. Only a stranger still gets the automatic pointer.
   const twiml = await fetch(BASE + '/sms/incoming', { method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'From=%2B15558675309&Body=hello' });
   const buyerXml = await twiml.text();
-  ok(twiml.status === 200 && /<Response><Message>/.test(buyerXml), 'texting the number back gets an automatic reply');
-  ok(/Porch Pay app/.test(buyerXml), 'the auto-reply points them into the app');
+  ok(twiml.status === 200 && !/<Message>/.test(buyerXml), 'a known buyer’s text is threaded, not auto-replied');
+  const strangerXml = await (await fetch(BASE + '/sms/incoming', { method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'From=%2B15550009999&Body=hello' })).text();
+  ok(/<Response><Message>/.test(strangerXml) && /Porch Pay app/.test(strangerXml), 'a stranger still gets the automatic pointer into the app');
 
   console.log('— correspondence carries the management company name');
   await req('/api/admin/company', { method: 'PUT', body: JSON.stringify({ name: 'Renew EQ LLC' }) });

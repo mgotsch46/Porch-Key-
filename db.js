@@ -444,6 +444,30 @@ addColumnIfMissing('companies', 'twilio_from', 'TEXT');
 addColumnIfMissing('companies', 'voice_api_key_sid', 'TEXT');
 addColumnIfMissing('companies', 'voice_api_key_secret', 'TEXT');
 addColumnIfMissing('companies', 'voice_twiml_app_sid', 'TEXT');
+// Recording, voicemail and transcripts. record_calls announces itself to the other
+// party — several of the states this portfolio works in require all-party consent.
+addColumnIfMissing('companies', 'record_calls', 'INTEGER DEFAULT 0');
+addColumnIfMissing('companies', 'voicemail_greeting', 'TEXT');
+addColumnIfMissing('companies', 'forward_calls', 'INTEGER DEFAULT 0');
+addColumnIfMissing('companies', 'voice_intel_sid', 'TEXT');   // Twilio Intelligence service, for call transcripts
+db.exec(`
+CREATE TABLE IF NOT EXISTS call_recordings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  kind TEXT NOT NULL DEFAULT 'call' CHECK (kind IN ('call','voicemail')),
+  call_sid TEXT,
+  recording_sid TEXT UNIQUE,
+  from_number TEXT,
+  to_number TEXT,
+  duration_sec INTEGER,
+  transcript TEXT,
+  transcript_status TEXT,          -- NULL | pending | done | failed
+  transcript_sid TEXT,             -- Twilio Intelligence transcript, when used
+  loan_id INTEGER REFERENCES loans(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_recordings_co ON call_recordings(company_id, id);
+`);
 
 // Outbound email, same idea as texting: each servicer uses their own mailbox and the
 // environment is only a fallback. Two from-addresses so routine correspondence and a

@@ -58,7 +58,7 @@ async function sendSms(to, body, company) {
 // browser microphone, no SDK — and the person called sees the business number, never
 // the admin's cell. The phone in your hand is just the handset; the program placed
 // the call.
-async function placeCall(to, adminPhone, company, { announce } = {}) {
+async function placeCall(to, adminPhone, company, { announce, record, baseUrl } = {}) {
   const number = normalizePhone(to);
   const mine = normalizePhone(adminPhone);
   if (!number) throw new Error('That phone number does not look valid');
@@ -66,8 +66,14 @@ async function placeCall(to, adminPhone, company, { announce } = {}) {
   const c = creds(company);
   if (!c) throw new Error('Calling is not connected yet — add your Twilio details under Settings → Texting');
   const who = String(announce || 'your contact').replace(/[<>&"]/g, ' ').slice(0, 60);
-  const twiml = `<Response><Say voice="alice">Connecting you to ${who}. One moment.</Say>` +
-    `<Dial callerId="${c.from}" timeout="25">${number}</Dial></Response>`;
+  // When recording, both sides hear it said: the admin in the connect message, the
+  // callee through a whisper before the legs join.
+  const recAttrs = record && baseUrl
+    ? ` record="record-from-answer-dual" recordingStatusCallback="${baseUrl}/api/voice/recording?co=${company.id}&amp;kind=call"`
+    : '';
+  const whisper = record && baseUrl ? ` url="${baseUrl}/api/voice/announce"` : '';
+  const twiml = `<Response><Say voice="alice">Connecting you to ${who}.${record ? ' This call may be recorded.' : ''} One moment.</Say>` +
+    `<Dial callerId="${c.from}" timeout="25"${recAttrs}><Number${whisper}>${number}</Number></Dial></Response>`;
   const params = new URLSearchParams({ To: mine, From: c.from, Twiml: twiml });
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/Calls.json`, {
     method: 'POST',

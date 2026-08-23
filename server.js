@@ -245,7 +245,29 @@ app.post('/sms/incoming', (req, res) => {
     }
   }
 
-  // Otherwise it is a buyer replying to their one-time invitation. Point them at the app.
+  // A buyer texting back. Their words belong in the message thread on their loan,
+  // marked as having arrived by text — not swallowed by an auto-reply.
+  if (bare && body) {
+    const buyer = get(`SELECT u.* FROM users u WHERE u.role='tenant' AND u.deleted_at IS NULL
+      AND u.phone IS NOT NULL AND ${digitsOf('u.phone')} = ? LIMIT 1`, bare);
+    if (buyer) {
+      const loan = get("SELECT * FROM loans WHERE tenant_user_id=? AND status='active' ORDER BY id DESC LIMIT 1", buyer.id)
+        || get('SELECT * FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', buyer.id);
+      if (loan) {
+        run(`INSERT INTO messages (loan_id, sender_user_id, body, read_by_tenant, channels)
+             VALUES (?,?,?,1,'sms')`, loan.id, buyer.id, body);
+        for (const u of all(`SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL`, loan.company_id)) {
+          notify.notify(u.id, {
+            kind: 'message', title: `📲 Text from ${buyer.name}`,
+            body: body.slice(0, 140), url: '/admin#msgs',
+          }).catch(() => {});
+        }
+        return res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+      }
+    }
+  }
+
+  // Otherwise it is a stranger or an invitation reply. Point them at the app.
   let companyName = null;
   if (bare) {
     const u = get(`SELECT c.name, c.mgmt_company_name FROM users u JOIN companies c ON c.id=u.company_id
@@ -2175,6 +2197,11 @@ app.get('/api/admin/texting', adminOnly, (req, res) => {
     webhook_url: baseUrlOf(req) + '/sms/incoming',
     voice_configured: !!(co.voice_api_key_sid && co.voice_api_key_secret && co.voice_twiml_app_sid),
     voice_url: baseUrlOf(req) + '/api/voice/outgoing',
+    incoming_url: baseUrlOf(req) + '/api/voice/incoming',
+    record_calls: !!co.record_calls,
+    forward_calls: !!co.forward_calls,
+    voicemail_greeting: co.voicemail_greeting || '',
+    voice_intel_set: !!co.voice_intel_sid,
   });
 });
 
@@ -2235,7 +2262,10 @@ app.get('/api/admin/voice-token', adminOnly, (req, res) => {
 });
 
 // The TwiML app points its Voice URL here. Twilio asks "the browser wants to call To —
-// what do I do?", and the answer is: dial it, presenting the business number.
+// what do I do?", and the answer is: dial it, presenting the business number. When
+// recording is on, the callee hears an announcement before connecting — several of
+// this portfolio's states require every party to know.
+const xesc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 app.post('/api/voice/outgoing', (req, res) => {
   const appSid = req.body && req.body.ApplicationSid;
   const co = appSid ? get('SELECT * FROM companies WHERE voice_twiml_app_sid=?', appSid) : null;
@@ -2244,9 +2274,170 @@ app.post('/api/voice/outgoing', (req, res) => {
   if (!co || !to) {
     return res.send('<Response><Say>This call cannot be completed.</Say></Response>');
   }
-  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  res.send(`<Response><Dial callerId="${esc(co.twilio_from)}" answerOnBridge="true">` +
-           `<Number>${esc(to)}</Number></Dial></Response>`);
+  const base = baseUrlOf(req);
+  const rec = co.record_calls
+    ? ` record="record-from-answer-dual" recordingStatusCallback="${xesc(base)}/api/voice/recording?co=${co.id}&amp;kind=call"`
+    : '';
+  const whisper = co.record_calls ? ` url="${xesc(base)}/api/voice/announce"` : '';
+  res.send(`<Response><Dial callerId="${xesc(co.twilio_from)}" answerOnBridge="true"${rec}>` +
+           `<Number${whisper}>${xesc(to)}</Number></Dial></Response>`);
+});
+
+// Played to the person being called, before the legs join.
+app.post('/api/voice/announce', (req, res) => {
+  res.type('text/xml').send('<Response><Say voice="alice">This call may be recorded.</Say></Response>');
+});
+
+// Inbound calls to the business number. Optionally ring the owner's cell first; the
+// rest — or everything — goes to voicemail, transcribed by Twilio as it is recorded.
+function voicemailTwiml(co, base) {
+  const greeting = co.voicemail_greeting ||
+    `You have reached ${co.mgmt_company_name || co.name}. Please leave a message with your name and property address, and we will get back to you.`;
+  return `<Response><Say voice="alice">${xesc(greeting)}</Say>` +
+    `<Record maxLength="120" playBeep="true" transcribe="true"` +
+    ` transcribeCallback="${xesc(base)}/api/voice/vm-transcript?co=${co.id}"` +
+    ` recordingStatusCallback="${xesc(base)}/api/voice/recording?co=${co.id}&amp;kind=voicemail"/>` +
+    `<Say voice="alice">We did not receive a recording. Goodbye.</Say></Response>`;
+}
+app.post('/api/voice/incoming', (req, res) => {
+  const toNum = sms.normalizePhone(req.body && req.body.To);
+  const co = toNum ? get(`SELECT c.* FROM companies c WHERE c.twilio_from=?`, toNum) : null;
+  res.type('text/xml');
+  if (!co) return res.send('<Response><Say>This number is not in service.</Say></Response>');
+  const base = baseUrlOf(req);
+  const owner = get(`SELECT phone FROM users WHERE company_id=? AND role='owner' AND phone IS NOT NULL AND deleted_at IS NULL LIMIT 1`, co.id);
+  if (co.forward_calls && owner && owner.phone) {
+    // Ring the owner briefly; unanswered rolls to voicemail via the action URL.
+    return res.send(`<Response><Dial timeout="18" callerId="${xesc(co.twilio_from)}"` +
+      ` action="${xesc(base)}/api/voice/vm-fallback?co=${co.id}">` +
+      `<Number>${xesc(sms.normalizePhone(owner.phone))}</Number></Dial></Response>`);
+  }
+  res.send(voicemailTwiml(co, base));
+});
+app.post('/api/voice/vm-fallback', (req, res) => {
+  const co = get('SELECT * FROM companies WHERE id=?', Number(req.query.co));
+  res.type('text/xml');
+  if (!co) return res.send('<Response/>');
+  if ((req.body && req.body.DialCallStatus) === 'completed') return res.send('<Response/>');
+  res.send(voicemailTwiml(co, baseUrlOf(req)));
+});
+
+// A recording finished — a call's or a voicemail's. Remember it, and hang it on the
+// loan whose buyer was on the other end when there is one.
+app.post('/api/voice/recording', (req, res) => {
+  const coId = Number(req.query.co);
+  const kind = req.query.kind === 'voicemail' ? 'voicemail' : 'call';
+  const b = req.body || {};
+  if (coId && b.RecordingSid) {
+    const fromN = sms.normalizePhone(b.From) || b.From || null;
+    const toN = sms.normalizePhone(b.To) || b.To || null;
+    const bare = (n) => (n || '').replace(/^\+1/, '');
+    const digitsOf = (col) => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col},'-',''),' ',''),'(',''),')',''),'+1','')`;
+    const counterpart = kind === 'voicemail' ? bare(fromN) : bare(toN);
+    const buyer = counterpart ? get(`SELECT id FROM users WHERE role='tenant' AND deleted_at IS NULL
+      AND phone IS NOT NULL AND ${digitsOf('phone')}=? LIMIT 1`, counterpart) : null;
+    const loan = buyer ? get('SELECT id FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', buyer.id) : null;
+    run(`INSERT INTO call_recordings (company_id, kind, call_sid, recording_sid, from_number, to_number, duration_sec, loan_id)
+         VALUES (?,?,?,?,?,?,?,?)
+         ON CONFLICT(recording_sid) DO UPDATE SET duration_sec=excluded.duration_sec`,
+      coId, kind, b.CallSid || null, b.RecordingSid, fromN, toN,
+      Number(b.RecordingDuration) || null, loan ? loan.id : null);
+    if (kind === 'voicemail') {
+      for (const u of all(`SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL`, coId)) {
+        notify.notify(u.id, { kind: 'message', title: '📞 New voicemail',
+          body: `From ${fromN || 'unknown'} — ${b.RecordingDuration || '?'}s`, url: '/admin#settings' }).catch(() => {});
+      }
+    }
+  }
+  res.type('text/xml').send('<Response/>');
+});
+
+// Twilio's built-in transcription for voicemails (recordings under two minutes).
+app.post('/api/voice/vm-transcript', (req, res) => {
+  const b = req.body || {};
+  if (b.RecordingSid) {
+    run(`UPDATE call_recordings SET transcript=?, transcript_status=? WHERE recording_sid=?`,
+      b.TranscriptionText || null,
+      b.TranscriptionStatus === 'completed' ? 'done' : 'failed',
+      b.RecordingSid);
+  }
+  res.type('text/xml').send('<Response/>');
+});
+
+// ---------- recordings for the admin ----------
+app.get('/api/admin/recordings', adminOnly, (req, res) => {
+  res.json({ recordings: all(`SELECT r.*, p.address FROM call_recordings r
+      LEFT JOIN loans l ON l.id=r.loan_id LEFT JOIN properties p ON p.id=l.property_id
+      WHERE r.company_id=? ORDER BY r.id DESC LIMIT 100`, req.companyId) });
+});
+// The audio itself lives at Twilio behind basic auth; proxy it so the browser's
+// audio tag can just play it.
+app.get('/api/admin/recordings/:id/audio', adminOnly, async (req, res, next) => {
+  try {
+    const r = get('SELECT * FROM call_recordings WHERE id=? AND company_id=?', req.params.id, req.companyId);
+    if (!r) return res.status(404).json({ error: 'Not found' });
+    const c = sms.creds(myCompany(req));
+    if (!c) return res.status(400).json({ error: 'Twilio is not connected' });
+    const tw = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/Recordings/${r.recording_sid}.mp3`, {
+      headers: { Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64') },
+    });
+    if (!tw.ok) return res.status(502).json({ error: 'Twilio would not hand over the recording' });
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.send(Buffer.from(await tw.arrayBuffer()));
+  } catch (e) { next(e); }
+});
+// Call transcripts go through Twilio Intelligence, which needs a one-time service
+// (its SID pasted in Settings). Create on demand, poll for sentences.
+app.post('/api/admin/recordings/:id/transcribe', adminOnly, async (req, res, next) => {
+  try {
+    const r = get('SELECT * FROM call_recordings WHERE id=? AND company_id=?', req.params.id, req.companyId);
+    if (!r) return res.status(404).json({ error: 'Not found' });
+    if (r.transcript_status === 'done') return res.json({ status: 'done', transcript: r.transcript });
+    const co = myCompany(req);
+    if (!co.voice_intel_sid) {
+      return res.status(400).json({ error: 'Call transcripts need a Twilio Intelligence service — create one in the ' +
+        'Twilio console under AI & Machine Learning → Voice Intelligence, and paste its GA-prefixed SID in Settings.' });
+    }
+    const c = sms.creds(co);
+    if (!c) return res.status(400).json({ error: 'Twilio is not connected' });
+    if (!r.transcript_sid) {
+      const params = new URLSearchParams({
+        ServiceSid: co.voice_intel_sid,
+        Channel: JSON.stringify({ media_properties: { source_sid: r.recording_sid } }),
+      });
+      const tw = await fetch('https://intelligence.twilio.com/v2/Transcripts', {
+        method: 'POST',
+        headers: { Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64'),
+                   'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+      });
+      const json = await tw.json();
+      if (!tw.ok) return res.status(502).json({ error: (json && json.message) || 'Twilio refused to start the transcript' });
+      run('UPDATE call_recordings SET transcript_sid=?, transcript_status=? WHERE id=?', json.sid, 'pending', r.id);
+      return res.json({ status: 'pending' });
+    }
+    // Poll for the finished sentences.
+    const tw = await fetch(`https://intelligence.twilio.com/v2/Transcripts/${r.transcript_sid}/Sentences?PageSize=500`, {
+      headers: { Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64') },
+    });
+    const json = await tw.json();
+    if (!tw.ok) return res.status(502).json({ error: (json && json.message) || 'Could not fetch the transcript' });
+    const sentences = (json.sentences || []).map(s => `${s.media_channel === 1 ? 'You' : 'Them'}: ${s.transcript}`).join('\n');
+    if (sentences) {
+      run("UPDATE call_recordings SET transcript=?, transcript_status='done' WHERE id=?", sentences, r.id);
+      return res.json({ status: 'done', transcript: sentences });
+    }
+    res.json({ status: 'pending' });
+  } catch (e) { next(e); }
+});
+// Recording / voicemail / transcript configuration.
+app.put('/api/admin/voice-settings', ownerOnly, (req, res) => {
+  const b = req.body || {};
+  run(`UPDATE companies SET record_calls=?, forward_calls=?, voicemail_greeting=?, voice_intel_sid=? WHERE id=?`,
+    b.record_calls ? 1 : 0, b.forward_calls ? 1 : 0,
+    String(b.voicemail_greeting || '').slice(0, 500) || null,
+    String(b.voice_intel_sid || '').trim() || null, req.companyId);
+  res.json({ ok: true });
 });
 
 // ---------- downloads ----------
@@ -2965,7 +3156,9 @@ app.post('/api/admin/call', adminOnly, async (req, res, next) => {
     if (!req.user.phone) {
       return res.status(400).json({ error: 'need_phone', need_phone: true });
     }
-    const r = await sms.placeCall(to, req.user.phone, myCompany(req), { announce: b.name });
+    const co = myCompany(req);
+    const r = await sms.placeCall(to, req.user.phone, co,
+      { announce: b.name, record: !!co.record_calls, baseUrl: baseUrlOf(req) });
     res.json({ ok: true, my_phone: r.my_phone });
   } catch (e) { next(e); }
 });
@@ -3421,13 +3614,15 @@ app.get('/api/admin/loans/:id/documents', adminOnly, (req, res) => {
     ORDER BY COALESCE(effective_date, created_at) DESC, id DESC`, loan.id, loan.property_id);
   const folders = {};
   // The unsorted tray comes first so a batch upload is the first thing on the screen,
-  // asking to be filed. It only appears when something is actually in it.
-  for (const c of ['unsorted', ...SHARED_CATEGORIES, 'trust_docs', 'misc_admin', 'private']) folders[c] = { label: CATEGORY_LABELS[c], shared: SHARED_CATEGORIES.includes(c), documents: [] };
+  // asking to be filed. Documents group by their folder regardless of sharing — an
+  // unshared insurance policy is still an insurance policy — and each carries its own
+  // visible_to_tenant flag, which the UI shows as a per-document share toggle.
+  for (const c of ['unsorted', ...SHARED_CATEGORIES, ...ADMIN_CATEGORIES]) {
+    folders[c] = { label: CATEGORY_LABELS[c], shared: SHARED_CATEGORIES.includes(c), documents: [] };
+  }
   for (const d of docs) {
-    const key = d.category === 'unsorted' ? 'unsorted'
-      : (d.category === 'trust_docs' || d.category === 'misc_admin') ? d.category
-      : d.visible_to_tenant ? (SHARED_CATEGORIES.includes(d.category) ? d.category : 'loan_docs')
-      : 'private';
+    const key = folders[d.category] ? d.category
+      : d.visible_to_tenant ? 'loan_docs' : 'private';   // legacy 'other'/'statement' rows
     folders[key].documents.push(d);
   }
   if (!folders.unsorted.documents.length) delete folders.unsorted;

@@ -2804,6 +2804,7 @@ async function loadTexting(){
   const el=$('set-texting'); if(!el) return;
   const t=await api('/api/admin/texting');
   if(t.connected){
+    setTimeout(loadRecordings,0);
     el.innerHTML=`
       <p class="okmsg">Connected — invitations text themselves the moment you record a sale.</p>
       <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
@@ -2818,6 +2819,27 @@ async function loadTexting(){
         <button class="small" onclick="testTextModal()">Send a test text</button>
         ${t.source==='company'?`<button class="small warn" onclick="disconnectTexting()">Disconnect</button>`:''}
       </div>
+
+      <h3 style="margin:18px 0 6px;font-size:14px">📼 Recording, voicemail &amp; transcripts</h3>
+      <label class="note" style="display:block;margin-bottom:8px">
+        <input id="vs-record" type="checkbox" ${t.record_calls?'checked':''} style="width:auto;margin-right:6px">
+        <b>Record calls</b> — both sides are told "this call may be recorded" before connecting.
+        Several of your states require every party's consent; the announcement covers that.</label>
+      <label class="note" style="display:block;margin-bottom:8px">
+        <input id="vs-forward" type="checkbox" ${t.forward_calls?'checked':''} style="width:auto;margin-right:6px">
+        <b>Ring my phone for incoming calls</b> — unanswered calls roll to voicemail. Off means straight to voicemail.</label>
+      <div class="field"><label>Voicemail greeting <span class="note">— read aloud to the caller</span></label>
+        <textarea id="vs-greeting" rows="2" placeholder="You have reached ${esc(t.from||'us')}. Please leave a message…">${esc(t.voicemail_greeting||'')}</textarea></div>
+      <div class="field"><label>Voice Intelligence service SID <span class="note">— optional, for call transcripts</span></label>
+        <input id="vs-intel" placeholder="${t.voice_intel_set?'saved — paste a new one to replace':'GAxxxx… (Twilio Console → Voice Intelligence)'}" autocomplete="off">
+        <p class="note" style="margin-top:4px">Voicemails transcribe on their own. Full call transcripts need this
+          one-time Twilio service; without it the recordings still exist, just untranscribed.</p></div>
+      <p class="note" style="margin-bottom:8px"><b>One thing to set in Twilio for voicemail:</b> your number →
+        Voice → "A call comes in" →<br>
+        <code style="font-size:12px;background:#EDF2F0;padding:3px 6px;border-radius:5px;display:inline-block;margin-top:4px">POST ${esc(t.incoming_url)}</code></p>
+      <div id="vs-err" class="err hidden"></div><div id="vs-ok" class="okmsg hidden"></div>
+      <button class="primary" onclick="saveVoiceSettings()">Save recording &amp; voicemail</button>
+      <div id="rec-list" style="margin-top:14px"><p class="note">Loading recordings…</p></div>
 
       <h3 style="margin:18px 0 6px;font-size:14px">📞 Calling from inside the app</h3>
       ${t.voice_configured
@@ -3169,6 +3191,39 @@ async function sendQuickText(loanId){
     await api(`/api/admin/loans/${loanId}/messages`,{method:'POST',body:JSON.stringify({ body, channels:['sms'] })});
     closeModal(); toast('Text sent from your business number.');
   }catch(e){ $('qt-err').textContent=e.message; $('qt-err').classList.remove('hidden'); }
+}
+async function saveVoiceSettings(){
+  $('vs-err').classList.add('hidden'); $('vs-ok').classList.add('hidden');
+  try{
+    await api('/api/admin/voice-settings',{method:'PUT',body:JSON.stringify({
+      record_calls:$('vs-record').checked, forward_calls:$('vs-forward').checked,
+      voicemail_greeting:$('vs-greeting').value, voice_intel_sid:$('vs-intel').value })});
+    $('vs-ok').textContent='Saved.'; $('vs-ok').classList.remove('hidden');
+  }catch(e){ $('vs-err').textContent=e.message; $('vs-err').classList.remove('hidden'); }
+}
+async function loadRecordings(){
+  const el=$('rec-list'); if(!el) return;
+  let d; try{ d=await api('/api/admin/recordings'); }catch(e){ el.innerHTML=''; return; }
+  if(!d.recordings.length){ el.innerHTML='<p class="note">No recordings or voicemails yet.</p>'; return; }
+  el.innerHTML='<b style="font-size:13.5px">Recent recordings &amp; voicemails</b>'+d.recordings.map(r=>`
+    <div style="padding:8px 0;border-bottom:1px solid #f2f4f7;font-size:13px">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px">
+        <span>${r.kind==='voicemail'?'📩 Voicemail from':'📞 Call with'} <b>${esc(r.kind==='voicemail'?(r.from_number||'unknown'):(r.to_number||'unknown'))}</b>
+          ${r.address?`<span class="note">· ${esc(r.address)}</span>`:''}
+          <span class="note">· ${r.duration_sec||'?'}s · ${fdate((r.created_at||'').slice(0,10))}</span></span>
+        <span>${r.transcript_status!=='done'&&r.kind==='call'?`<button class="small" onclick="getTranscript(${r.id})">${r.transcript_status==='pending'?'↻ Check transcript':'Transcribe'}</button>`:''}</span>
+      </div>
+      <audio controls preload="none" style="width:100%;max-width:420px;height:32px;margin-top:6px" src="/api/admin/recordings/${r.id}/audio"></audio>
+      ${r.transcript?`<details style="margin-top:4px"><summary class="note" style="cursor:pointer">Transcript</summary>
+        <div class="note" style="white-space:pre-wrap;margin-top:4px">${esc(r.transcript)}</div></details>`:''}
+    </div>`).join('');
+}
+async function getTranscript(id){
+  try{
+    const r=await api(`/api/admin/recordings/${id}/transcribe`,{method:'POST',body:'{}'});
+    if(r.status==='pending') toast('Transcribing — check again in a minute.');
+    loadRecordings();
+  }catch(e){ alert(e.message); }
 }
 async function saveVoice(){
   $('vc-err').classList.add('hidden'); $('vc-ok').classList.add('hidden');
@@ -5458,22 +5513,30 @@ function renderDocFolder(cat,f){
   return `<div style="border:1px solid ${priv?'#f0d9d5':'#e6e9ee'};border-radius:10px;padding:12px;margin-bottom:10px;background:${priv?'#fffaf9':'#fff'}">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <b style="font-size:14px">${DOC_ICONS[cat]||'📁'} ${esc(f.label)}</b>
-      <span>${f.shared?'<span class="pill ok">shared with buyer</span>':'<span class="pill due">admin only</span>'}
+      <span>${f.shared?'<span class="pill gray">can be shared with buyer</span>':'<span class="pill due">admin only</span>'}
         <button class="small" onclick="docsAddTo('${cat}')">+ Add</button></span>
     </div>
-    ${f.documents.length?f.documents.map(d=>docRow(d)).join('')
+    ${f.documents.length?f.documents.map(d=>docRow(d,f.shared)).join('')
       :'<p class="note" style="margin-top:6px">Empty.</p>'}
   </div>`;
 }
-function docRow(d){
+function docRow(d,folderShared){
+  const shareable = folderShared!==false;
   return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f2f4f7;font-size:13.5px">
     <span style="min-width:0;overflow:hidden;text-overflow:ellipsis">📎 <a href="#" onclick="viewDoc(${d.id},'${esc(d.mime||'')}');return false">${esc(d.title||d.filename)}</a>
-      ${d.title?`<span class="note"> — ${esc(d.filename)}</span>`:''}</span>
+      ${d.title?`<span class="note"> — ${esc(d.filename)}</span>`:''}
+      ${shareable?(d.visible_to_tenant?'<span class="pill ok">buyer sees this</span>':'<span class="pill gray">admin only</span>'):''}</span>
     <span class="note" style="white-space:nowrap">${fdate((d.effective_date||d.created_at||'').slice(0,10))}
+      ${shareable?`<button class="small" onclick="shareDoc(${d.id},${d.visible_to_tenant?0:1})">${d.visible_to_tenant?'Unshare':'Share with buyer'}</button>`:''}
       <a class="small" style="text-decoration:none" title="Download" href="/api/documents/${d.id}/download">⬇</a>
       <button class="small" onclick="moveDoc(${d.id})">Move</button>
       <button class="small warn" onclick="deleteDoc(${d.id})">✕</button></span>
   </div>`;
+}
+// The deliberate click. Sharing is never a side effect of uploading or filing.
+async function shareDoc(id,vis){
+  await api('/api/admin/documents/'+id,{method:'PUT',body:JSON.stringify({visible_to_tenant:!!vis})});
+  loadDocsPage();
 }
 // The unsorted tray: everything a batch upload just dropped, each row asking one
 // question — where does this live, and does the buyer see it?
@@ -5486,7 +5549,7 @@ function renderUnsorted(f){
         <span style="min-width:0;overflow:hidden;text-overflow:ellipsis">📎 <a href="#" onclick="viewDoc(${d.id},'${esc(d.mime||'')}');return false">${esc(d.filename)}</a></span>
         <span style="display:flex;align-items:center;gap:8px;white-space:nowrap">
           <select id="us-cat-${d.id}" style="max-width:230px">${bucketOptions('loan_docs')}</select>
-          <label class="note" style="white-space:nowrap"><input id="us-vis-${d.id}" type="checkbox" checked style="width:auto;margin-right:4px">buyer sees it</label>
+          <label class="note" style="white-space:nowrap"><input id="us-vis-${d.id}" type="checkbox" style="width:auto;margin-right:4px">buyer sees it</label>
           <button class="small primary" onclick="fileDoc(${d.id})">File it</button>
           <button class="small warn" onclick="deleteDoc(${d.id})">✕</button></span>
       </div>`).join('')}
@@ -5510,7 +5573,7 @@ async function uploadDocFiles(files){
         filename:list[i].name, mime:list[i].type, data_base64:await fileToB64(list[i]),
         kind:'closing', loan_id:DOCS_CTX.loan_id||null, property_id:DOCS_CTX.property_id||null,
         category:preset||'unsorted',
-        visible_to_tenant:preset?DOC_BUCKETS.some(b=>b[0]===preset&&b[2]):false })});
+        visible_to_tenant:false })});   // everything lands admin-only; sharing is its own click
     }catch(e){ failed.push(`${list[i].name}: ${e.message}`); }
   }
   prog.textContent=failed.length?`Could not upload — ${failed.join('; ')}`:'';
@@ -5519,7 +5582,7 @@ async function uploadDocFiles(files){
 function moveDoc(id){
   modal(`<h2>Move document</h2>
     <div class="field"><label>Folder</label><select id="mv-cat">${bucketOptions('loan_docs')}</select></div>
-    <div class="field"><label><input id="mv-vis" type="checkbox" checked style="width:auto;margin-right:6px">Visible to buyer (ignored for admin-only folders)</label></div>
+    <div class="field"><label><input id="mv-vis" type="checkbox" style="width:auto;margin-right:6px">Visible to buyer (ignored for admin-only folders)</label></div>
     <button class="primary" onclick="saveMoveDoc(${id})">Move</button>`);
 }
 async function saveMoveDoc(id){
@@ -5716,7 +5779,8 @@ async function openThread(loanId,title){
     if(m.body_html) return `<div style="margin:0 0 12px auto;max-width:94%">${m.body_html}
       <div class="note" style="text-align:right;margin-top:4px">Sent by ${esc(m.sender_name)} · ${when}
         · <a href="/api/admin/messages/${m.id}/pdf">PDF</a>${deliveryNote(m)}</div></div>`;
-    return `<div class="msg ${m.sender_role==='admin'?'me':'them'}">${esc(m.body)}<div class="t">${m.sender_role==='admin'?'You':esc(m.sender_name)} · ${when}</div></div>`;
+    const viaSms=(m.channels||'').split(',').includes('sms');
+    return `<div class="msg ${m.sender_role==='admin'?'me':'them'}">${esc(m.body)}<div class="t">${m.sender_role==='admin'?'You':esc(m.sender_name)} · ${when}${viaSms?(m.sender_role==='admin'?' · sent as 📲 text':' · 📲 arrived by text'):''}</div></div>`;
   }).join('')||'<p class="note">No messages yet.</p>';
   pinThread($('mt-list'));
   if($('mt-input')){ $('mt-input').style.height=''; growComposer(); }
