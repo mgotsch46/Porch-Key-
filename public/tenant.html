@@ -562,6 +562,12 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
 <script>
 const $ = id => document.getElementById(id);
 const fmt = c => '$' + ((c||0)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+function rateStr(bps){
+  let s=((bps||0)/100).toFixed(5);
+  s=s.replace(/0+$/,'');
+  const d=(s.split('.')[1]||'').length;
+  return d>=2 ? s : s.endsWith('.') ? s+'00' : s+'0';
+}
 const fdate = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let DATA=null, ME=null, NOTICES=[], payMethod='card', tab='home', locOn=false;
@@ -737,7 +743,7 @@ function render(){
   if(loan.loan_type==='land_trust_beneficial_interest'&&property&&property.trust_name) dt.push(['Trust',esc(property.trust_name)]);
   if(loan.beneficial_interest_pct) dt.push(['Your interest',loan.beneficial_interest_pct+'%']);
   dt.push(['Purchase price',fmt(loan.sale_price_cents)],['Down payment',fmt(loan.down_payment_cents)],
-    ['Amount financed',fmt(loan.principal_cents)],['Interest rate',(loan.interest_rate_bps/100).toFixed(2)+'%'],
+    ['Amount financed',fmt(loan.principal_cents)],['Interest rate',rateStr(loan.interest_rate_bps)+'%'],
     ['Term',loan.term_months+' months'],['Current balance',fmt(loan.principal_balance_cents)],
     ['First payment',fdate(loan.first_payment_date)]);
   if(loan.escrow_balance_cents) dt.push(['Escrow balance',fmt(loan.escrow_balance_cents)]);

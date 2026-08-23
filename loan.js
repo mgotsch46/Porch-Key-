@@ -1,5 +1,9 @@
 // Loan servicing engine: amortization, due amounts, payment allocation, payoff.
-// All money is integer cents. Rates are basis points (950 = 9.50% APR).
+// All money is integer cents. Rates are basis points (950 = 9.50% APR), and they are
+// allowed to be fractional — 712.345 bps is 7.12345% — because notes are written with
+// rates like that and a payment computed from a rounded rate does not tie out to the
+// note. Every formula here divides the rate straight through, so precision survives;
+// only money is ever rounded, and only to cents.
 
 const MS_DAY = 86400000;
 
@@ -191,7 +195,9 @@ function calcRate(principalCents, paymentCents, termMonths) {
     const pay = calcPayment(principalCents, mid, termMonths);
     if (pay > paymentCents) hi = mid; else lo = mid;
   }
-  const bps = Math.round((lo + hi) / 2);
+  // Round to a thousandth of a basis point (5 decimals of percent) — finer than that
+  // is noise, since the payment it came from was already rounded to a cent.
+  const bps = Math.round(((lo + hi) / 2) * 1000) / 1000;
   return bps > 9990 ? null : bps;                               // out of a believable range
 }
 
@@ -226,7 +232,9 @@ function solveLoan({ principal_cents, payment_cents, interest_rate_bps, term_mon
 
   const loan = {
     principal_cents: Math.round(principal), payment_cents: Math.round(payment),
-    interest_rate_bps: Math.round(rate), term_months: Math.round(term),
+    // The rate the user gave is kept exactly as given — rounding it here would make
+    // the payment stop matching the note. Only trim float noise past 5 decimals.
+    interest_rate_bps: Math.round(rate * 1000) / 1000, term_months: Math.round(term),
     first_payment_date: first_payment_date || new Date().toISOString().slice(0, 10),
     escrow_cents: 0,
   };

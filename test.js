@@ -67,6 +67,31 @@ async function main() {
   r = await req(`/api/admin/amortize?principal_cents=10000000&interest_rate_bps=950&term_months=360&first_payment_date=2026-06-01`);
   ok(Array.isArray(r.json.schedule_yearly) && r.json.schedule_yearly.length >= 30, 'calculator returns a yearly rollup too');
 
+  console.log('— rate precision (5 decimals of percent)');
+  // 7.12345% = 712.345 bps. The payment must come from the full-precision rate, tie
+  // out against the standard amortization formula to the cent, and round-trip through
+  // storage without losing a digit.
+  {
+    const P = 15000000, bps = 712.345, n = 360;
+    const rm = bps / 10000 / 12;
+    const expected = Math.round(P * (rm * Math.pow(1 + rm, n)) / (Math.pow(1 + rm, n) - 1));
+    r = await req(`/api/admin/amortize?principal_cents=${P}&interest_rate_bps=${bps}&term_months=${n}`);
+    ok(r.json.interest_rate_bps === bps, `rate survives the calculator unrounded (${r.json.interest_rate_bps})`);
+    ok(r.json.payment_cents === expected, `payment from full-precision rate matches the formula to the cent ($${(r.json.payment_cents/100).toFixed(2)})`);
+    ok(r.json.schedule[r.json.schedule.length-1].balance_cents === 0, 'schedule amortizes to exactly zero');
+    // A rate rounded to 2 decimals would give a different payment — prove the digits matter.
+    const rounded = await req(`/api/admin/amortize?principal_cents=${P}&interest_rate_bps=712&term_months=${n}`);
+    ok(rounded.json.payment_cents !== r.json.payment_cents, 'truncating the rate changes the payment — precision is load-bearing');
+    // Storage round-trip on a real loan.
+    const prec = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '9 Precision Pl', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const pl = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+      property_id: prec.json.id, loan_type: 'land_contract', sale_price_cents: P, down_payment_cents: 0,
+      principal_cents: P, interest_rate_bps: bps, term_months: n, first_payment_date: '2026-09-01' }) });
+    ok(pl.json.loan.interest_rate_bps === bps, 'fractional rate stored and returned exactly');
+    ok(pl.json.loan.payment_cents === expected, 'auto-calculated payment on the stored loan matches too');
+    await req('/api/admin/loans/' + pl.json.loan.id, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+  }
+
   console.log('— editing the buyer');
   r = await req('/api/admin/tenants/' + tbId, { method: 'PUT', body: JSON.stringify({ name: 'Jane A. Buyer', phone: '5555550142' }) });
   ok(r.status === 200 && r.json.name === 'Jane A. Buyer', 'buyer name updated');

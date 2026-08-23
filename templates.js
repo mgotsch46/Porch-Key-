@@ -37,6 +37,12 @@ const outboundName = (company) =>
 const money = (c) => '$' + ((c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const niceDate = (d) => d ? new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 
+function rateStr(bps) {
+  let s = ((bps || 0) / 100).toFixed(5).replace(/0+$/, '');
+  const d = (s.split('.')[1] || '').length;
+  return d >= 2 ? s : s.endsWith('.') ? s + '00' : s + '0';
+}
+
 function buildMergeValues({ company, buyer, loan, property, status, payoff, baseUrl }) {
   const full = (buyer && buyer.name) || '';
   return {
@@ -50,7 +56,9 @@ function buildMergeValues({ company, buyer, loan, property, status, payoff, base
     due_date: status ? niceDate(status.next_due_date) : '',
     late_fee: loan ? money(loan.late_fee_cents) : '',
     grace_days: loan ? String(loan.grace_days) : '',
-    interest_rate: loan ? (loan.interest_rate_bps / 100).toFixed(2) + '%' : '',
+    // Full precision, trimmed — a notice quoting "7.12%" for a 7.12345% note invites
+    // an argument about which number is the real one.
+    interest_rate: loan ? rateStr(loan.interest_rate_bps) + '%' : '',
     payoff_amount: payoff ? money(payoff.total_cents) : '',
     app_link: (baseUrl || '') + '/',
     rep_name: (company && company.rep_name) || '',

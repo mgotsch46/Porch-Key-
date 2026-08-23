@@ -776,23 +776,23 @@ a{color:var(--brand);font-weight:600}
         <label class="inblock" for="ca-principal">
           <span class="l">Amount financed<button class="clr" title="Clear this and solve for it" onclick="event.preventDefault();calcClearField('ca-principal')">&#10005;</button></span>
           <span class="row"><span class="pre">$</span>
-            <input id="ca-principal" type="number" step="0.01" inputmode="decimal" placeholder="0.00" oninput="calcSolve()"></span>
+            <input id="ca-principal" type="number" step="0.01" inputmode="decimal" oninput="calcInput(this.id)"></span>
           <span class="tag"></span>
         </label>
         <label class="inblock" for="ca-rate">
           <span class="l">Interest rate<button class="clr" title="Clear this and solve for it" onclick="event.preventDefault();calcClearField('ca-rate')">&#10005;</button></span>
-          <span class="row"><input id="ca-rate" type="number" step="0.001" inputmode="decimal" placeholder="0.000" oninput="calcSolve()"><span class="post">%</span></span>
+          <span class="row"><input id="ca-rate" type="number" step="any" inputmode="decimal" oninput="calcInput(this.id)"><span class="post">%</span></span>
           <span class="tag"></span>
         </label>
         <label class="inblock" for="ca-term">
           <span class="l">Term<button class="clr" title="Clear this and solve for it" onclick="event.preventDefault();calcClearField('ca-term')">&#10005;</button></span>
-          <span class="row"><input id="ca-term" type="number" inputmode="numeric" placeholder="360" oninput="calcSolve()"><span class="post">mo</span></span>
+          <span class="row"><input id="ca-term" type="number" inputmode="numeric" oninput="calcInput(this.id)"><span class="post">mo</span></span>
           <span class="tag" id="ca-termyrs"></span>
         </label>
         <label class="inblock" for="ca-payment">
           <span class="l">Monthly P&amp;I<button class="clr" title="Clear this and solve for it" onclick="event.preventDefault();calcClearField('ca-payment')">&#10005;</button></span>
           <span class="row"><span class="pre">$</span>
-            <input id="ca-payment" type="number" step="0.01" inputmode="decimal" placeholder="0.00" oninput="calcSolve()"></span>
+            <input id="ca-payment" type="number" step="0.01" inputmode="decimal" oninput="calcInput(this.id)"></span>
           <span class="tag"></span>
         </label>
       </div>
@@ -800,7 +800,7 @@ a{color:var(--brand);font-weight:600}
       <div class="card" style="margin-bottom:14px">
         <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
           <div class="field" style="margin:0;min-width:180px">
-            <label>First payment date</label><input id="ca-first" type="date" oninput="calcSolve()"></div>
+            <label>First payment date</label><input id="ca-first" type="date" oninput="calcInput(this.id)"></div>
           <div class="field" style="margin:0;min-width:160px">
             <label>Total interest</label><input id="ca-interest" readonly style="background:var(--bg);font-weight:700"></div>
           <div style="flex:1"></div>
@@ -1292,6 +1292,17 @@ const AGREEMENT_LABELS = {
 };
 const $ = id => document.getElementById(id);
 const fmt = c => '$' + ((c||0)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+// Percent entered → basis points, keeping 5 decimals of percent (7.12345% → 712.345 bps).
+// The multiply-then-divide guards against float noise like 712.34499999.
+const pctToBps = v => Math.round(parseFloat(v)*100000)/1000;
+// Basis points → percent string at the precision it was entered: at least 2 decimals,
+// up to 5, trailing zeros trimmed. 950 → "9.50", 712.345 → "7.12345".
+function rateStr(bps){
+  let s=((bps||0)/100).toFixed(5);
+  s=s.replace(/0+$/,'');
+  const d=(s.split('.')[1]||'').length;
+  return d>=2 ? s : s.endsWith('.') ? s+'00' : s+'0';
+}
 const fdate = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let currentLoanId=null, LOAN_F=null, TBS=[], SCHED_VIEW='yearly', CALC_VIEW='yearly', msgLoanId=null, expFilter='unassigned', ndUploadedIds=[], PROPS=[];
@@ -1548,7 +1559,7 @@ async function openProp(id){
       ${f.pml_loans.length?f.pml_loans.map(pl=>
         `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:14px">
           <span><a href="#" onclick="openPML(${pl.id});return false">${esc(pl.lender_name)}</a>
-            <span class="note"> lien ${pl.lien_position} · ${(pl.interest_rate_bps/100).toFixed(2)}%</span></span>
+            <span class="note"> lien ${pl.lien_position} · ${rateStr(pl.interest_rate_bps)}%</span></span>
           <span>${fmt(pl.principal_balance_cents)}</span></div>`).join('')
         :'<p class="note">No lender loans on this property.</p>'}
     </div>
@@ -2046,7 +2057,7 @@ function listingModal(pid){
       <div class="field"><label>Advertised monthly payment</label>
         <input id="lst-pmt" type="number" step="0.01" value="${p.listing_payment_cents!=null?(p.listing_payment_cents/100):''}"></div>
       <div class="field"><label>Advertised interest rate (%)</label>
-        <input id="lst-rate" type="number" step="0.01" value="${p.listing_rate_bps!=null?(p.listing_rate_bps/100):''}"></div>
+        <input id="lst-rate" type="number" step="any" value="${p.listing_rate_bps!=null?(p.listing_rate_bps/100):''}"></div>
     </div>
     <div class="field"><label>Notes</label>
       <input id="lst-notes" placeholder="e.g. also posted in the Detroit CFD group" value="${esc(p.listing_notes||'')}"></div>
@@ -2062,7 +2073,7 @@ async function saveListing(pid){
       listing_url:$('lst-url').value.trim(),
       listing_price_cents:cents('lst-price'), listing_down_cents:cents('lst-down'),
       listing_payment_cents:cents('lst-pmt'),
-      listing_rate_bps:$('lst-rate').value===''?null:Math.round(parseFloat($('lst-rate').value)*100),
+      listing_rate_bps:$('lst-rate').value===''?null:pctToBps($('lst-rate').value),
       listing_notes:$('lst-notes').value.trim() })});
     closeModal(); await loadProps(); openProp(pid);
   }catch(e){ $('lst-err').textContent=e.message; $('lst-err').classList.remove('hidden'); }
@@ -2233,7 +2244,7 @@ function sellModal(pid){
       <div class="field"><label>Sale price ($)</label><input id="sl-price" type="number" step="0.01" oninput="slCalc()"></div>
       <div class="field"><label>Down payment ($)</label><input id="sl-down" type="number" step="0.01" oninput="slCalc()"></div>
       <div class="field"><label>Amount financed ($)</label><input id="sl-fin" type="number" step="0.01" oninput="slPI()"></div>
-      <div class="field"><label>Interest rate (%)</label><input id="sl-rate" type="number" step="0.01" oninput="slPI()"></div>
+      <div class="field"><label>Interest rate (%)</label><input id="sl-rate" type="number" step="any" oninput="slPI()"></div>
       <div class="field"><label>Term (months)</label><input id="sl-term" type="number" value="360" oninput="slPI();slMaturity()"></div>
       <div class="field"><label>First payment date</label><input id="sl-first" type="date" oninput="slMaturity()"></div>
       <div class="field"><label>Final payment date</label><input id="sl-final" type="date" oninput="slTermFromFinal()">
@@ -2310,7 +2321,7 @@ function slPI(){
   clearTimeout(piTimer);
   piTimer=setTimeout(async()=>{
     const fin=Math.round((parseFloat($('sl-fin').value)||0)*100);
-    const rate=Math.round((parseFloat($('sl-rate').value)||0)*100);
+    const rate=pctToBps($('sl-rate').value||0)||0;
     const term=parseInt($('sl-term').value)||0;
     if(!fin||!term){ $('sl-pi-calc').textContent=fmt(0); slTotal(); return; }
     try{
@@ -2337,7 +2348,7 @@ async function doSell(pid){
       sale_price_cents:Math.round(parseFloat($('sl-price').value)*100),
       down_payment_cents:Math.round((parseFloat($('sl-down').value)||0)*100),
       principal_cents:Math.round(parseFloat($('sl-fin').value)*100),
-      interest_rate_bps:Math.round(parseFloat($('sl-rate').value)*100),
+      interest_rate_bps:pctToBps($('sl-rate').value),
       term_months:parseInt($('sl-term').value),
       payment_cents:(PI_OVERRIDE && $('sl-pi').value)?Math.round(parseFloat($('sl-pi').value)*100):null,
       monthly_taxes_cents:Math.round((parseFloat($('sl-taxes').value)||0)*100),
@@ -3543,7 +3554,20 @@ async function sendTemplate(){
 let calcTimer=null, CALC_LAST=null;
 // The field the user last cleared is the one we solve for, so typing over an answer
 // hands the question to whatever is now empty.
-function calcClearField(id){ $(id).value=''; $(id).classList.remove('solved'); calcSolve(); }
+function calcClearField(id){ $(id).value=''; $(id).classList.remove('solved'); if(CALC_SOLVED===id) CALC_SOLVED=null; calcSolve(); }
+// Which field holds a computed (not typed) value. When any OTHER field is edited, the
+// computed one is cleared so it re-solves. Without this, a solved value sits in its box
+// counting as "typed", the calculator sees all four filled, and edits appear to change
+// nothing — which on a phone reads as the calculator falling back to stale defaults.
+let CALC_SOLVED=null;
+function calcInput(id){
+  if(CALC_SOLVED && CALC_SOLVED!==id){
+    const f=$(CALC_SOLVED); f.value=''; f.classList.remove('solved');
+    const b=f.closest('.inblock'); if(b){ b.classList.remove('solved'); const t=b.querySelector('.tag'); if(t) t.textContent=''; }
+    CALC_SOLVED=null;
+  }
+  calcSolve();
+}
 function printSchedule(){
   if(!CALC_LAST || !CALC_LAST.schedule) { alert('Fill in three values first.'); return; }
   const r=CALC_LAST;
@@ -3582,7 +3606,7 @@ function printSchedule(){
     <div class="sub">${co?co+' · ':''}Prepared ${new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</div>
     <div class="terms">
       <div class="t"><div class="l">Amount financed</div><div class="v">${fmt(r.principal_cents)}</div></div>
-      <div class="t"><div class="l">Interest rate</div><div class="v">${(r.interest_rate_bps/100).toFixed(3)}%</div></div>
+      <div class="t"><div class="l">Interest rate</div><div class="v">${rateStr(r.interest_rate_bps)}%</div></div>
       <div class="t"><div class="l">Term</div><div class="v">${r.term_months} mo</div></div>
       <div class="t"><div class="l">Monthly P&amp;I</div><div class="v">${fmt(r.payment_cents)}</div></div>
       <div class="t"><div class="l">Total of payments</div><div class="v">${fmt(r.total_paid_cents)}</div></div>
@@ -3631,7 +3655,7 @@ function calcSolve(){
     const v=id=>$(id).value.trim();
     const q=new URLSearchParams();
     if(v('ca-principal')) q.set('principal_cents', Math.round(parseFloat(v('ca-principal'))*100));
-    if(v('ca-rate')!=='') q.set('interest_rate_bps', Math.round(parseFloat(v('ca-rate'))*100));
+    if(v('ca-rate')!=='') q.set('interest_rate_bps', pctToBps(v('ca-rate')));
     if(v('ca-term')) q.set('term_months', parseInt(v('ca-term')));
     if(v('ca-payment')) q.set('payment_cents', Math.round(parseFloat(v('ca-payment'))*100));
     if(v('ca-first')) q.set('first_payment_date', v('ca-first'));
@@ -3681,11 +3705,12 @@ function calcSolve(){
         const val = r.solved_for==='payment' ? (r.payment_cents/100).toFixed(2)
           : r.solved_for==='principal' ? (r.principal_cents/100).toFixed(2)
           : r.solved_for==='term' ? String(r.term_months)
-          : (r.interest_rate_bps/100).toFixed(3);
+          : rateStr(r.interest_rate_bps);
         $(solvedField).value = val;
         $(solvedField).classList.add('solved');
         $(solvedField).title = 'Calculated — clear this field to solve for something else';
       }
+      CALC_SOLVED = solvedField || null;
       $('ca-interest').value = fmt(r.total_interest_cents);
       CALC_LAST = r;
       const yrs=Math.floor(r.term_months/12), mos=r.term_months%12;
@@ -3693,7 +3718,7 @@ function calcSolve(){
         <div class="cards">
           <div class="stat"><div class="n">${fmt(r.payment_cents)}</div><div class="l">Monthly P&amp;I</div></div>
           <div class="stat"><div class="n">${fmt(r.principal_cents)}</div><div class="l">Amount financed</div></div>
-          <div class="stat"><div class="n">${(r.interest_rate_bps/100).toFixed(3)}%</div><div class="l">Interest rate</div></div>
+          <div class="stat"><div class="n">${rateStr(r.interest_rate_bps)}%</div><div class="l">Interest rate</div></div>
           <div class="stat"><div class="n">${r.term_months}</div><div class="l">Months${yrs?` (${yrs}y ${mos}m)`:''}</div></div>
         </div>
         <div class="cards">
@@ -4063,7 +4088,7 @@ function renderPML(){
   el.innerHTML=rows.map(r=>
     `<tr class="click" onclick="openPML(${r.id})"><td><span class="addr-link">${esc(r.lender_name)}</span></td><td>${esc(r.address||'')}</td>
      <td>${r.lien_position}</td><td>${r.payment_type.replace('_',' ')}</td>
-     <td class="right">${fmt(r.principal_balance_cents)}</td><td class="right">${(r.interest_rate_bps/100).toFixed(2)}%</td>
+     <td class="right">${fmt(r.principal_balance_cents)}</td><td class="right">${rateStr(r.interest_rate_bps)}%</td>
      <td class="right">${fmt(r.payment_cents)}</td><td class="right">${fmt(r.tb_payment_cents)}</td>
      <td class="right" style="color:${r.monthly_spread_cents>=0?'var(--green)':'var(--red)'}">${fmt(r.monthly_spread_cents)}</td>
      <td>${r.status==='active'?'<span class="pill ok">active</span>':`<span class="pill gray">${r.status}</span>`}</td></tr>`
@@ -4085,7 +4110,7 @@ function pmlModal(presetProp, e){
         ${edit?'<p class="note" style="margin-top:4px">A loan cannot be moved to another house — its ledger belongs here.</p>':''}</div>
       <div class="field"><label>Lien position</label><select id="pm-lien"><option value="1">1st</option><option value="2">2nd</option><option value="3">3rd</option></select></div>
       <div class="field"><label>Principal ($)</label><input id="pm-principal" type="number" step="0.01" value="${dollars(v.principal_cents)}"></div>
-      <div class="field"><label>Interest rate (% APR)</label><input id="pm-rate" type="number" step="0.01" value="${edit?(v.interest_rate_bps/100).toFixed(2):''}"></div>
+      <div class="field"><label>Interest rate (% APR)</label><input id="pm-rate" type="number" step="any" value="${edit?rateStr(v.interest_rate_bps):''}"></div>
       <div class="field"><label>Term (months)</label><input id="pm-term" type="number" value="${edit?v.term_months:PML_DEFAULT_TERM_MONTHS}">
         ${edit?'':'<p class="note" style="margin-top:4px">60 months is the usual private money term. Change it if this deal differs.</p>'}</div>
       <div class="field"><label>Payment type</label><select id="pm-type">
@@ -4111,7 +4136,7 @@ function pmlModal(presetProp, e){
 function pmlBody(){
   return { lender_name:$('pm-lender').value, lender_contact:$('pm-contact').value,
     lien_position:Number($('pm-lien').value), principal_cents:Math.round(parseFloat($('pm-principal').value)*100),
-    interest_rate_bps:Math.round(parseFloat($('pm-rate').value)*100), term_months:parseInt($('pm-term').value),
+    interest_rate_bps:pctToBps($('pm-rate').value), term_months:parseInt($('pm-term').value),
     payment_type:$('pm-type').value, payment_cents:$('pm-pmt').value?Math.round(parseFloat($('pm-pmt').value)*100):null,
     first_payment_date:$('pm-first').value, balloon_date:$('pm-balloon').value||null, notes:$('pm-notes').value };
 }
@@ -4134,7 +4159,7 @@ async function savePML(id){
 function deletePMLModal(p){
   modal(`<h2>Delete this lender loan?</h2>
     <p class="note" style="margin-bottom:12px">${esc(p.lender_name)} — ${fmt(p.principal_cents)} at
-      ${(p.interest_rate_bps/100).toFixed(2)}%. This cannot be undone.</p>
+      ${rateStr(p.interest_rate_bps)}%. This cannot be undone.</p>
     <p class="note" style="margin-bottom:12px">Only a loan with no ledger entries can be deleted. If money has
       moved on it, mark it <b>paid off</b> instead — that keeps the history and takes it off your active list.</p>
     <div class="field"><label>Type DELETE to confirm</label><input id="pd-confirm" placeholder="DELETE"></div>
@@ -4163,7 +4188,7 @@ async function openPML(id){
   </div>
   <div class="card">
     <h2>${esc(p.lender_name)} — ${esc(f.property?f.property.address:'')} <span class="pill gray">lien ${p.lien_position}</span></h2>
-    <p class="note">${(p.interest_rate_bps/100).toFixed(2)}% · ${p.term_months} mo · ${p.payment_type.replace('_',' ')} · first payment ${fdate(p.first_payment_date)}${p.balloon_date?' · balloon due '+fdate(p.balloon_date):''}${p.lender_contact?' · '+esc(p.lender_contact):''}</p>
+    <p class="note">${rateStr(p.interest_rate_bps)}% · ${p.term_months} mo · ${p.payment_type.replace('_',' ')} · first payment ${fdate(p.first_payment_date)}${p.balloon_date?' · balloon due '+fdate(p.balloon_date):''}${p.lender_contact?' · '+esc(p.lender_contact):''}</p>
     <p class="note">Next payment due: ${fdate(f.next_due_date)} · Original principal ${fmt(p.principal_cents)}${p.notes?' · '+esc(p.notes):''}</p>
     <div class="actions"><button class="primary" onclick="pmlPayModal()">💵 Record payment to lender</button>
       <button class="small" onclick="pmlDrawModal()">Record additional draw</button>
@@ -4411,7 +4436,7 @@ function renderLoans(){
      <td><span class="addr-link">${esc(l.address)}</span></td>
      <td>${esc(l.tenant_name||'(unassigned)')}</td>
      <td>${AGREEMENT_LABELS[l.loan_type]||'Land contract'}</td>
-     <td class="right">${fmt(l.principal_balance_cents)}</td><td class="right">${(l.interest_rate_bps/100).toFixed(2)}%</td>
+     <td class="right">${fmt(l.principal_balance_cents)}</td><td class="right">${rateStr(l.interest_rate_bps)}%</td>
      <td>${l.status==='active'?(late(l)?'<span class="pill due">Past due</span>':'<span class="pill ok">Current</span>'):`<span class="pill gray">${l.status}</span>`}</td></tr>`
   ).join('') || (LOANS.length
     ? `<tr><td colspan="7" class="note">Nothing matches. <a href="#" onclick="$('loan-search').value='';$('loan-status').value='';renderLoans();return false">Clear the search</a></td></tr>`
@@ -4434,7 +4459,7 @@ async function openLoan(id){
     <h2>${esc(f.property?f.property.address:'')} — ${esc(f.tenant?f.tenant.name:'(no buyer linked)')}
       ${S.is_past_due?'<span class="pill due">Past due</span>':'<span class="pill ok">Current</span>'}</h2>
     <p class="note">${AGREEMENT_LABELS[L.loan_type]||'Land contract'}${L.loan_type==='land_trust_beneficial_interest'&&f.property&&f.property.trust_name?' — '+esc(f.property.trust_name)+(f.property.trustee?', trustee: '+esc(f.property.trustee):''):''} ·
-      ${(L.interest_rate_bps/100).toFixed(2)}% · ${L.term_months} mo · started ${fdate(L.first_payment_date)}
+      ${rateStr(L.interest_rate_bps)}% · ${L.term_months} mo · started ${fdate(L.first_payment_date)}
       ${L.beneficial_interest_pct?' · BI '+L.beneficial_interest_pct+'%':''}</p>
     <p class="note" style="margin-top:4px">${f.tenant?('📧 '+esc(f.tenant.email)+(f.tenant.phone?' · 📱 '+esc(f.tenant.phone):'')):''} <span id="tb-loc"></span></p>
     <div class="actions">
@@ -4776,7 +4801,7 @@ function editLoanModal(){
       <div class="field"><label>Amount financed ($)</label><input id="el-prin" type="number" step="0.01" value="${d(L.principal_cents)}"></div>
     </div>
     <div class="grid3">
-      <div class="field"><label>Interest rate (%)</label><input id="el-rate" type="number" step="0.001" value="${(L.interest_rate_bps/100).toFixed(3)}"></div>
+      <div class="field"><label>Interest rate (%)</label><input id="el-rate" type="number" step="any" value="${rateStr(L.interest_rate_bps)}"></div>
       <div class="field"><label>Term (months)</label><input id="el-term" type="number" value="${L.term_months}"></div>
       <div class="field"><label>P &amp; I payment ($)</label><input id="el-pay" type="number" step="0.01" value="${d(L.payment_cents)}">
         <div class="note" style="margin-top:5px"><label style="font-weight:400;display:flex;gap:6px;align-items:center">
@@ -4829,7 +4854,7 @@ async function saveLoanEdits(){
   try{
     const body={
       sale_price_cents:C('el-sale'), down_payment_cents:C('el-down'), principal_cents:C('el-prin'),
-      interest_rate_bps:Math.round(parseFloat($('el-rate').value||0)*100),
+      interest_rate_bps:pctToBps($('el-rate').value||0),
       term_months:Number($('el-term').value)||1,
       first_payment_date:$('el-first').value||null, due_day:Number($('el-dueday').value)||1,
       loan_type:$('el-type').value, status:$('el-status').value,
