@@ -3405,8 +3405,26 @@ app.put('/api/admin/loans/:id', adminOnly, (req, res) => {
   sets.push('final_payment_date=?'); vals.push(loanEngine.finalPaymentDate(first, term2));
 
   if (sets.length) run(`UPDATE loans SET ${sets.join(',')} WHERE id=?`, ...vals, loan.id);
+  if (b.status === 'cancelled') unstampSoldIfNoLoans(loan.property_id);
   res.json(loanFull(get('SELECT * FROM loans WHERE id=?', loan.id)));
 });
+// Selling stamps the property 'sold'. When the loan that made it sold goes away —
+// deleted, purged, cancelled — and no live loan remains, the stamp has to come off,
+// or the dashboard keeps counting a sale that no longer exists.
+function unstampSoldIfNoLoans(propertyId) {
+  run(`UPDATE properties SET status='owned', phase='ready', phase_updated_at=datetime('now')
+       WHERE id=? AND status='sold'
+         AND NOT EXISTS (SELECT 1 FROM loans WHERE property_id=? AND status IN ('active','paid_off','default'))`,
+    propertyId, propertyId);
+}
+// Self-heal on boot: any property already stranded as 'sold' with nothing behind the
+// claim goes back to owned. Idempotent; fixes rows the old behavior left wrong.
+try {
+  const healed = all(`SELECT id FROM properties WHERE status='sold'
+    AND NOT EXISTS (SELECT 1 FROM loans WHERE loans.property_id=properties.id AND loans.status IN ('active','paid_off','default'))`);
+  for (const hp of healed) { unstampSoldIfNoLoans(hp.id); console.log(`Property ${hp.id}: cleared a 'sold' stamp with no loan behind it`); }
+} catch (e) { console.error('Sold-stamp heal:', e.message); }
+
 // Deleting a loan comes in two strengths. A loan with no history deletes with a typed
 // DELETE — that is a typo being corrected. A loan WITH history — payments, journal
 // entries, notices — can also be removed (test data happens, wrong buyer happens), but
@@ -3440,6 +3458,7 @@ app.delete('/api/admin/loans/:id', adminOnly, (req, res, next) => {
       clearChildren();
       run('UPDATE documents SET loan_id=NULL, property_id=COALESCE(property_id, ?) WHERE loan_id=?', loan.property_id, loan.id);
       run('DELETE FROM loans WHERE id=?', loan.id);
+      unstampSoldIfNoLoans(loan.property_id);
       return res.json({ ok: true });
     }
 
@@ -3501,6 +3520,7 @@ app.delete('/api/admin/loans/:id', adminOnly, (req, res, next) => {
       run('DELETE FROM documents WHERE id=?', d.id);
     }
     run('DELETE FROM loans WHERE id=?', loan.id);
+    unstampSoldIfNoLoans(loan.property_id);
     res.json({ ok: true, purged: true, backup: `Backup filed on the property's documents` });
   } catch (e) { next(e); }
 });

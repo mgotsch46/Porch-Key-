@@ -646,6 +646,25 @@ async function main() {
     ok(r.status === 200, 'the receipt opens in the viewer');
   }
 
+  console.log('— the sold stamp comes off when the loan goes');
+  {
+    const sp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '30 Stamp St', city: 'Flint', state: 'MI', zip: '48503' }) });
+    // Sell it through the sell flow so the property is stamped sold.
+    r = await req(`/api/admin/properties/${sp.json.id}/sell`, { method: 'POST', body: JSON.stringify({
+      buyer_name: 'Stamp Buyer', buyer_email: 'stamp@test.com',
+      loan_type: 'land_contract', sale_price_cents: 6000000,
+      down_payment_cents: 0, principal_cents: 6000000, interest_rate_bps: 900, term_months: 120,
+      first_payment_date: '2099-01-01' }) });
+    const soldLoan = r.json.loan_id;
+    let pv = await req('/api/admin/properties/' + sp.json.id);
+    ok(pv.json.property.status === 'sold', 'selling stamps the property sold');
+    // Delete the loan (no history — first payment far future); the stamp comes off.
+    r = await req('/api/admin/loans/' + soldLoan, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+    ok(r.status === 200, 'the loan deletes');
+    pv = await req('/api/admin/properties/' + sp.json.id);
+    ok(pv.json.property.status !== 'sold', 'the sold stamp is gone — the dashboard stops counting a sale that never happened');
+  }
+
   console.log('— purging a whole property (the test-property reset)');
   {
     // A property with the full mess: TB loan with payments and notices, a PML with a
