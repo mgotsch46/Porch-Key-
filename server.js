@@ -1739,6 +1739,7 @@ app.get('/api/admin/properties/:id', adminOnly, (req, res) => {
   res.json({
     property: prop,
     costs: all('SELECT * FROM property_costs WHERE property_id=? ORDER BY cost_date DESC, id DESC', prop.id),
+    recurring_costs: all('SELECT * FROM recurring_costs WHERE property_id=? AND active=1 ORDER BY next_date', prop.id),
     cost_labels: COST_LABELS,
     basis,
     returns: reports.propertyReturns(req.companyId, prop.id),
@@ -1790,11 +1791,61 @@ app.put('/api/admin/properties/:id/details', adminOnly, (req, res) => {
   res.json(get('SELECT * FROM properties WHERE id=?', p.id));
 });
 
+// ---------- recurring costs ----------
+// The rule says "every week/fortnight/month/quarter/year"; the sweep turns each due
+// date into an ordinary property_costs row. Everything downstream — cost basis,
+// margins, the books — sees plain cost rows and needs no idea recurrence exists.
+const CADENCES = ['weekly', 'biweekly', 'monthly', 'quarterly', 'annually'];
+function advanceCadence(dateStr, cadence) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  if (cadence === 'weekly') d.setUTCDate(d.getUTCDate() + 7);
+  else if (cadence === 'biweekly') d.setUTCDate(d.getUTCDate() + 14);
+  else return loanEngine.addMonthsUTC(d, cadence === 'monthly' ? 1 : cadence === 'quarterly' ? 3 : 12)
+    .toISOString().slice(0, 10);
+  return d.toISOString().slice(0, 10);
+}
+function runRecurringCosts() {
+  const due = all("SELECT * FROM recurring_costs WHERE active=1 AND next_date <= ?", today());
+  for (const rule of due) {
+    let next = rule.next_date, made = 0;
+    // Cap the catch-up: a rule created a year back does not get to flood the ledger
+    // in one boot beyond a plausible backlog.
+    while (next <= today() && made < 120) {
+      if (rule.end_date && next > rule.end_date) break;
+      run(`INSERT INTO property_costs (company_id, property_id, category, description, vendor,
+             amount_cents, cost_date, created_by) VALUES (?,?,?,?,?,?,?,?)`,
+        rule.company_id, rule.property_id, rule.category, rule.description,
+        rule.vendor, rule.amount_cents, next, rule.created_by);
+      made++;
+      next = advanceCadence(next, rule.cadence);
+    }
+    const retired = rule.end_date && next > rule.end_date;
+    run('UPDATE recurring_costs SET next_date=?, active=? WHERE id=?', next, retired ? 0 : 1, rule.id);
+    if (made) console.log(`Recurring cost "${rule.description}" posted ${made} occurrence(s) on property ${rule.property_id}`);
+  }
+}
+setInterval(() => { try { runRecurringCosts(); } catch (e) { console.error('Recurring costs:', e.message); } }, 6 * 60 * 60 * 1000);
+setTimeout(() => { try { runRecurringCosts(); } catch (e) { console.error('Recurring costs:', e.message); } }, 7000);
+
 app.post('/api/admin/properties/:id/costs', adminOnly, (req, res) => {
   const p = ownedProperty(req, req.params.id);
   if (!p) return res.status(404).json({ error: 'Not found' });
-  const { category, description, vendor, amount_cents, cost_date } = req.body || {};
+  const { category, description, vendor, amount_cents, cost_date, cadence, end_date } = req.body || {};
   if (!description || !amount_cents) return res.status(400).json({ error: 'Description and amount required' });
+
+  // A cadence turns this into a rule. The first occurrence lands on the given date
+  // (materialized immediately if that date has arrived), then the schedule takes over.
+  if (cadence) {
+    if (!CADENCES.includes(cadence)) return res.status(400).json({ error: 'Repeat must be weekly, biweekly, monthly, quarterly or annually' });
+    if (end_date && end_date < (cost_date || today())) return res.status(400).json({ error: 'The end date is before the start date' });
+    const r = run(`INSERT INTO recurring_costs (company_id, property_id, category, description, vendor,
+        amount_cents, cadence, next_date, end_date, created_by) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      req.companyId, p.id, category || 'other', description, vendor || null,
+      amount_cents, cadence, cost_date || today(), end_date || null, req.user.id);
+    runRecurringCosts();
+    return res.json({ recurring: true, rule: get('SELECT * FROM recurring_costs WHERE id=?', r.lastInsertRowid) });
+  }
+
   const r = run(`INSERT INTO property_costs (company_id, property_id, category, description,
       vendor, amount_cents, cost_date, created_by) VALUES (?,?,?,?,?,?,?,?)`,
     req.companyId, p.id, category || 'other', description, vendor || null,
@@ -1804,6 +1855,14 @@ app.post('/api/admin/properties/:id/costs', adminOnly, (req, res) => {
     run('UPDATE properties SET purchase_price_cents=? WHERE id=?', amount_cents, p.id);
   }
   res.json(get('SELECT * FROM property_costs WHERE id=?', r.lastInsertRowid));
+});
+
+// Stopping a rule keeps every cost it already posted — those happened.
+app.delete('/api/admin/recurring-costs/:id', adminOnly, (req, res) => {
+  const rule = get('SELECT * FROM recurring_costs WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!rule) return res.status(404).json({ error: 'Not found' });
+  run('DELETE FROM recurring_costs WHERE id=?', rule.id);
+  res.json({ ok: true });
 });
 
 app.delete('/api/admin/costs/:id', adminOnly, (req, res) => {

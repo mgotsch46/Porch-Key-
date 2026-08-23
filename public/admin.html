@@ -1598,7 +1598,19 @@ async function openProp(id){
       <div class="stat"><div class="n">${fmt(f.returns.annual_run_rate_cents)}</div><div class="l">Annual cash flow</div></div>
       <div class="stat"><div class="n" style="color:${f.returns.net_profit_to_date_cents>=0?'var(--brand)':'var(--red)'}">${fmt(f.returns.net_profit_to_date_cents)}</div><div class="l">Net profit to date</div></div>
     </div></div>`:''}
-  <div class="card"><h2>Costs</h2><div style="overflow-x:auto"><table>
+  <div class="card"><h2>Costs</h2>
+    ${(f.recurring_costs&&f.recurring_costs.length)?`
+    <div style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px;background:#fafbfc">
+      <b style="font-size:13px">🔁 Repeating</b>
+      ${f.recurring_costs.map(rc=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;font-size:13px">
+          <span>${COST_ICONS[rc.category]||'•'} ${esc(rc.description)}${rc.vendor?` <span class="note">· ${esc(rc.vendor)}</span>`:''}
+            — ${fmt(rc.amount_cents)} <span class="note">${{weekly:'every week',biweekly:'every 2 weeks',monthly:'monthly',quarterly:'quarterly',annually:'annually'}[rc.cadence]}
+            · next ${fdate(rc.next_date)}${rc.end_date?` · until ${fdate(rc.end_date)}`:''}</span></span>
+          <button class="small warn" onclick="stopRecurringCost(${rc.id})">Stop</button>
+        </div>`).join('')}
+    </div>`:''}
+    <div style="overflow-x:auto"><table>
     <thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Vendor</th><th class="right">Amount</th><th></th></tr></thead>
     <tbody>${f.costs.map(c=>`<tr><td>${fdate(c.cost_date)}</td>
       <td>${COST_ICONS[c.category]||'•'} ${esc(L[c.category]||c.category)}</td>
@@ -2228,6 +2240,14 @@ function costModal(pid){
       <div class="field"><label>Amount ($)</label><input id="ct-amt" type="number" step="0.01"></div>
       <div class="field"><label>Date</label><input id="ct-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
       <div class="field"><label>Vendor / paid to</label><input id="ct-vendor"></div>
+      <div class="field"><label>Repeats</label><select id="ct-cadence" onchange="$('ct-end-wrap').style.display=this.value?'':'none'">
+        <option value="">One time</option>
+        <option value="weekly">Weekly</option><option value="biweekly">Every 2 weeks</option>
+        <option value="monthly">Monthly</option><option value="quarterly">Quarterly</option>
+        <option value="annually">Annually</option></select></div>
+      <div class="field" id="ct-end-wrap" style="display:none"><label>Until <span class="note">— optional</span></label>
+        <input id="ct-end" type="date">
+        <span class="note">Leave blank to run until you stop it. The date above is the first occurrence.</span></div>
     </div>
     <div class="field"><label>Description</label><input id="ct-desc" placeholder="e.g. Roof repair, weekly check-in, title fee"></div>
     <div id="ct-err" class="err hidden"></div>
@@ -2236,6 +2256,7 @@ function costModal(pid){
 async function addCost(pid){
   try{
     await api(`/api/admin/properties/${pid}/costs`,{method:'POST',body:JSON.stringify({
+      cadence:$('ct-cadence').value||undefined, end_date:$('ct-end').value||undefined,
       category:$('ct-cat').value, description:$('ct-desc').value, vendor:$('ct-vendor').value,
       amount_cents:Math.round(parseFloat($('ct-amt').value)*100), cost_date:$('ct-date').value })});
     closeModal(); openProp(pid);
@@ -2244,6 +2265,10 @@ async function addCost(pid){
 async function delCost(id){
   if(!confirm('Remove this cost?'))return;
   await api('/api/admin/costs/'+id,{method:'DELETE'}); openProp(currentPropId);
+}
+async function stopRecurringCost(id){
+  if(!confirm('Stop this repeating cost? Costs it already posted stay on the books.'))return;
+  await api('/api/admin/recurring-costs/'+id,{method:'DELETE'}); openProp(currentPropId);
 }
 // Property uploads now go through the documents page — openDocsPage({property_id}).
 async function prefillBuyer(prefix){

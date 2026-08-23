@@ -530,6 +530,28 @@ addColumnIfMissing('notices', 'lob_tracking', 'TEXT');
 addColumnIfMissing('notices', 'lob_status', 'TEXT');
 addColumnIfMissing('notices', 'lob_expected', 'TEXT');
 addColumnIfMissing('notices', 'lob_cost_cents', 'INTEGER');
+// A cost that happens on a schedule — lawn care weekly, insurance quarterly. The rule
+// lives here; the money lives in property_costs, one materialized row per occurrence,
+// so the cost basis and the books see ordinary cost rows and nothing changes downstream.
+db.exec(`
+CREATE TABLE IF NOT EXISTS recurring_costs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  property_id INTEGER NOT NULL REFERENCES properties(id),
+  category TEXT NOT NULL DEFAULT 'other' CHECK (category IN
+    ('purchase','closing','filing','rehab','bog','insurance','taxes','utilities','marketing','legal','other')),
+  description TEXT NOT NULL,
+  vendor TEXT,
+  amount_cents INTEGER NOT NULL,
+  cadence TEXT NOT NULL CHECK (cadence IN ('weekly','biweekly','monthly','quarterly','annually')),
+  next_date TEXT NOT NULL,           -- the next occurrence to materialize
+  end_date TEXT,                     -- optional; the rule retires itself after this
+  active INTEGER NOT NULL DEFAULT 1,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_recurring_costs_due ON recurring_costs(active, next_date);
+`);
 // Trust documents were briefly a buyer-visible bucket. They are the ownership
 // structure, not the buyer's file — pull back anything already shared. Idempotent.
 try { run("UPDATE documents SET visible_to_tenant=0 WHERE category='trust_docs' AND visible_to_tenant=1"); } catch {}

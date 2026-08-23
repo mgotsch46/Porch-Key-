@@ -426,6 +426,46 @@ async function main() {
   r = await req('/api/admin/loans/' + loanId);
   ok(r.status === 200 && r.json.ledger.length > 0, 'the real loan and its ledger are untouched');
 
+  console.log('— recurring costs');
+  {
+    const rp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '5 Repeat Rd', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const rpid = rp.json.id;
+    // A weekly rule started 3 weeks ago materializes the backlog immediately: the
+    // start date plus every week since — 4 rows, not 1 and not a flood.
+    const start = new Date(Date.now() - 21 * 86400000).toISOString().slice(0, 10);
+    r = await req(`/api/admin/properties/${rpid}/costs`, { method: 'POST', body: JSON.stringify({
+      category: 'marketing', description: 'Weekly check-in', amount_cents: 5000, cost_date: start, cadence: 'weekly' }) });
+    ok(r.status === 200 && r.json.recurring, 'weekly rule created');
+    let pr = await req('/api/admin/properties/' + rpid);
+    ok(pr.json.costs.filter(c => c.description === 'Weekly check-in').length === 4, 'three weeks of backlog + today-ish = 4 occurrences');
+    ok(pr.json.recurring_costs.length === 1 && pr.json.recurring_costs[0].next_date > start, 'rule advanced past what it posted');
+    // Cost basis counts them like any hand-entered cost.
+    ok(pr.json.all_in_cents >= 20000, 'materialized occurrences count in the all-in cost');
+    // An end date retires the rule once passed.
+    r = await req(`/api/admin/properties/${rpid}/costs`, { method: 'POST', body: JSON.stringify({
+      category: 'marketing', description: 'Short-lived', amount_cents: 1000, cost_date: start, cadence: 'weekly',
+      end_date: new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10) }) });
+    ok(r.status === 200, 'rule with an end date created');
+    pr = await req('/api/admin/properties/' + rpid);
+    const shortRows = pr.json.costs.filter(c => c.description === 'Short-lived').length;
+    ok(shortRows === 2, `end date honoured — only the occurrences inside the window posted (${shortRows})`);
+    ok(!pr.json.recurring_costs.some(rc => rc.description === 'Short-lived'), 'expired rule retired itself');
+    // Nonsense cadence refused; stopping keeps history.
+    r = await req(`/api/admin/properties/${rpid}/costs`, { method: 'POST', body: JSON.stringify({
+      category: 'marketing', description: 'X', amount_cents: 100, cadence: 'fortnightly-ish' }) });
+    ok(r.status === 400, 'unknown cadence refused');
+    const ruleId = pr.json.recurring_costs[0].id;
+    r = await req('/api/admin/recurring-costs/' + ruleId, { method: 'DELETE' });
+    ok(r.status === 200, 'rule stopped');
+    pr = await req('/api/admin/properties/' + rpid);
+    ok(pr.json.recurring_costs.length === 0, 'no active rules left');
+    ok(pr.json.costs.filter(c => c.description === 'Weekly check-in').length === 4, 'posted costs survive the stop');
+    // Cadence arithmetic: monthly from Jan 31 clamps to short months rather than drifting.
+    const eng = require('./loan.js');
+    const feb = eng.addMonthsUTC(new Date('2026-01-31T00:00:00Z'), 1).toISOString().slice(0, 10);
+    ok(feb === '2026-02-28', 'monthly cadence clamps Jan 31 → Feb 28');
+  }
+
   console.log('— deleting a loan that has attachments but no money history');
   {
     // The bug this guards: foreign keys are enforced, and a loan with a document, a
