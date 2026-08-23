@@ -27,6 +27,7 @@ const backfill = require('./backfill');
 backfill.maybeRunOnBoot();
 
 const pdfDoc = require('./pdf');
+const lob = require('./lob');
 const escrow = require('./escrow');
 escrow.initSchema();
 
@@ -396,6 +397,52 @@ async function sendLadderNotice({ rule, loan, property, tenant, co, status, dueD
     }
   }
 
+  // 5. Certified mail, for the 30-day rung only. That is the notice a forfeiture
+  //    case leans on, and "certified" is what turns it from a claim into a tracking
+  //    number with delivery scans. The idempotency key means a sweep that crashes and
+  //    reruns cannot mail — or bill — the same notice twice.
+  if (rule.stage === 'late_30' && lob.lobEnabled(co)) {
+    if (!property || !property.address) {
+      delivery.mail = { ok: false, error: 'No property address to mail to' };
+    } else {
+      try {
+        const sent = await lob.sendCertifiedLetter(co, {
+          to: { name: (tenant && tenant.name) || 'Occupant', address_line1: property.address,
+                address_city: property.city, address_state: property.state, address_zip: property.zip },
+          subject: wording.subject, body: wording.body,
+          description: `30-day notice — loan ${loan.id} ${period}`,
+          idempotencyKey: `notice-${loan.id}-${rule.stage}-${period}`,
+        });
+        run(`UPDATE notices SET lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=? WHERE id=?`,
+          sent.id, sent.tracking_number, sent.expected_delivery_date, sent.cost_cents || null, noticeId);
+        delivery.mail = { ok: true, lob_id: sent.id, tracking: sent.tracking_number, test: sent.test };
+
+        // A copy of what was mailed, filed on the loan. Evidence, not correspondence
+        // for the buyer — they got the notice itself through every other channel.
+        try {
+          const pdfBuf = pdfDoc.letter({ company: co, subject: wording.subject, bodyText: wording.body, sentAt: today() });
+          const stored = crypto.randomUUID() + '.pdf';
+          fs.writeFileSync(path.join(UPLOAD_DIR, stored), pdfBuf);
+          run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+               VALUES (?,?,?,?,?,?,?,?,?,0)`,
+            loan.company_id, loan.id, loan.property_id, 'other', 'private',
+            `Certified mail — ${rule.label} (${sent.tracking_number || sent.id})`,
+            `certified-${rule.stage}-${period}.pdf`, stored, 'application/pdf');
+        } catch (e) { console.error('Certified copy not filed:', e.message); }
+
+        // The pass-through: what Lob charges becomes a collection fee on the loan,
+        // tagged with the tracking number so the ledger line is auditable. Only when
+        // a real cost is configured, and never for test-mode letters.
+        if (sent.cost_cents > 0 && !sent.test) {
+          run(`INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo)
+               VALUES (?,?, 'fee', ?, ?)`, loan.id, today(), -sent.cost_cents,
+            `Collection fee — certified mail, 30-day notice (${sent.tracking_number || sent.id})`);
+          run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', sent.cost_cents, loan.id);
+        }
+      } catch (e) { delivery.mail = { ok: false, error: e.message }; }
+    }
+  }
+
   run('UPDATE notices SET delivery_json=? WHERE id=?', JSON.stringify(delivery), noticeId);
   const failed = Object.entries(delivery).filter(([, v]) => !v.ok).map(([k]) => k);
   console.log(`${rule.label} sent for loan ${loan.id} (${period}, day ${daysPast})` +
@@ -435,15 +482,17 @@ async function runNoticeSweep() {
       // and that is a judgement rather than a rule: a token amount should not be able to
       // silence a real default for ever. So it buys quiet for a set number of days, which
       // each company sets for itself and which is zero unless somebody turns it on.
-      // A minimum stops the obvious abuse of that: without one, a dollar buys the same
-      // quiet as eight hundred, and can be repeated for ever. Payments inside the window
-      // are summed, so paying twice in a week counts as what it adds up to.
-      const pauseDays = Number(co0 && co0.notice_pause_days) || 0;
+      // The pause is a per-loan exception — an arrangement made with one buyer about
+      // one house. A loan with no rule runs on normal timing; nothing is inherited
+      // from a company-wide setting. The minimum stops the obvious abuse: without one,
+      // a dollar would buy the same quiet as eight hundred, repeatably. Payments
+      // inside the window are summed, so paying twice in a week counts as its total.
+      const pauseDays = Number(loan.notice_pause_days) || 0;
       if (pauseDays > 0) {
         const paid = get(`SELECT COALESCE(SUM(amount_cents),0) AS c FROM ledger
           WHERE loan_id=? AND type='payment' AND entry_date >= date('now', ?)`,
           loan.id, `-${pauseDays} days`);
-        const minCents = Number(co0.notice_pause_min_cents) || 0;
+        const minCents = Number(loan.notice_pause_min_cents) || 0;
         if (paid && paid.c > 0 && paid.c >= minCents) continue;
       }
 
@@ -2027,41 +2076,44 @@ app.get('/api/admin/loans/:id/notice-ladder', adminOnly, (req, res, next) => {
       legal_hold_at: loan.legal_hold_at,
       legal_hold_reason: loan.legal_hold_reason,
       grace_days: loan.grace_days,
+      pause_days: Number(loan.notice_pause_days) || 0,
+      pause_min_cents: Number(loan.notice_pause_min_cents) || 0,
       sent: all(`SELECT id, type, stage, period, subject, days_past_due, sent_at, read_at, delivery_json
         FROM notices WHERE loan_id=? ORDER BY id DESC LIMIT 30`, loan.id),
     });
   } catch (e) { next(e); }
 });
 
-// Company-wide notice settings: the ladder as configured, and what a payment buys.
+// Company-wide notice settings: the ladder as configured. The payment pause used to
+// live here too; it is a per-loan exception now, set on the loan itself.
 app.get('/api/admin/notice-settings', adminOnly, (req, res, next) => {
   try {
     noticeRules.seedLadder(req.companyId);
-    const c = get('SELECT notice_pause_days, notice_pause_min_cents FROM companies WHERE id=?', req.companyId);
     res.json({
       rules: noticeRules.rulesFor(req.companyId),
-      pause_days: Number(c && c.notice_pause_days) || 0,
-      pause_min_cents: Number(c && c.notice_pause_min_cents) || 0,
       is_owner: req.user.role === 'owner',
     });
   } catch (e) { next(e); }
 });
 
-app.put('/api/admin/notice-settings', ownerOnly, (req, res, next) => {
+// The pause on one loan: an arrangement with one buyer, visible where the loan is.
+app.put('/api/admin/loans/:id/notice-pause', adminOnly, (req, res, next) => {
   try {
+    const loan = ownedLoan(req, req.params.id);
+    if (!loan) return res.status(404).json({ error: 'Not found' });
     const b = req.body || {};
     const days = Math.max(0, Math.min(365, Math.round(Number(b.pause_days) || 0)));
     const minCents = Math.max(0, Math.round(Number(b.pause_min_cents) || 0));
-    // A pause with no floor lets any amount at all buy quiet, and buy it again next week.
-    // Rather than silently accept a setting that behaves like a bug, say so.
+    // A pause with no floor lets any amount at all buy quiet, and buy it again next
+    // week. Rather than silently accept a setting that behaves like a bug, say so.
     if (days > 0 && minCents <= 0) {
       return res.status(400).json({
         error: 'Set a minimum payment as well. Without one, a $1 payment pauses notices ' +
                'for the same number of days as a $1,000 one, and can do it again every time.',
       });
     }
-    run('UPDATE companies SET notice_pause_days=?, notice_pause_min_cents=? WHERE id=?',
-      days, days > 0 ? minCents : 0, req.companyId);
+    run('UPDATE loans SET notice_pause_days=?, notice_pause_min_cents=? WHERE id=?',
+      days > 0 ? days : null, days > 0 ? minCents : null, loan.id);
     res.json({ pause_days: days, pause_min_cents: days > 0 ? minCents : 0 });
   } catch (e) { next(e); }
 });
@@ -2518,6 +2570,59 @@ app.delete('/api/admin/email', ownerOnly, (req, res) => {
        email_legal_user=NULL, email_legal_pass=NULL,
        email_provider='smtp', email_api_key=NULL, email_webhook_secret=NULL WHERE id=?`, req.companyId);
   res.json({ ok: true });
+});
+
+// ---------- certified mail (Lob) ----------
+app.get('/api/admin/lob', adminOnly, (req, res) => {
+  const co = myCompany(req);
+  res.json({
+    connected: lob.lobEnabled(co),
+    key_set: !!co.lob_api_key,
+    test_mode: /^test_/.test(co.lob_api_key || ''),
+    cost_cents: Number(co.lob_cost_cents) || 0,
+    mail_address_line1: co.mail_address_line1 || null,
+    mail_address_city: co.mail_address_city || null,
+    mail_address_state: co.mail_address_state || null,
+    mail_address_zip: co.mail_address_zip || null,
+  });
+});
+app.put('/api/admin/lob', ownerOnly, async (req, res, next) => {
+  try {
+    const co = myCompany(req);
+    const b = req.body || {};
+    const key = String(b.api_key || '').trim() || co.lob_api_key;
+    if (!key) return res.status(400).json({ error: 'A Lob API key is needed' });
+    for (const f of ['line1', 'city', 'state', 'zip']) {
+      if (!String(b['mail_address_' + f] || '').trim()) {
+        return res.status(400).json({ error: 'A full return address is needed — certified mail has to say who it is from.' });
+      }
+    }
+    await lob.verifyKey(key);                                 // fail before saving
+    run(`UPDATE companies SET lob_api_key=?, lob_cost_cents=?,
+           mail_address_line1=?, mail_address_city=?, mail_address_state=?, mail_address_zip=? WHERE id=?`,
+      key, Math.max(0, Math.round(Number(b.cost_cents) || 0)),
+      String(b.mail_address_line1).trim(), String(b.mail_address_city).trim(),
+      String(b.mail_address_state).trim().toUpperCase().slice(0, 2), String(b.mail_address_zip).trim(),
+      req.companyId);
+    res.json({ ok: true, test_mode: /^test_/.test(key) });
+  } catch (e) { next(e); }
+});
+app.delete('/api/admin/lob', ownerOnly, (req, res) => {
+  run('UPDATE companies SET lob_api_key=NULL WHERE id=?', req.companyId);
+  res.json({ ok: true });
+});
+// Ask USPS (via Lob) where a certified letter is now, and remember the answer.
+app.get('/api/admin/notices/:id/mail-status', adminOnly, async (req, res, next) => {
+  try {
+    const n = get(`SELECT n.* FROM notices n JOIN loans l ON l.id=n.loan_id
+                   WHERE n.id=? AND l.company_id=?`, req.params.id, req.companyId);
+    if (!n) return res.status(404).json({ error: 'Not found' });
+    if (!n.lob_id) return res.status(400).json({ error: 'This notice did not go by certified mail' });
+    const s = await lob.getLetterStatus(myCompany(req), n.lob_id);
+    run('UPDATE notices SET lob_status=?, lob_tracking=?, lob_expected=? WHERE id=?',
+      s.status, s.tracking_number, s.expected_delivery_date, n.id);
+    res.json(s);
+  } catch (e) { next(e); }
 });
 
 // Send a real email to yourself to prove the path works. `identity` lets you test the

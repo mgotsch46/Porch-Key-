@@ -353,6 +353,14 @@ th{text-align:left;color:var(--mut);font-weight:700;padding:10px 8px;border-bott
 td{padding:12px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
 tr.click{cursor:pointer} tr.click:hover{background:var(--brand-pale)}
 .right{text-align:right}
+/* Uniform action tiles for a page's secondary actions. Auto-fit keeps them in neat
+   columns and wraps cleanly at phone widths; min 44px tall for thumbs. */
+.actgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px}
+.actgrid button{min-height:44px;padding:10px 12px;font-size:13.5px;border-radius:11px;
+  background:#fff;border:1px solid var(--line);font-weight:600;text-align:center;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.actgrid button:hover{background:var(--brand-pale);border-color:var(--brand)}
+.actgrid button.danger{color:var(--red);background:var(--red-pale);border-color:#F3D2D2}
 .pill{display:inline-block;padding:3px 11px;border-radius:20px;font-size:11.5px;font-weight:700}
 .pill.ok{background:var(--brand-pale);color:var(--brand)}
 .pill.due{background:var(--red-pale);color:var(--red)}
@@ -398,8 +406,8 @@ aside button.signout{margin-top:6px;color:#7FA3B2}
   border-radius:20px 20px 0 0;padding:18px 16px calc(20px + env(safe-area-inset-bottom));
   max-height:78vh;overflow-y:auto}
 /* The bar you drag down to dismiss. Standard phone gesture, so it needs no label. */
-#more-sheet .grabber{padding:2px 0 12px;margin:-6px 0 0;cursor:grab;touch-action:none;
-  display:flex;justify-content:center}
+#more-sheet .grabber{padding:14px 0 16px;margin:-14px 0 0;cursor:grab;touch-action:none;
+  display:flex;justify-content:center}  /* generous hit area — the visible bar is small, the target is not */
 #more-sheet .grabber span{display:block;width:44px;height:5px;border-radius:3px;background:#CBD8D2}
 #more-sheet .grabber:active{cursor:grabbing}
 #more-sheet .grabber:active span{background:var(--mut)}
@@ -598,6 +606,16 @@ a{color:var(--brand);font-weight:600}
     <section id="pg-loan" class="hidden">
       <button class="small" onclick="nav('loans')">← All loans</button>
       <div id="loan-detail" style="margin-top:12px"></div>
+    </section>
+
+    <!-- LEDGER (full page, reached from a loan) -->
+    <section id="pg-ledger" class="hidden">
+      <button class="small" onclick="openLoan(currentLoanId)">← Back to the loan</button>
+      <h1 style="margin-top:12px">Ledger <span id="ledger-title" class="note" style="font-weight:400;font-size:15px"></span></h1>
+      <div class="card"><div style="overflow-x:auto"><table>
+        <thead><tr><th>Date</th><th>Type</th><th>Method</th><th class="right">Amount</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Escrow</th><th class="right">Fees</th><th class="right">Balance after</th><th>Memo</th></tr></thead>
+        <tbody id="ledger-rows"></tbody>
+      </table></div></div>
     </section>
 
     <!-- DOCUMENTS (full page, reached from a loan or a property) -->
@@ -1054,6 +1072,11 @@ a{color:var(--brand);font-weight:600}
         <h2>&#9200; Late notices</h2>
         <div id="set-notices"><p class="note">Loading…</p></div>
       </div>
+
+      <div class="card">
+        <h2>&#128238; Certified mail</h2>
+        <div id="set-lob"><p class="note">Loading…</p></div>
+      </div>
       <div class="card">
         <h2>Buyer app</h2>
         <p class="note">Your tenant buyers use <b>PorchPay</b> at <a id="tb-url" href="/" target="_blank">this address</a> — they can add it to their phone home screen. Public pages: <a href="/privacy" target="_blank">Privacy</a> · <a href="/terms" target="_blank">Terms</a> · <a href="/support" target="_blank">Support</a></p>
@@ -1339,7 +1362,7 @@ async function doLogin(){
 async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
 
 function nav(pg){
-  for(const p of ['dash','loans','loan','docs','pml','pmld','tbs','props','propd','calc','tasks','cal','contacts','reports','templates','reminders','invites','exp','msgs','slips','settings']){
+  for(const p of ['dash','loans','loan','docs','ledger','pml','pmld','tbs','props','propd','calc','tasks','cal','contacts','reports','templates','reminders','invites','exp','msgs','slips','settings']){
     const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
   }
@@ -1347,7 +1370,7 @@ function nav(pg){
   if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();loadLinked();}
   if(pg==='msgs')openMsgs();
   if(pg==='pml'){loadProps();loadPML();}
-  if(pg==='settings'){loadSettings();loadTexting();loadEmail();loadBooks();loadNotices();wireAddressFields();}
+  if(pg==='settings'){loadSettings();loadTexting();loadEmail();loadBooks();loadNotices();loadLob();wireAddressFields();}
   if(pg==='invites')loadInvites();
   if(pg==='reports')loadReports();
   if(pg==='calc')calcSolve();
@@ -1512,18 +1535,22 @@ async function openProp(id){
       ${p.trust_name?' · '+esc(p.trust_name):''}</p>
     <div style="margin-top:12px">
       ${f.loan
-        ? `<button class="primary" onclick="openLoan(${f.loan.id})">Open the loan</button>
-           <span class="note" style="margin-left:10px">Sold to ${esc(f.tenant?f.tenant.name:'a buyer')}</span>`
-        : `<button class="primary" onclick="sellModal(${p.id})">💰 Sell to a tenant buyer</button>`}
-      <button class="small" onclick="costModal(${p.id})">+ Add cost</button>
-      <button class="small" onclick="openDocsPage({property_id:${p.id}})">📁 Documents</button>
-      <button class="small" onclick="pmlModal(${p.id})">+ Add PML loan</button>
-      <button class="small" onclick="propTermsModal(${p.id})">Owner &amp; payment terms</button>
-      <button class="small" onclick="editPropModal(${p.id})">✏️ Edit</button>
+        ? `<button class="primary" style="width:100%" onclick="openLoan(${f.loan.id})">Open the loan</button>
+           <p class="note" style="margin:6px 0 0">Sold to ${esc(f.tenant?f.tenant.name:'a buyer')}</p>`
+        : `<button class="primary" style="width:100%" onclick="sellModal(${p.id})">💰 Sell to a tenant buyer</button>`}
+    </div>
+    <!-- One tidy grid: everyday actions first, then housekeeping. Uniform tiles wrap
+         cleanly on a phone; the destructive pair sits last and Delete alone is red. -->
+    <div class="actgrid">
+      <button onclick="costModal(${p.id})">➕ Add cost</button>
+      <button onclick="openDocsPage({property_id:${p.id}})">📁 Documents</button>
+      <button onclick="pmlModal(${p.id})">🏦 Add PML loan</button>
+      <button onclick="propTermsModal(${p.id})">⚙️ Owner &amp; terms</button>
+      <button onclick="editPropModal(${p.id})">✏️ Edit</button>
       ${p.archived_at
-        ? `<button class="small" onclick="restoreProp(${p.id})">Restore</button>`
-        : `<button class="small" onclick="archivePropModal(${p.id})">Archive</button>`}
-      <button class="small warn" onclick="deletePropModal(${p.id})">Delete</button>
+        ? `<button onclick="restoreProp(${p.id})">↩️ Restore</button>`
+        : `<button onclick="archivePropModal(${p.id})">🗄️ Archive</button>`}
+      <button class="danger" onclick="deletePropModal(${p.id})">🗑️ Delete</button>
     </div>
     ${p.archived_at?`<div class="err" style="margin-top:10px"><b>Archived.</b>
       ${p.archived_reason?esc(p.archived_reason)+' · ':''}Hidden from your property list. Nothing was
@@ -2778,7 +2805,6 @@ async function loadNotices(){
       <td>${from(r)}</td><td class="note">${esc((r.channels||'').split(',').join(' · '))}</td>
     </tr>`).join('');
 
-  const on=d.pause_days>0;
   el.innerHTML=`
     <p class="note" style="margin-bottom:10px">Each rung fires once, on its own day, through every
       channel at the same time. Nothing fires inside a loan's grace period, and the whole ladder stops
@@ -2787,43 +2813,98 @@ async function loadNotices(){
       <thead><tr><th>When</th><th>Notice</th><th>Sent from</th><th>Channels</th></tr></thead>
       <tbody>${rows||'<tr><td colspan="4" class="note">No rules yet.</td></tr>'}</tbody>
     </table></div>
-
-    <h3 style="margin:18px 0 6px;font-size:14px">When a payment comes in</h3>
-    <p class="note" style="margin-bottom:12px">Paying the arrears in full always stops the notices —
-      the account simply stops being past due. This setting is only about <b>partial</b> payments.
-      It is <b>${on?'on':'off'}</b> right now${on?'':', so a partial payment does not delay anything'}.</p>
+    <p class="note" style="margin-top:12px"><b>Partial-payment pauses are set per loan</b>, not here —
+      they are one-off arrangements with one buyer about one house. Open the loan and set it under
+      Notices. A loan with no rule runs on normal timing.</p>`;
+}
+// The pause on one loan: how many days of quiet a partial payment buys, and the
+// minimum that payment has to be. NULL/0 = no rule, normal timing.
+function noticePauseModal(cur){
+  modal(`<h2>Partial-payment pause</h2>
+    <p class="note" style="margin-bottom:12px">Paying the arrears in full always stops the notices.
+      This is only about <b>partial</b> payments on <b>this loan</b> — a one-off arrangement,
+      affecting no other property.</p>
     <div id="np-err" class="err hidden"></div>
-    <div id="np-ok" class="okmsg hidden"></div>
     <div class="grid2">
       <div class="field"><label>Pause notices for</label>
-        <input id="np-days" type="number" min="0" max="365" value="${d.pause_days}">
-        <span class="note">days. 0 turns this off.</span></div>
+        <input id="np-days" type="number" min="0" max="365" value="${cur.pause_days||0}">
+        <span class="note">days. 0 removes the rule.</span></div>
       <div class="field"><label>…but only if they pay at least</label>
-        <input id="np-min" type="number" min="0" step="0.01" value="${(d.pause_min_cents/100).toFixed(2)}">
+        <input id="np-min" type="number" min="0" step="0.01" value="${((cur.pause_min_cents||0)/100).toFixed(2)}">
         <span class="note">dollars, counting everything paid inside the window.</span></div>
     </div>
-    ${d.is_owner
-      ? `<button class="primary" onclick="saveNoticePause()">Save</button>`
-      : `<p class="note">Only the owner can change this.</p>`}
-    <p class="note" style="margin-top:10px">A minimum is required whenever the pause is on. Without one
-      a $1 payment buys exactly as much quiet as a $1,000 one — and buys it again every time it clears,
-      which would let a real default go unchased indefinitely.</p>`;
+    <button class="primary" onclick="saveNoticePause()">Save</button>
+    <p class="note" style="margin-top:10px">A minimum is required whenever the pause is on — without one,
+      a $1 payment buys as much quiet as a $1,000 one, every time it clears.</p>`);
 }
 async function saveNoticePause(){
-  $('np-err').classList.add('hidden'); $('np-ok').classList.add('hidden');
+  $('np-err').classList.add('hidden');
   const dollars=Number($('np-min').value);
   try{
-    await api('/api/admin/notice-settings',{method:'PUT',body:JSON.stringify({
+    await api(`/api/admin/loans/${currentLoanId}/notice-pause`,{method:'PUT',body:JSON.stringify({
       pause_days:Number($('np-days').value)||0,
       pause_min_cents:Math.round((isFinite(dollars)?dollars:0)*100),
     })});
   }catch(e){
     $('np-err').textContent=e.message; $('np-err').classList.remove('hidden'); return;
   }
-  $('np-ok').textContent='Saved.'; $('np-ok').classList.remove('hidden');
-  loadNotices();
+  closeModal(); loadNoticesAdmin();
 }
 
+async function loadLob(){
+  const el=$('set-lob'); if(!el) return;
+  let d; try{ d=await api('/api/admin/lob'); }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  el.innerHTML=`
+    <p class="note" style="margin-bottom:12px">The <b>30-day notice</b> also goes out as a physical
+      <b>certified letter</b> through Lob — printed, mailed, and tracked by USPS. That tracking number is
+      what turns "we sent it" into proof. ${d.connected?'':'Not set up yet.'}</p>
+    ${d.connected?`
+      <p class="okmsg">Connected${d.test_mode?' — <b>test mode</b>: letters render and track but nothing is printed, mailed or charged':''}.</p>
+      <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+        <span class="note">Return address</span><b>${esc(d.mail_address_line1)}, ${esc(d.mail_address_city)}, ${esc(d.mail_address_state)} ${esc(d.mail_address_zip)}</b></div>
+      <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+        <span class="note">Cost passed to the buyer per letter</span><b>${d.cost_cents?fmt(d.cost_cents):'not set — no fee is charged'}</b></div>
+      ${d.test_mode?'<p class="note" style="margin-top:10px">When the wiring is proven, swap the test key for your live key here.</p>':''}
+    `:''}
+    <details style="margin:12px 0" ${d.connected?'':'open'}>
+      <summary class="note" style="cursor:pointer;font-weight:700">${d.connected?'Change settings':'Set this up'}</summary>
+      <div style="margin-top:10px">
+      <div class="field"><label>Lob API key</label>
+        <input id="lob-key" type="password" placeholder="${d.key_set?'saved — paste a new one to replace':'test_... to start, live_... when ready'}" autocomplete="off"></div>
+      <p class="note" style="margin-bottom:10px">Make a free account at <b>lob.com</b>, and start with the
+        <b>test</b> key from its dashboard — test letters cost nothing and prove everything.</p>
+      <div class="field"><label>Return address — street</label><input id="lob-l1" value="${esc(d.mail_address_line1||'')}"></div>
+      <div class="grid2">
+        <div class="field"><label>City</label><input id="lob-city" value="${esc(d.mail_address_city||'')}"></div>
+        <div class="field"><label>State / ZIP</label>
+          <div style="display:flex;gap:8px"><input id="lob-state" maxlength="2" style="width:70px" value="${esc(d.mail_address_state||'')}">
+          <input id="lob-zip" value="${esc(d.mail_address_zip||'')}"></div></div>
+      </div>
+      <div class="field"><label>What Lob charges you per certified letter ($)</label>
+        <input id="lob-cost" type="number" step="0.01" min="0" value="${(d.cost_cents/100).toFixed(2)}">
+        <p class="note" style="margin-top:4px">Lob's API does not report the price, so this figure becomes the
+          collection fee passed to the buyer. Check your Lob plan's certified-letter rate and match it exactly.
+          Leave 0 and no fee is charged. Test-mode letters never charge a fee either way.</p></div>
+      <div id="lob-err" class="err hidden"></div><div id="lob-ok" class="okmsg hidden"></div>
+      <button class="primary" onclick="saveLob()">Connect certified mail</button>
+      </div>
+    </details>`;
+}
+async function saveLob(){
+  $('lob-err').classList.add('hidden'); $('lob-ok').classList.add('hidden');
+  try{
+    await api('/api/admin/lob',{method:'PUT',body:JSON.stringify({
+      api_key:$('lob-key').value.trim(), cost_cents:Math.round((parseFloat($('lob-cost').value)||0)*100),
+      mail_address_line1:$('lob-l1').value, mail_address_city:$('lob-city').value,
+      mail_address_state:$('lob-state').value, mail_address_zip:$('lob-zip').value })});
+    $('lob-ok').textContent='Connected.'; $('lob-ok').classList.remove('hidden');
+    setTimeout(loadLob,900);
+  }catch(e){ $('lob-err').textContent=e.message; $('lob-err').classList.remove('hidden'); }
+}
+async function refreshMailStatus(noticeId){
+  try{ await api(`/api/admin/notices/${noticeId}/mail-status`); }catch(e){ alert(e.message); }
+  loadNoticesAdmin();
+}
 async function loadBooks(){
   const el=$('set-books'); if(!el) return;
   let d;
@@ -3105,7 +3186,8 @@ async function loadContacts(){
           · ${c.message_count} text${c.message_count===1?'':'s'}</div>
       </div>
       <div class="actions" style="margin:0;flex:0 0 auto">
-        ${c.phone?`<button class="small" onclick="contactThread(${c.id})">💬 Text</button>`:''}
+        ${c.phone?`<button class="small" onclick="contactThread(${c.id})">💬 Text</button>
+        <a class="small" style="text-decoration:none;display:inline-block" href="tel:${esc(String(c.phone).replace(/[^+\d]/g,''))}"><button class="small">📞 Call</button></a>`:''}
         <button class="small" onclick="contactModal(${c.id})">✏️ Edit</button>
         <button class="small" onclick="archiveContact(${c.id},${ctArchived?1:0})">${ctArchived?'Restore':'Archive'}</button>
       </div>
@@ -3227,7 +3309,8 @@ async function loadPropContacts(pid){
         ${c.last_message?`<div class="ctmeta">Last: ${esc(c.last_message.slice(0,70))}${c.last_message.length>70?'…':''}</div>`:''}
       </div>
       <div class="actions" style="margin:0;flex:0 0 auto">
-        ${c.phone?`<button class="small" onclick="contactThread(${c.id},${pid})">💬 Text</button>`:''}
+        ${c.phone?`<button class="small" onclick="contactThread(${c.id},${pid})">💬 Text</button>
+        <a class="small" style="text-decoration:none;display:inline-block" href="tel:${esc(String(c.phone).replace(/[^+\d]/g,''))}"><button class="small">📞 Call</button></a>`:''}
         <button class="small warn" onclick="unlinkContact(${pid},${c.id})">✕</button>
       </div>
     </div>`).join('')
@@ -3554,6 +3637,19 @@ async function sendTemplate(){
 let calcTimer=null, CALC_LAST=null;
 // The field the user last cleared is the one we solve for, so typing over an answer
 // hands the question to whatever is now empty.
+// The full ledger, on its own page. Rendered from the loan already in memory — the
+// same rows the loan page trims to three.
+function openLedgerPage(){
+  if(!LOAN_F) return;
+  nav('ledger');
+  $('ledger-title').textContent='— '+((LOAN_F.property&&LOAN_F.property.address)||'this loan');
+  $('ledger-rows').innerHTML=LOAN_F.ledger.slice().reverse().map(e=>`<tr><td>${fdate(e.entry_date)}</td><td>${e.type==='late_fee'?'Late fee':e.type}</td><td>${esc(methodLabel(e.method))}</td>
+      <td class="right" style="color:${e.amount_cents<0?'var(--red)':'var(--green)'}">${fmt(Math.abs(e.amount_cents))}</td>
+      <td class="right">${e.to_interest_cents?fmt(e.to_interest_cents):''}</td><td class="right">${e.to_principal_cents?fmt(e.to_principal_cents):''}</td>
+      <td class="right">${e.to_escrow_cents?fmt(e.to_escrow_cents):''}</td><td class="right">${e.to_fees_cents?fmt(e.to_fees_cents):''}</td>
+      <td class="right">${e.principal_balance_after_cents!=null?fmt(e.principal_balance_after_cents):''}</td><td class="note">${esc(e.memo||'')}</td></tr>`).join('')
+    ||'<tr><td colspan="10" class="note">No entries yet.</td></tr>';
+}
 function calcClearField(id){ $(id).value=''; $(id).classList.remove('solved'); if(CALC_SOLVED===id) CALC_SOLVED=null; calcSolve(); }
 // Which field holds a computed (not typed) value. When any OTHER field is edited, the
 // computed one is cleared so it re-solves. Without this, a solved value sits in its box
@@ -4461,7 +4557,10 @@ async function openLoan(id){
     <p class="note">${AGREEMENT_LABELS[L.loan_type]||'Land contract'}${L.loan_type==='land_trust_beneficial_interest'&&f.property&&f.property.trust_name?' — '+esc(f.property.trust_name)+(f.property.trustee?', trustee: '+esc(f.property.trustee):''):''} ·
       ${rateStr(L.interest_rate_bps)}% · ${L.term_months} mo · started ${fdate(L.first_payment_date)}
       ${L.beneficial_interest_pct?' · BI '+L.beneficial_interest_pct+'%':''}</p>
-    <p class="note" style="margin-top:4px">${f.tenant?('📧 '+esc(f.tenant.email)+(f.tenant.phone?' · 📱 '+esc(f.tenant.phone):'')):''} <span id="tb-loc"></span></p>
+    <p class="note" style="margin-top:4px">${f.tenant?('📧 <a href="mailto:'+esc(f.tenant.email)+'">'+esc(f.tenant.email)+'</a>'
+      +(f.tenant.phone?' · 📱 <a href="tel:'+esc(String(f.tenant.phone).replace(/[^+\d]/g,''))+'">'+esc(f.tenant.phone)+'</a>'
+        +' <a href="tel:'+esc(String(f.tenant.phone).replace(/[^+\d]/g,''))+'" style="text-decoration:none"><button class="small">📞 Call</button></a>'
+        +' <button class="small" onclick="openMsgsFor('+L.id+')">💬 Message</button>':'')):''} <span id="tb-loc"></span></p>
     <div class="actions">
       <button class="primary" onclick="recordPaymentModal()">💵 Record payment</button>
       <button class="small" onclick="editLoanModal()">✏️ Edit loan terms</button>
@@ -4496,13 +4595,20 @@ async function openLoan(id){
     <p class="note" style="margin-bottom:10px">Everything filed on this loan and its house — shared folders the buyer sees, and the private vault only you do.</p>
     <button class="primary" onclick="openDocsPage({loan_id:${L.id}})">Open documents</button>
   </div>
-  <div class="card"><h2>Ledger</h2><div style="overflow-x:auto;max-height:420px"><table>
-    <thead><tr><th>Date</th><th>Type</th><th>Method</th><th class="right">Amount</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Escrow</th><th class="right">Fees</th><th class="right">Balance after</th><th>Memo</th></tr></thead>
-    <tbody>${f.ledger.slice().reverse().map(e=>`<tr><td>${fdate(e.entry_date)}</td><td>${e.type==='late_fee'?'Late fee':e.type}</td><td>${esc(methodLabel(e.method))}</td>
+  <div class="card"><h2>Ledger
+      <button class="small" style="float:right" onclick="openLedgerPage()">Open the full ledger →</button></h2>
+    ${(()=>{ const led=f.ledger; const pays=led.filter(e=>e.type==='payment');
+      return `<div class="cards" style="margin-bottom:10px">
+        <div class="stat"><div class="n">${led.length}</div><div class="l">Entries</div></div>
+        <div class="stat"><div class="n">${fmt(pays.reduce((s,e)=>s+e.amount_cents,0))}</div><div class="l">Payments received</div></div>
+        <div class="stat"><div class="n">${fmt(pays.reduce((s,e)=>s+e.to_interest_cents,0))}</div><div class="l">Interest collected</div></div>
+        <div class="stat"><div class="n">${fmt(pays.reduce((s,e)=>s+e.to_principal_cents,0))}</div><div class="l">Principal paid down</div></div>
+      </div>`; })()}
+    <p class="note" style="margin-bottom:6px">Most recent activity:</p>
+    <div style="overflow-x:auto"><table>
+    <tbody>${f.ledger.slice(-3).reverse().map(e=>`<tr><td>${fdate(e.entry_date)}</td><td>${e.type==='late_fee'?'Late fee':e.type}</td><td class="note">${esc(methodLabel(e.method))}</td>
       <td class="right" style="color:${e.amount_cents<0?'var(--red)':'var(--green)'}">${fmt(Math.abs(e.amount_cents))}</td>
-      <td class="right">${e.to_interest_cents?fmt(e.to_interest_cents):''}</td><td class="right">${e.to_principal_cents?fmt(e.to_principal_cents):''}</td>
-      <td class="right">${e.to_escrow_cents?fmt(e.to_escrow_cents):''}</td><td class="right">${e.to_fees_cents?fmt(e.to_fees_cents):''}</td>
-      <td class="right">${e.principal_balance_after_cents!=null?fmt(e.principal_balance_after_cents):''}</td><td class="note">${esc(e.memo||'')}</td></tr>`).join('')||'<tr><td colspan="10" class="note">No entries yet.</td></tr>'}</tbody>
+      <td class="note">${esc(e.memo||'')}</td></tr>`).join('')||'<tr><td class="note">No entries yet.</td></tr>'}</tbody>
     </table></div></div>
   <div id="loan-payoff"></div>
   <div id="loan-escrow"></div>
@@ -4598,15 +4704,33 @@ async function loadTBLocation(tbId){
 }
 async function loadNoticesAdmin(){
   const rows = await api(`/api/admin/loans/${currentLoanId}/notices`);
-  $('notices-admin').innerHTML = rows.length ? rows.map(n=>`
+  // The per-loan pause, shown where the notices it affects live.
+  let pauseBar='';
+  try{
+    const lad=await api(`/api/admin/loans/${currentLoanId}/notice-ladder`);
+    window.LOAN_PAUSE=lad;
+    pauseBar=`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;margin-bottom:8px;
+        border:1px solid ${lad.pause_days?'#f5c344':'var(--line)'};border-radius:9px;background:${lad.pause_days?'#fffdf4':'#fafbfc'};font-size:13px">
+      <span>${lad.pause_days
+        ? `⏸️ <b>Pause rule on this loan:</b> a payment of ${fmt(lad.pause_min_cents)}+ buys ${lad.pause_days} days of quiet.`
+        : `No partial-payment pause on this loan — notices run on normal timing.`}</span>
+      <button class="small" onclick="noticePauseModal(LOAN_PAUSE)">${lad.pause_days?'Change':'Add a pause rule'}</button>
+    </div>`;
+  }catch{}
+  $('notices-admin').innerHTML = pauseBar + (rows.length ? rows.map(n=>`
     <div style="padding:8px 0;border-bottom:1px solid #eef0f4;font-size:13.5px">
       <div style="display:flex;justify-content:space-between">
         <span><b>${esc(n.subject)}</b> <span class="pill ${n.type==='legal_notice'?'due':n.type==='late_notice'?'amber':'gray'}">${n.type.replace('_',' ')}</span></span>
         <span class="note">Sent ${new Date((n.sent_at||n.created_at)+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
           ${n.read_at?`· <span style="color:var(--green)">✓✓ Read ${new Date(n.read_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</span>`:'· <span style="color:var(--amber)">Unread</span>'}</span>
       </div>
+      ${n.lob_id?`<div class="note" style="margin-top:4px">📬 Certified mail:
+        <b>${esc(n.lob_status||'created')}</b>${n.lob_tracking?` · tracking ${esc(n.lob_tracking)}`:''}
+        ${n.lob_expected?` · expected ${fdate(n.lob_expected)}`:''}
+        ${n.lob_cost_cents?` · ${fmt(n.lob_cost_cents)} billed as a collection fee`:''}
+        <button class="small" onclick="refreshMailStatus(${n.id})">↻ Update</button></div>`:''}
       <details style="margin-top:4px"><summary class="note" style="cursor:pointer">View text</summary><div class="note" style="white-space:pre-wrap;margin-top:6px">${esc(n.body)}</div></details>
-    </div>`).join('') : '<p class="note">No notices sent.</p>';
+    </div>`).join('') : '<p class="note">No notices sent.</p>');
 }
 function customNoticeModal(){
   modal(`<h2>Send a custom notice</h2>
@@ -5262,6 +5386,13 @@ async function openMsgs(){
       <span>${t.unread?`<span class="badge">${t.unread}</span>`:''}</span></div>`).join('')
     :'<p class="note">No conversations yet.</p>');
 }
+// One tap from a loan to its message thread: go to Messages, open this buyer.
+async function openMsgsFor(loanId){
+  nav('msgs');
+  const addr=(LOAN_F&&LOAN_F.property&&LOAN_F.property.address)||'';
+  const name=(LOAN_F&&LOAN_F.tenant&&LOAN_F.tenant.name)||'';
+  setTimeout(()=>openThread(loanId, name?`${name} — ${addr}`:addr), 150);
+}
 async function openThread(loanId,title){
   msgLoanId=loanId;
   $('msg-threads').classList.add('hidden'); $('msg-thread').classList.remove('hidden');
@@ -5448,17 +5579,19 @@ function wireSheetDrag(){
   sheetWired=true;
   let startY=0, startT=0, dy=0, dragging=false;
 
+  // Pointer Events with capture, not touch+mouse pairs: one code path everywhere,
+  // and capture keeps the gesture alive even when the finger wanders off the little
+  // grab bar mid-drag — which is exactly when the old version silently gave up.
   const down=(e)=>{
     dragging=true; dy=0;
-    startY=(e.touches?e.touches[0].clientY:e.clientY);
-    startT=Date.now();
+    startY=e.clientY; startT=Date.now();
     body.classList.add('dragging');
+    if(grab.setPointerCapture && e.pointerId!==undefined){ try{ grab.setPointerCapture(e.pointerId); }catch{} }
     e.preventDefault();
   };
   const move=(e)=>{
     if(!dragging) return;
-    const y=(e.touches?e.touches[0].clientY:e.clientY);
-    dy=Math.max(0, y-startY);                 // downwards only
+    dy=Math.max(0, e.clientY-startY);         // downwards only
     body.style.transform=`translateY(${dy}px)`;
     e.preventDefault();
   };
@@ -5466,8 +5599,12 @@ function wireSheetDrag(){
     if(!dragging) return;
     dragging=false;
     body.classList.remove('dragging');
-    const flick=(Date.now()-startT)<300 && dy>40;
-    if(dy > body.offsetHeight*0.33 || flick){
+    // A quarter of the sheet or 110px — whichever comes first — or a quick flick.
+    // The old third-of-the-sheet rule meant a perfectly reasonable drag sprang back,
+    // which reads as "the handle does not work".
+    const threshold=Math.min(110, body.offsetHeight*0.25);
+    const flick=(Date.now()-startT)<300 && dy>30;
+    if(dy > threshold || flick){
       body.style.transform=`translateY(${body.offsetHeight}px)`;
       setTimeout(closeMoreSheet, 180);
     } else {
@@ -5475,12 +5612,10 @@ function wireSheetDrag(){
     }
   };
 
-  grab.addEventListener('touchstart',down,{passive:false});
-  grab.addEventListener('touchmove',move,{passive:false});
-  grab.addEventListener('touchend',up);
-  grab.addEventListener('mousedown',down);
-  window.addEventListener('mousemove',move);
-  window.addEventListener('mouseup',up);
+  grab.addEventListener('pointerdown',down);
+  grab.addEventListener('pointermove',move);
+  grab.addEventListener('pointerup',up);
+  grab.addEventListener('pointercancel',up);
 }
 function navSheet(pg){ closeMoreSheet(); nav(pg); }
 

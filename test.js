@@ -92,6 +92,33 @@ async function main() {
     await req('/api/admin/loans/' + pl.json.loan.id, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
   }
 
+  console.log('— certified mail configuration');
+  // The key alone is not enough — certified mail with no return address bounces at
+  // the print shop, so the API refuses to save half a setup.
+  r = await req('/api/admin/lob', { method: 'PUT', body: JSON.stringify({ api_key: 'test_abc123' }) });
+  ok(r.status === 400 && /return address/i.test(r.json.error), 'refuses a Lob key without a return address');
+  r = await req('/api/admin/lob');
+  ok(r.status === 200 && r.json.connected === false, 'certified mail reads as not connected');
+  // A notice that never went certified has no mail status to fetch.
+  {
+    const list = await req(`/api/admin/loans/${loanId}/notices`);
+    if (list.json.length) {
+      r = await req(`/api/admin/notices/${list.json[0].id}/mail-status`);
+      ok(r.status === 400, 'mail-status refuses a notice that did not go certified');
+    }
+  }
+  {
+    const lobMod = require('./lob.js');
+    ok(lobMod.creds({}) === null, 'no key, no creds');
+    ok(lobMod.creds({ lob_api_key: 'test_x' }) === null, 'key without address is not enabled');
+    const c = lobMod.creds({ lob_api_key: 'test_x', name: 'SAA', mail_address_line1: '1 Main',
+      mail_address_city: 'Flint', mail_address_state: 'MI', mail_address_zip: '48503' });
+    ok(c && c.test === true && c.from.address_city === 'Flint', 'full config enables test mode');
+    const html = lobMod.letterHtml({ subject: 'Notice <b>', body: 'Line & one\n\nLine two' });
+    ok(html.includes('Notice &lt;b&gt;') && html.includes('Line &amp; one'), 'letter HTML escapes user text');
+    ok(html.includes('margin-top: 2.6in'), 'letter leaves room for the address window');
+  }
+
   console.log('— editing the buyer');
   r = await req('/api/admin/tenants/' + tbId, { method: 'PUT', body: JSON.stringify({ name: 'Jane A. Buyer', phone: '5555550142' }) });
   ok(r.status === 200 && r.json.name === 'Jane A. Buyer', 'buyer name updated');
@@ -150,17 +177,10 @@ async function main() {
   ok(!!legalN, 'legal notice auto-escalated (>15 days past due)');
   ok(!lateN.read_at, 'notice unread initially');
 
-  console.log('— partial payments and the notice pause');
-  // A pause with no floor is a footgun: $1 would buy the same quiet as $1,000, for ever.
-  r = await req('/api/admin/notice-settings', { method: 'PUT', body: JSON.stringify({ pause_days: 15, pause_min_cents: 0 }) });
-  ok(r.status === 400, 'refuses a pause with no minimum payment');
-  r = await req('/api/admin/notice-settings', { method: 'PUT', body: JSON.stringify({ pause_days: 15, pause_min_cents: 50000 }) });
-  ok(r.status === 200, 'pause accepted with a $500 minimum');
-  r = await req('/api/admin/notice-settings');
-  ok(r.json.pause_days === 15 && r.json.pause_min_cents === 50000, 'pause settings persisted');
-  ok(Array.isArray(r.json.rules) && r.json.rules.length >= 5, 'ladder returned with the settings');
-
-  // Two identical delinquent loans. One pays under the floor, one over it.
+  console.log('— per-loan notice pause');
+  // The pause is an exception on ONE loan. A pause with no floor is still a footgun.
+  // Three identical delinquent loans: one with no rule, two with a rule — one paying
+  // under the floor, one over it. Only the over-the-floor loan goes quiet.
   const mkLoan = async (addr, email) => {
     const p = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: addr, city: 'Columbus', state: 'OH', zip: '43004' }) });
     const t = await req('/api/admin/tenants', { method: 'POST', body: JSON.stringify({ name: 'Pause Test', email }) });
@@ -173,20 +193,33 @@ async function main() {
   };
   const tokenLoan = await mkLoan('1 Token Way', 'token@test.com');
   const realLoan = await mkLoan('2 Real Way', 'real@test.com');
+  const noRuleLoan = await mkLoan('3 NoRule Rd', 'norule@test.com');
+  r = await req(`/api/admin/loans/${realLoan}/notice-pause`, { method: 'PUT', body: JSON.stringify({ pause_days: 15, pause_min_cents: 0 }) });
+  ok(r.status === 400, 'refuses a pause with no minimum payment');
+  r = await req(`/api/admin/loans/${tokenLoan}/notice-pause`, { method: 'PUT', body: JSON.stringify({ pause_days: 15, pause_min_cents: 50000 }) });
+  ok(r.status === 200, 'pause rule set on the token loan');
+  r = await req(`/api/admin/loans/${realLoan}/notice-pause`, { method: 'PUT', body: JSON.stringify({ pause_days: 15, pause_min_cents: 50000 }) });
+  ok(r.status === 200, 'pause rule set on the real loan');
+  r = await req(`/api/admin/loans/${realLoan}/notice-ladder`);
+  ok(r.json.pause_days === 15 && r.json.pause_min_cents === 50000, 'rule readable on the loan ladder');
+  // All three pay something; the no-rule loan pays plenty — but has no rule.
   await req(`/api/admin/loans/${tokenLoan}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 5000, method: 'cash', memo: 'token $50' }) });
   await req(`/api/admin/loans/${realLoan}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 60000, method: 'cash', memo: 'real $600' }) });
+  await req(`/api/admin/loans/${noRuleLoan}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 60000, method: 'cash', memo: 'no rule $600' }) });
   await req('/api/admin/notice-sweep', { method: 'POST', body: '{}' });
   r = await req(`/api/admin/loans/${tokenLoan}/notices`);
-  ok(r.json.length > 0, '$50 against thousands owed does NOT pause the ladder');
+  ok(r.json.length > 0, '$50 under the floor does NOT pause that loan');
   r = await req(`/api/admin/loans/${realLoan}/notices`);
-  ok(r.json.length === 0, '$600 clears the floor and pauses the ladder');
+  ok(r.json.length === 0, '$600 over the floor pauses only its own loan');
+  r = await req(`/api/admin/loans/${noRuleLoan}/notices`);
+  ok(r.json.length > 0, 'a loan with no rule is chased on normal timing — nothing global is inherited');
 
-  // Turning the pause off must clear the floor with it, not leave it lying around.
-  r = await req('/api/admin/notice-settings', { method: 'PUT', body: JSON.stringify({ pause_days: 0, pause_min_cents: 50000 }) });
-  ok(r.status === 200 && r.json.pause_min_cents === 0, 'switching the pause off clears the minimum too');
+  // Removing the rule clears both fields and the loan is chased again.
+  r = await req(`/api/admin/loans/${realLoan}/notice-pause`, { method: 'PUT', body: JSON.stringify({ pause_days: 0, pause_min_cents: 50000 }) });
+  ok(r.status === 200 && r.json.pause_min_cents === 0, 'removing the rule clears the minimum too');
   await req('/api/admin/notice-sweep', { method: 'POST', body: '{}' });
   r = await req(`/api/admin/loans/${realLoan}/notices`);
-  ok(r.json.length > 0, 'with the pause off the previously-paused loan is chased again');
+  ok(r.json.length > 0, 'with its rule removed the loan is chased again');
 
   console.log('— tenant buyer side');
   r = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'jane@test.com', password: tempPw }) }, '');

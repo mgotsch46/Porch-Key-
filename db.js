@@ -514,6 +514,38 @@ addColumnIfMissing('companies', 'notice_pause_days', 'INTEGER DEFAULT 0');
 // footgun: $1 against $900 of arrears would buy the same silence as $800, over and over,
 // indefinitely. 0 means any payment counts, which is only safe when the pause is 0 too.
 addColumnIfMissing('companies', 'notice_pause_min_cents', 'INTEGER DEFAULT 0');
+// Certified mail through Lob: the key, the return address letters carry, and what one
+// certified letter costs on the company's plan (Lob's API does not return the price,
+// so the pass-through collection fee uses this figure — set it to what Lob charges).
+addColumnIfMissing('companies', 'lob_api_key', 'TEXT');
+addColumnIfMissing('companies', 'lob_cost_cents', 'INTEGER DEFAULT 0');
+addColumnIfMissing('companies', 'mail_address_line1', 'TEXT');
+addColumnIfMissing('companies', 'mail_address_city', 'TEXT');
+addColumnIfMissing('companies', 'mail_address_state', 'TEXT');
+addColumnIfMissing('companies', 'mail_address_zip', 'TEXT');
+// What became of each certified letter, kept on the notice it carried.
+addColumnIfMissing('notices', 'lob_id', 'TEXT');
+addColumnIfMissing('notices', 'lob_tracking', 'TEXT');
+addColumnIfMissing('notices', 'lob_status', 'TEXT');
+addColumnIfMissing('notices', 'lob_expected', 'TEXT');
+addColumnIfMissing('notices', 'lob_cost_cents', 'INTEGER');
+// The notice pause is a per-loan exception, not a company policy. NULL means no rule:
+// notices run on normal timing. A loan with no rule inherits nothing from anywhere.
+addColumnIfMissing('loans', 'notice_pause_days', 'INTEGER');
+addColumnIfMissing('loans', 'notice_pause_min_cents', 'INTEGER');
+// One-time carry-over: a company that had the old global pause switched on gets it
+// copied onto its active loans, so nobody's active grace quietly evaporates. The
+// company fields are then zeroed and stop being consulted.
+try {
+  const withGlobal = all("SELECT id, notice_pause_days, notice_pause_min_cents FROM companies WHERE notice_pause_days > 0");
+  for (const c of withGlobal) {
+    run(`UPDATE loans SET notice_pause_days=?, notice_pause_min_cents=?
+         WHERE company_id=? AND status='active' AND notice_pause_days IS NULL`,
+      c.notice_pause_days, c.notice_pause_min_cents || 0, c.id);
+    run('UPDATE companies SET notice_pause_days=0, notice_pause_min_cents=0 WHERE id=?', c.id);
+    console.log(`Moved company ${c.id}'s global notice pause onto its active loans`);
+  }
+} catch {}
 addColumnIfMissing('loans', 'legal_hold_at', 'TEXT');
 addColumnIfMissing('loans', 'legal_hold_reason', 'TEXT');
 addColumnIfMissing('loans', 'legal_hold_by', 'INTEGER');
