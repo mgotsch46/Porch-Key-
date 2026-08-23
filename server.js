@@ -392,11 +392,16 @@ async function runNoticeSweep() {
       // and that is a judgement rather than a rule: a token amount should not be able to
       // silence a real default for ever. So it buys quiet for a set number of days, which
       // each company sets for itself and which is zero unless somebody turns it on.
+      // A minimum stops the obvious abuse of that: without one, a dollar buys the same
+      // quiet as eight hundred, and can be repeated for ever. Payments inside the window
+      // are summed, so paying twice in a week counts as what it adds up to.
       const pauseDays = Number(co0 && co0.notice_pause_days) || 0;
       if (pauseDays > 0) {
-        const recentPayment = get(`SELECT id FROM ledger WHERE loan_id=? AND type='payment'
-          AND entry_date >= date('now', ?) LIMIT 1`, loan.id, `-${pauseDays} days`);
-        if (recentPayment) continue;
+        const paid = get(`SELECT COALESCE(SUM(amount_cents),0) AS c FROM ledger
+          WHERE loan_id=? AND type='payment' AND entry_date >= date('now', ?)`,
+          loan.id, `-${pauseDays} days`);
+        const minCents = Number(co0.notice_pause_min_cents) || 0;
+        if (paid && paid.c > 0 && paid.c >= minCents) continue;
       }
 
       noticeRules.seedLadder(loan.company_id);
@@ -1982,6 +1987,39 @@ app.get('/api/admin/loans/:id/notice-ladder', adminOnly, (req, res, next) => {
       sent: all(`SELECT id, type, stage, period, subject, days_past_due, sent_at, read_at, delivery_json
         FROM notices WHERE loan_id=? ORDER BY id DESC LIMIT 30`, loan.id),
     });
+  } catch (e) { next(e); }
+});
+
+// Company-wide notice settings: the ladder as configured, and what a payment buys.
+app.get('/api/admin/notice-settings', adminOnly, (req, res, next) => {
+  try {
+    noticeRules.seedLadder(req.companyId);
+    const c = get('SELECT notice_pause_days, notice_pause_min_cents FROM companies WHERE id=?', req.companyId);
+    res.json({
+      rules: noticeRules.rulesFor(req.companyId),
+      pause_days: Number(c && c.notice_pause_days) || 0,
+      pause_min_cents: Number(c && c.notice_pause_min_cents) || 0,
+      is_owner: req.user.role === 'owner',
+    });
+  } catch (e) { next(e); }
+});
+
+app.put('/api/admin/notice-settings', ownerOnly, (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const days = Math.max(0, Math.min(365, Math.round(Number(b.pause_days) || 0)));
+    const minCents = Math.max(0, Math.round(Number(b.pause_min_cents) || 0));
+    // A pause with no floor lets any amount at all buy quiet, and buy it again next week.
+    // Rather than silently accept a setting that behaves like a bug, say so.
+    if (days > 0 && minCents <= 0) {
+      return res.status(400).json({
+        error: 'Set a minimum payment as well. Without one, a $1 payment pauses notices ' +
+               'for the same number of days as a $1,000 one, and can do it again every time.',
+      });
+    }
+    run('UPDATE companies SET notice_pause_days=?, notice_pause_min_cents=? WHERE id=?',
+      days, days > 0 ? minCents : 0, req.companyId);
+    res.json({ pause_days: days, pause_min_cents: days > 0 ? minCents : 0 });
   } catch (e) { next(e); }
 });
 

@@ -125,6 +125,44 @@ async function main() {
   ok(!!legalN, 'legal notice auto-escalated (>15 days past due)');
   ok(!lateN.read_at, 'notice unread initially');
 
+  console.log('— partial payments and the notice pause');
+  // A pause with no floor is a footgun: $1 would buy the same quiet as $1,000, for ever.
+  r = await req('/api/admin/notice-settings', { method: 'PUT', body: JSON.stringify({ pause_days: 15, pause_min_cents: 0 }) });
+  ok(r.status === 400, 'refuses a pause with no minimum payment');
+  r = await req('/api/admin/notice-settings', { method: 'PUT', body: JSON.stringify({ pause_days: 15, pause_min_cents: 50000 }) });
+  ok(r.status === 200, 'pause accepted with a $500 minimum');
+  r = await req('/api/admin/notice-settings');
+  ok(r.json.pause_days === 15 && r.json.pause_min_cents === 50000, 'pause settings persisted');
+  ok(Array.isArray(r.json.rules) && r.json.rules.length >= 5, 'ladder returned with the settings');
+
+  // Two identical delinquent loans. One pays under the floor, one over it.
+  const mkLoan = async (addr, email) => {
+    const p = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: addr, city: 'Columbus', state: 'OH', zip: '43004' }) });
+    const t = await req('/api/admin/tenants', { method: 'POST', body: JSON.stringify({ name: 'Pause Test', email }) });
+    const l = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+      property_id: p.json.id, tenant_user_id: t.json.id, loan_type: 'land_trust_beneficial_interest',
+      sale_price_cents: 12000000, down_payment_cents: 2000000, principal_cents: 10000000,
+      interest_rate_bps: 950, term_months: 360, escrow_cents: 25000, late_fee_cents: 5000,
+      grace_days: 5, first_payment_date: '2026-06-01', beneficial_interest_pct: 90 }) });
+    return l.json.loan.id;
+  };
+  const tokenLoan = await mkLoan('1 Token Way', 'token@test.com');
+  const realLoan = await mkLoan('2 Real Way', 'real@test.com');
+  await req(`/api/admin/loans/${tokenLoan}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 5000, method: 'cash', memo: 'token $50' }) });
+  await req(`/api/admin/loans/${realLoan}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 60000, method: 'cash', memo: 'real $600' }) });
+  await req('/api/admin/notice-sweep', { method: 'POST', body: '{}' });
+  r = await req(`/api/admin/loans/${tokenLoan}/notices`);
+  ok(r.json.length > 0, '$50 against thousands owed does NOT pause the ladder');
+  r = await req(`/api/admin/loans/${realLoan}/notices`);
+  ok(r.json.length === 0, '$600 clears the floor and pauses the ladder');
+
+  // Turning the pause off must clear the floor with it, not leave it lying around.
+  r = await req('/api/admin/notice-settings', { method: 'PUT', body: JSON.stringify({ pause_days: 0, pause_min_cents: 50000 }) });
+  ok(r.status === 200 && r.json.pause_min_cents === 0, 'switching the pause off clears the minimum too');
+  await req('/api/admin/notice-sweep', { method: 'POST', body: '{}' });
+  r = await req(`/api/admin/loans/${realLoan}/notices`);
+  ok(r.json.length > 0, 'with the pause off the previously-paused loan is chased again');
+
   console.log('— tenant buyer side');
   r = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'jane@test.com', password: tempPw }) }, '');
   ok(r.status === 200 && r.json.must_change_password, 'TB login with temp password');
@@ -164,7 +202,9 @@ async function main() {
   r = await req('/api/tenant/messages', { method: 'POST', body: JSON.stringify({ body: 'Hi, I paid part of it!' }) }, tbCookie);
   ok(r.status === 200, 'TB sends message');
   r = await req('/api/admin/messages');
-  ok(r.json.length === 1 && r.json[0].unread >= 1, 'admin sees unread thread');
+  // Assert on this buyer's thread rather than on the thread count — other loans in the
+  // company have threads too, and the count is not what this test is about.
+  ok((r.json.find(t => t.loan_id === loanId) || {}).unread >= 1, 'admin sees unread thread');
   r = await req(`/api/admin/loans/${loanId}/messages`, { method: 'POST', body: JSON.stringify({ body: 'Got it — thanks!' }) });
   ok(r.status === 200, 'admin replies');
   r = await req('/api/tenant/messages', {}, tbCookie);

@@ -496,6 +496,10 @@ addColumnIfMissing('loans', 'final_payment_date', 'TEXT');   // maturity, from f
 // the account stops being past due. Set it to 15 and anyone who pays anything buys a
 // fortnight. Left at 0 by default so a token payment cannot silence a real default.
 addColumnIfMissing('companies', 'notice_pause_days', 'INTEGER DEFAULT 0');
+// What a payment has to be worth before it earns that quiet. Without this the pause is a
+// footgun: $1 against $900 of arrears would buy the same silence as $800, over and over,
+// indefinitely. 0 means any payment counts, which is only safe when the pause is 0 too.
+addColumnIfMissing('companies', 'notice_pause_min_cents', 'INTEGER DEFAULT 0');
 addColumnIfMissing('loans', 'legal_hold_at', 'TEXT');
 addColumnIfMissing('loans', 'legal_hold_reason', 'TEXT');
 addColumnIfMissing('loans', 'legal_hold_by', 'INTEGER');
