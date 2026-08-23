@@ -2889,15 +2889,32 @@ app.put('/api/admin/loans/:id', adminOnly, (req, res) => {
   if (sets.length) run(`UPDATE loans SET ${sets.join(',')} WHERE id=?`, ...vals, loan.id);
   res.json(loanFull(get('SELECT * FROM loans WHERE id=?', loan.id)));
 });
-// Only a loan entered by mistake can be deleted. One that has taken a payment or reached
-// a buyer is part of the record — cancel it instead, which keeps the file intact.
+// Deleting a loan comes in two strengths. A loan with no history deletes with a typed
+// DELETE — that is a typo being corrected. A loan WITH history — payments, journal
+// entries, notices — can also be removed (test data happens, wrong buyer happens), but
+// that is destroying records, so it asks more: owner only, a stronger confirmation,
+// and a full JSON backup of everything filed on the property before anything goes.
 app.delete('/api/admin/loans/:id', adminOnly, (req, res, next) => {
   try {
     const loan = ownedLoan(req, req.params.id);
     if (!loan) return res.status(404).json({ error: 'Not found' });
-    if (!req.body || req.body.confirm !== 'DELETE') return res.status(400).json({ error: 'Type DELETE to confirm' });
+    const b = req.body || {};
     const t = loanTies(loan.id);
-    if (t.ledger || t.journal_entries || t.notices) {
+    const hasHistory = !!(t.ledger || t.journal_entries || t.notices);
+
+    if (!hasHistory) {
+      if (b.confirm !== 'DELETE') return res.status(400).json({ error: 'Type DELETE to confirm' });
+      run('DELETE FROM charges WHERE loan_id=?', loan.id);
+      run('DELETE FROM messages WHERE loan_id=?', loan.id);
+      run('DELETE FROM escrow_items WHERE loan_id=?', loan.id);
+      run('DELETE FROM payoff_quotes WHERE loan_id=?', loan.id);
+      run('DELETE FROM loans WHERE id=?', loan.id);
+      return res.json({ ok: true });
+    }
+
+    // History exists. Without the purge flag, describe what is here and how to proceed —
+    // the same refusal as before, now with the door named.
+    if (!b.purge) {
       const why = [
         t.payments ? `${t.payments} payment${t.payments === 1 ? '' : 's'}` : null,
         t.ledger - t.payments > 0 ? `${t.ledger - t.payments} other ledger entr${t.ledger - t.payments === 1 ? 'y' : 'ies'}` : null,
@@ -2905,18 +2922,52 @@ app.delete('/api/admin/loans/:id', adminOnly, (req, res, next) => {
         t.notices ? `${t.notices} notice${t.notices === 1 ? '' : 's'} sent` : null,
       ].filter(Boolean).join(', ');
       return res.status(400).json({
-        error: `This loan has ${why} against it. Deleting it would leave money in your books pointing ` +
-               `at nothing, and remove the record of notices you sent. Set its status to cancelled instead.`,
-        ties: t,
+        error: `This loan has ${why} against it. Cancelling it keeps the record; deleting it destroys ` +
+               `the record. To delete anyway, the owner can purge it — everything is backed up to a ` +
+               `file on the property first.`,
+        ties: t, purgeable: true,
       });
     }
-    // Nothing financial ever happened. Clear the loose attachments and remove it.
-    run('DELETE FROM charges WHERE loan_id=?', loan.id);
-    run('DELETE FROM messages WHERE loan_id=?', loan.id);
-    run('DELETE FROM escrow_items WHERE loan_id=?', loan.id);
-    run('DELETE FROM payoff_quotes WHERE loan_id=?', loan.id);
+    if (req.user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can purge a loan with history' });
+    if (b.confirm !== 'DELETE EVERYTHING') return res.status(400).json({ error: 'Type DELETE EVERYTHING to confirm' });
+
+    // The backup first: every row this purge is about to remove, in one JSON file,
+    // filed on the property where the loan lived. If the purge turns out to be a
+    // mistake, the numbers still exist somewhere a human can read them.
+    const backup = {
+      purged_at: new Date().toISOString(), purged_by: req.user.email,
+      loan,
+      ledger: all('SELECT * FROM ledger WHERE loan_id=?', loan.id),
+      notices: all('SELECT * FROM notices WHERE loan_id=?', loan.id),
+      charges: all('SELECT * FROM charges WHERE loan_id=?', loan.id),
+      escrow_items: all('SELECT * FROM escrow_items WHERE loan_id=?', loan.id),
+      payoff_quotes: all('SELECT * FROM payoff_quotes WHERE loan_id=?', loan.id),
+      messages: all('SELECT * FROM messages WHERE loan_id=?', loan.id),
+      journal_entries: all('SELECT * FROM journal_entries WHERE loan_id=?', loan.id),
+      journal_lines: all('SELECT * FROM journal_lines WHERE loan_id=? OR entry_id IN (SELECT id FROM journal_entries WHERE loan_id=?)', loan.id, loan.id),
+      documents: all('SELECT id, filename, category, title, created_at FROM documents WHERE loan_id=?', loan.id),
+    };
+    const stored = crypto.randomUUID() + '.json';
+    fs.writeFileSync(path.join(UPLOAD_DIR, stored), JSON.stringify(backup, null, 2));
+    run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+         VALUES (?,?,?,?,?,?,?,?,?,0)`,
+      loan.company_id, null, loan.property_id, 'other', 'private',
+      `Backup — purged loan #${loan.id} (${new Date().toISOString().slice(0, 10)})`,
+      `purged-loan-${loan.id}.json`, stored, 'application/json');
+
+    // Now the removal, children before parent. Journal lines go with their entries so
+    // the books stay balanced — both sides of every entry leave together.
+    run('DELETE FROM journal_lines WHERE entry_id IN (SELECT id FROM journal_entries WHERE loan_id=?)', loan.id);
+    run('DELETE FROM journal_entries WHERE loan_id=?', loan.id);
+    for (const table of ['ledger', 'notices', 'charges', 'escrow_items', 'payoff_quotes', 'messages']) {
+      run(`DELETE FROM ${table} WHERE loan_id=?`, loan.id);
+    }
+    for (const d of all('SELECT * FROM documents WHERE loan_id=?', loan.id)) {
+      try { fs.unlinkSync(path.join(UPLOAD_DIR, d.stored_name)); } catch {}
+      run('DELETE FROM documents WHERE id=?', d.id);
+    }
     run('DELETE FROM loans WHERE id=?', loan.id);
-    res.json({ ok: true });
+    res.json({ ok: true, purged: true, backup: `Backup filed on the property's documents` });
   } catch (e) { next(e); }
 });
 
@@ -3445,6 +3496,15 @@ app.put('/api/admin/pml/:id', adminOnly, (req, res, next) => {
     if (!(term > 0)) return res.status(400).json({ error: 'Term must be at least one month' });
     if (rate < 0) return res.status(400).json({ error: 'Interest rate cannot be negative' });
 
+    // The loan can move to another of your houses — a refinance secured elsewhere, or
+    // an entry error being fixed. Its ledger travels with it, since the ledger hangs
+    // off the loan and not the property.
+    let propertyId = pml.property_id;
+    if (b.property_id !== undefined && Number(b.property_id) !== pml.property_id) {
+      if (!ownedProperty(req, Number(b.property_id))) return res.status(404).json({ error: 'Property not found' });
+      propertyId = Number(b.property_id);
+    }
+
     // Recalculate the payment only when asked, or when it was never set by hand. Quietly
     // changing what a lender is owed because the rate was edited is not a favour.
     let payment = num(b.payment_cents, pml.payment_cents);
@@ -3460,9 +3520,10 @@ app.put('/api/admin/pml/:id', adminOnly, (req, res, next) => {
     const balance = paidAnything ? pml.principal_balance_cents
       : num(b.principal_balance_cents, principal);
 
-    run(`UPDATE pml_loans SET lender_name=?, lender_contact=?, lien_position=?, status=?,
+    run(`UPDATE pml_loans SET property_id=?, lender_name=?, lender_contact=?, lien_position=?, status=?,
            principal_cents=?, interest_rate_bps=?, term_months=?, payment_type=?, payment_cents=?,
            balloon_date=?, first_payment_date=?, principal_balance_cents=?, notes=? WHERE id=?`,
+      propertyId,
       String(b.lender_name || pml.lender_name).trim(),
       b.lender_contact !== undefined ? (b.lender_contact || null) : pml.lender_contact,
       num(b.lien_position, pml.lien_position), b.status || pml.status,

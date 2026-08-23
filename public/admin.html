@@ -4202,8 +4202,8 @@ function pmlModal(presetProp, e){
     <div class="grid2">
       <div class="field"><label>Lender name</label><input id="pm-lender" value="${edit?esc(v.lender_name||''):''}"></div>
       <div class="field"><label>Lender contact (email/phone)</label><input id="pm-contact" value="${edit?esc(v.lender_contact||''):''}"></div>
-      <div class="field"><label>Property</label><select id="pm-prop" ${edit?'disabled':''}>${PROPS.map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('')}</select>
-        ${edit?'<p class="note" style="margin-top:4px">A loan cannot be moved to another house — its ledger belongs here.</p>':''}</div>
+      <div class="field"><label>Property</label><select id="pm-prop">${PROPS.map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('')}</select>
+        ${edit?'<p class="note" style="margin-top:4px">Moving the loan takes its ledger with it — history follows the loan, not the house.</p>':''}</div>
       <div class="field"><label>Lien position</label><select id="pm-lien"><option value="1">1st</option><option value="2">2nd</option><option value="3">3rd</option></select></div>
       <div class="field"><label>Principal ($)</label><input id="pm-principal" type="number" step="0.01" value="${dollars(v.principal_cents)}"></div>
       <div class="field"><label>Interest rate (% APR)</label><input id="pm-rate" type="number" step="any" value="${edit?rateStr(v.interest_rate_bps):''}"></div>
@@ -4246,7 +4246,8 @@ async function createPML(){
 async function savePML(id){
   try{
     const r=await api('/api/admin/pml/'+id,{method:'PUT',body:JSON.stringify({
-      ...pmlBody(), status:$('pm-status').value, recalc_payment:$('pm-recalc').checked?1:0 })});
+      ...pmlBody(), property_id:Number($('pm-prop').value),
+      status:$('pm-status').value, recalc_payment:$('pm-recalc').checked?1:0 })});
     closeModal();
     if(r.balance_locked) alert('Saved. The outstanding balance was left as it is — this loan has ledger entries, so its balance comes from those rather than from the principal.');
     openPML(id);
@@ -4897,20 +4898,33 @@ function renderSched(){
 function deleteLoanModal(){
   const L=LOAN_F&&LOAN_F.loan; if(!L) return;
   const who=(LOAN_F.tenant&&LOAN_F.tenant.name)||'no buyer assigned';
+  const hasHistory=(LOAN_F.ledger&&LOAN_F.ledger.length)>0;
   modal(`<h2>Delete this loan?</h2>
     <p class="note" style="margin-bottom:12px">${esc((LOAN_F.property&&LOAN_F.property.address)||'')} — ${esc(who)}.
       This cannot be undone.</p>
-    <p class="note" style="margin-bottom:12px">Only a loan with no payments, journal entries or notices can be
-      deleted — that is, one entered by mistake. If this loan is real but finished, set its status to
-      <b>cancelled</b> or <b>paid off</b> under Edit loan terms instead. That keeps the record.</p>
+    ${hasHistory?`
+    <p class="note" style="margin-bottom:12px">This loan has <b>history</b> — payments, notices, books.
+      If it is a real loan that ended, set its status to <b>cancelled</b> or <b>paid off</b> instead;
+      that keeps the record. Deleting destroys the record.</p>
+    <div class="err" style="margin-bottom:12px"><b>Purging a loan with history:</b> everything — ledger,
+      notices, journal entries, messages, documents — is first backed up to a JSON file saved on the
+      property, then permanently removed. Owner only.</div>
+    <div class="field"><label>Type <b>DELETE EVERYTHING</b> to confirm</label><input id="ld-confirm" placeholder="DELETE EVERYTHING"></div>
+    <div id="ld-err" class="err hidden"></div>
+    <button class="warn" onclick="deleteLoan(${L.id},true)">Back it up, then delete it all</button>`
+    :`
+    <p class="note" style="margin-bottom:12px">Nothing has happened on this loan — no payments, no notices.
+      Deleting it is just correcting an entry.</p>
     <div class="field"><label>Type DELETE to confirm</label><input id="ld-confirm" placeholder="DELETE"></div>
     <div id="ld-err" class="err hidden"></div>
-    <button class="warn" onclick="deleteLoan(${L.id})">Delete for good</button>`);
+    <button class="warn" onclick="deleteLoan(${L.id},false)">Delete for good</button>`}`);
 }
-async function deleteLoan(id){
+async function deleteLoan(id,purge){
   try{
-    await api('/api/admin/loans/'+id,{method:'DELETE',body:JSON.stringify({confirm:$('ld-confirm').value.trim()})});
+    const r=await api('/api/admin/loans/'+id,{method:'DELETE',body:JSON.stringify({
+      confirm:$('ld-confirm').value.trim(), purge:!!purge })});
     closeModal(); nav('loans'); loadLoans();
+    if(r.purged) toast('Loan purged. The backup file is in the property’s documents.');
   }catch(e){ $('ld-err').textContent=e.message; $('ld-err').classList.remove('hidden'); }
 }
 function editLoanModal(){

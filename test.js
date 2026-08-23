@@ -408,6 +408,63 @@ async function main() {
   r = await req('/api/admin/loans/' + loanId);
   ok(r.status === 200 && r.json.ledger.length > 0, 'the real loan and its ledger are untouched');
 
+  console.log('— purging a loan WITH history (backup first, then gone)');
+  {
+    // Build a disposable loan with real history: a payment and a notice.
+    const pp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '13 Purge Ct', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const pt = await req('/api/admin/tenants', { method: 'POST', body: JSON.stringify({ name: 'Test Data', email: 'purge@test.com' }) });
+    const plr = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+      property_id: pp.json.id, tenant_user_id: pt.json.id, loan_type: 'land_contract',
+      sale_price_cents: 9000000, down_payment_cents: 0, principal_cents: 9000000,
+      interest_rate_bps: 900, term_months: 240, grace_days: 5, first_payment_date: '2026-06-01' }) });
+    const purgeLoan = plr.json.loan.id;
+    await req(`/api/admin/loans/${purgeLoan}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 50000, method: 'cash' }) });
+    await req(`/api/admin/loans/${purgeLoan}/notices`, { method: 'POST', body: JSON.stringify({ subject: 'Test notice', body: 'Body' }) });
+
+    r = await req('/api/admin/loans/' + purgeLoan, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+    ok(r.status === 400 && r.json.purgeable === true, 'plain delete still refuses, but names the purge door');
+    r = await req('/api/admin/loans/' + purgeLoan, { method: 'DELETE', body: JSON.stringify({ purge: true, confirm: 'DELETE' }) });
+    ok(r.status === 400, 'purge demands the stronger confirmation');
+    r = await req('/api/admin/loans/' + purgeLoan, { method: 'DELETE', body: JSON.stringify({ purge: true, confirm: 'DELETE EVERYTHING' }) });
+    ok(r.status === 200 && r.json.purged, 'owner purge succeeds');
+    r = await req('/api/admin/loans/' + purgeLoan);
+    ok(r.status === 404, 'purged loan is gone');
+    r = await req(`/api/admin/properties/${pp.json.id}/documents`);
+    const backupDoc = Object.values(r.json).flatMap(f => f.documents).find(d => /Backup — purged loan/.test(d.title || ''));
+    ok(!!backupDoc, 'a backup file was filed on the property first');
+    r = await req('/api/admin/books');
+    ok(r.json.trial_balance.balanced, 'books still balance after the purge — both sides of every entry left together');
+    ok(!r.json.loans || !r.json.loans.some(l => l.id === purgeLoan), 'purged loan absent from reconciliation');
+
+    // Staff cannot purge. (Uses the temp staff created later? No — create one here.)
+    const st = await req('/api/admin/staff', { method: 'POST', body: JSON.stringify({ name: 'NoPurge Staff', email: 'nopurge@test.com' }) });
+    const stLogin = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'nopurge@test.com', password: st.json.temp_password }) }, '');
+    await req('/api/change-password', { method: 'POST', body: JSON.stringify({ password: 'NoPurge123!' }) }, stLogin.cookie);
+    const p2 = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '14 Purge Ct', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const l2 = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+      property_id: p2.json.id, loan_type: 'land_contract', sale_price_cents: 1000000, down_payment_cents: 0,
+      principal_cents: 1000000, interest_rate_bps: 900, term_months: 60, first_payment_date: '2026-06-01' }) });
+    await req(`/api/admin/loans/${l2.json.loan.id}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 10000, method: 'cash' }) });
+    r = await req('/api/admin/loans/' + l2.json.loan.id, { method: 'DELETE', body: JSON.stringify({ purge: true, confirm: 'DELETE EVERYTHING' }) }, stLogin.cookie);
+    ok(r.status === 403, 'staff cannot purge — owner only');
+    await req('/api/admin/staff/' + st.json.id, { method: 'DELETE' });
+  }
+
+  console.log('— moving a PML loan to another property');
+  {
+    const pa = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '21 Move St', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const pb = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '22 Move St', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const ml = await req('/api/admin/pml', { method: 'POST', body: JSON.stringify({
+      property_id: pa.json.id, lender_name: 'Mover Capital', principal_cents: 2000000,
+      interest_rate_bps: 1000, term_months: 60, first_payment_date: '2026-09-01' }) });
+    r = await req('/api/admin/pml/' + ml.json.id, { method: 'PUT', body: JSON.stringify({ property_id: pb.json.id }) });
+    ok(r.status === 200 && r.json.property_id === pb.json.id, 'PML moved to the other house');
+    r = await req('/api/admin/pml/' + ml.json.id, { method: 'PUT', body: JSON.stringify({ property_id: 999999 }) });
+    ok(r.status === 404, 'cannot move a PML onto a property that is not yours');
+    r = await req('/api/admin/pml/' + ml.json.id);
+    ok(r.json.pml.property_id === pb.json.id, 'move persisted');
+  }
+
   console.log('— location (opt-in)');
   r = await req('/api/tenant/location', { method: 'POST', body: JSON.stringify({ lat: 40.1, lng: -83.0 }) }, tbCookie);
   ok(r.status === 403, 'location rejected without consent');
