@@ -1992,8 +1992,13 @@ setTimeout(() => { try { runRecurringCosts(); } catch (e) { console.error('Recur
 app.post('/api/admin/properties/:id/costs', adminOnly, (req, res) => {
   const p = ownedProperty(req, req.params.id);
   if (!p) return res.status(404).json({ error: 'Not found' });
-  const { category, description, vendor, amount_cents, cost_date, cadence, end_date } = req.body || {};
+  const { category, description, vendor, amount_cents, cost_date, cadence, end_date, document_id } = req.body || {};
   if (!description || !amount_cents) return res.status(400).json({ error: 'Description and amount required' });
+  // A receipt attaches by document id — the file itself goes through the normal
+  // document upload first, so it lives in the document center like everything else.
+  if (document_id && !get('SELECT id FROM documents WHERE id=? AND company_id=?', document_id, req.companyId)) {
+    return res.status(404).json({ error: 'Receipt document not found' });
+  }
 
   // A cadence turns this into a rule. The first occurrence lands on the given date
   // (materialized immediately if that date has arrived), then the schedule takes over.
@@ -2009,9 +2014,9 @@ app.post('/api/admin/properties/:id/costs', adminOnly, (req, res) => {
   }
 
   const r = run(`INSERT INTO property_costs (company_id, property_id, category, description,
-      vendor, amount_cents, cost_date, created_by) VALUES (?,?,?,?,?,?,?,?)`,
+      vendor, amount_cents, cost_date, document_id, created_by) VALUES (?,?,?,?,?,?,?,?,?)`,
     req.companyId, p.id, category || 'other', description, vendor || null,
-    amount_cents, cost_date || today(), req.user.id);
+    amount_cents, cost_date || today(), document_id || null, req.user.id);
   // Keep the headline purchase price on the property in step with a "purchase" cost line.
   if ((category || '') === 'purchase') {
     run('UPDATE properties SET purchase_price_cents=? WHERE id=?', amount_cents, p.id);
@@ -2036,11 +2041,18 @@ app.put('/api/admin/costs/:id', adminOnly, (req, res) => {
   const amount = b.amount_cents !== undefined ? Math.round(Number(b.amount_cents)) : c.amount_cents;
   if (!(amount > 0)) return res.status(400).json({ error: 'Amount must be more than zero' });
   const category = b.category || c.category;
-  run(`UPDATE property_costs SET category=?, description=?, vendor=?, amount_cents=?, cost_date=? WHERE id=?`,
+  let docId = c.document_id;
+  if (b.document_id !== undefined) {
+    if (b.document_id && !get('SELECT id FROM documents WHERE id=? AND company_id=?', b.document_id, req.companyId)) {
+      return res.status(404).json({ error: 'Receipt document not found' });
+    }
+    docId = b.document_id || null;
+  }
+  run(`UPDATE property_costs SET category=?, description=?, vendor=?, amount_cents=?, cost_date=?, document_id=? WHERE id=?`,
     category,
     b.description !== undefined ? String(b.description) : c.description,
     b.vendor !== undefined ? (b.vendor || null) : c.vendor,
-    amount, b.cost_date || c.cost_date, c.id);
+    amount, b.cost_date || c.cost_date, docId, c.id);
   // The headline purchase price follows its cost line, same as on create.
   if (category === 'purchase') run('UPDATE properties SET purchase_price_cents=? WHERE id=?', amount, c.property_id);
   res.json(get('SELECT * FROM property_costs WHERE id=?', c.id));

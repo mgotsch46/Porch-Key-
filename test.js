@@ -548,6 +548,31 @@ async function main() {
     ok(r.status === 200 && r.json.recurring, 'weekly lawncare rule accepted');
   }
 
+  console.log('— receipts on costs');
+  {
+    const rcp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '11 Receipt Rd', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const rb64 = Buffer.from('%PDF-1.4 the receipt').toString('base64');
+    const rdoc = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+      filename: 'homedepot.pdf', mime: 'application/pdf', data_base64: rb64, property_id: rcp.json.id,
+      category: 'misc_admin', title: 'Receipt — lumber' }) });
+    r = await req(`/api/admin/properties/${rcp.json.id}/costs`, { method: 'POST', body: JSON.stringify({
+      category: 'rehab', description: 'Lumber', amount_cents: 68000, document_id: rdoc.json.id }) });
+    ok(r.status === 200 && r.json.document_id === rdoc.json.id, 'cost created with its receipt attached');
+    const rcost = r.json.id;
+    let pv = await req('/api/admin/properties/' + rcp.json.id);
+    ok(pv.json.costs.find(c => c.id === rcost).document_id === rdoc.json.id, 'receipt travels with the cost row');
+    // Replace the receipt on edit; a bogus id refuses.
+    const rdoc2 = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+      filename: 'corrected.pdf', mime: 'application/pdf', data_base64: rb64, property_id: rcp.json.id,
+      category: 'misc_admin', title: 'Receipt — lumber (corrected)' }) });
+    r = await req('/api/admin/costs/' + rcost, { method: 'PUT', body: JSON.stringify({ document_id: rdoc2.json.id }) });
+    ok(r.status === 200 && r.json.document_id === rdoc2.json.id, 'receipt replaced on edit');
+    r = await req('/api/admin/costs/' + rcost, { method: 'PUT', body: JSON.stringify({ document_id: 999999 }) });
+    ok(r.status === 404, 'a receipt id that is not yours refuses');
+    r = await req(`/api/documents/${rdoc2.json.id}/view`);
+    ok(r.status === 200, 'the receipt opens in the viewer');
+  }
+
   console.log('— purging a whole property (the test-property reset)');
   {
     // A property with the full mess: TB loan with payments and notices, a PML with a

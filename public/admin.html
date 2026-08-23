@@ -1621,7 +1621,7 @@ async function openProp(id){
       <td>${COST_ICONS[c.category]||'•'} ${esc(L[c.category]||c.category)}</td>
       <td>${esc(c.description)}</td><td class="note">${esc(c.vendor||'')}</td>
       <td class="right">${fmt(c.amount_cents)}</td>
-      <td class="right" style="white-space:nowrap"><button class="small" onclick='editCostModal(${JSON.stringify(c).replace(/'/g,"&#39;")})'>✏️</button>
+      <td class="right" style="white-space:nowrap">${c.document_id?`<a href="#" title="View receipt" onclick="viewDoc(${c.document_id},'application/pdf');return false">🧾</a> `:''}<button class="small" onclick='editCostModal(${JSON.stringify(c).replace(/'/g,"&#39;")})'>✏️</button>
         <button class="small warn" onclick="delCost(${c.id})">✕</button></td></tr>`).join('')
       ||'<tr><td colspan="6" class="note">No costs logged yet.</td></tr>'}</tbody></table></div></div>
   <div class="card"><h2>📁 Documents</h2>
@@ -2270,17 +2270,30 @@ function costModal(pid){
         <span class="note">Leave blank to run until you stop it. The date above is the first occurrence.</span></div>
     </div>
     <div class="field"><label>Description</label><input id="ct-desc" placeholder="e.g. Roof repair, weekly check-in, title fee"></div>
+    <div class="field"><label>Receipt <span class="note">— optional, photo or PDF</span></label>
+      <input id="ct-receipt" type="file" accept=".pdf,image/*"></div>
     <div id="ct-err" class="err hidden"></div>
     <button class="primary" onclick="addCost(${pid})">Add cost</button>`);
 }
 async function addCost(pid){
   try{
+    const docId=await uploadReceipt(pid, $('ct-receipt').files[0], $('ct-desc').value);
     await api(`/api/admin/properties/${pid}/costs`,{method:'POST',body:JSON.stringify({
+      document_id:docId||undefined,
       cadence:$('ct-cadence').value||undefined, end_date:$('ct-end').value||undefined,
       category:$('ct-cat').value, description:$('ct-desc').value, vendor:$('ct-vendor').value,
       amount_cents:Math.round(parseFloat($('ct-amt').value)*100), cost_date:$('ct-date').value })});
     closeModal(); openProp(pid);
   }catch(e){ $('ct-err').textContent=e.message; $('ct-err').classList.remove('hidden'); }
+}
+// Push a receipt through the normal document upload, filed admin-only, titled after
+// the cost it belongs to. Returns the new document id, or null when no file chosen.
+async function uploadReceipt(pid,f,desc){
+  if(!f) return null;
+  const d=await api('/api/admin/documents',{method:'POST',body:JSON.stringify({
+    filename:f.name, mime:f.type, data_base64:await fileToB64(f), property_id:pid,
+    category:'misc_admin', title:'Receipt — '+(desc||'cost'), visible_to_tenant:false })});
+  return d.id;
 }
 async function delCost(id){
   if(!confirm('Remove this cost?'))return;
@@ -2304,13 +2317,18 @@ function editCostModal(c){
       <div class="field"><label>Vendor / paid to</label><input id="ec-vendor" value="${esc(c.vendor||'')}"></div>
     </div>
     <div class="field"><label>Description</label><input id="ec-desc" value="${esc(c.description||'')}"></div>
+    <div class="field"><label>Receipt <span class="note">— optional</span></label>
+      ${c.document_id?`<p class="note" style="margin:2px 0 6px">🧾 <a href="#" onclick="viewDoc(${c.document_id},'application/pdf');return false">View the attached receipt</a> — choosing a new file replaces it.</p>`:''}
+      <input id="ec-receipt" type="file" accept=".pdf,image/*"></div>
     <div id="ec-err" class="err hidden"></div>
     <button class="primary" onclick="saveCost(${c.id})">Save</button>`);
   $('ec-cat').value=c.category||'other';
 }
 async function saveCost(id){
   try{
+    const docId=await uploadReceipt(currentPropId, $('ec-receipt').files[0], $('ec-desc').value);
     await api('/api/admin/costs/'+id,{method:'PUT',body:JSON.stringify({
+      document_id:docId!==null?docId:undefined,
       category:$('ec-cat').value, amount_cents:Math.round(parseFloat($('ec-amt').value)*100),
       cost_date:$('ec-date').value||undefined, vendor:$('ec-vendor').value,
       description:$('ec-desc').value })});
