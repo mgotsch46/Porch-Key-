@@ -137,7 +137,6 @@ async function main() {
   ok(r.status === 451, 'loan data blocked until terms accepted');
   r = await req('/api/tenant/messages', { method: 'POST', body: JSON.stringify({ body: 'hi' }) }, tbCookie);
   ok(r.status === 451, 'messaging blocked until terms accepted');
-  r = await req('/api/tenant/pay/cash-slip', { method: 'POST', body: JSON.stringify({ amount_cents: 5000 }) }, tbCookie);
   ok(r.status === 451, 'payments blocked until terms accepted');
   r = await req('/api/tenant/accept-terms', { method: 'POST', body: JSON.stringify({ accept_terms: true }) }, tbCookie);
   ok(r.status === 400, 'must accept BOTH terms and privacy');
@@ -171,14 +170,14 @@ async function main() {
   r = await req('/api/tenant/messages', {}, tbCookie);
   ok(r.json.length >= 3, 'TB sees full thread (incl notice ping)');
 
-  console.log('— cash at retail');
-  r = await req('/api/tenant/pay/cash-slip', { method: 'POST', body: JSON.stringify({ amount_cents: 110000 }) }, tbCookie);
-  ok(r.status === 200 && r.json.slip_code.startsWith('CP-'), 'TB generates cash payment code');
-  const slipId = r.json.id;
-  r = await req('/api/admin/cash-slips');
-  ok(r.json.some(s => s.id === slipId && s.status === 'open'), 'admin sees open slip');
-  r = await req(`/api/admin/cash-slips/${slipId}/mark-paid`, { method: 'POST', body: '{}' });
-  ok(r.status === 200, 'admin marks slip paid');
+  console.log('— cash recorded by hand');
+  // Cash at retail is gone, but cash still turns up. The admin records it directly.
+  r = await req(`/api/admin/loans/${loanId}/payments`, {
+    method: 'POST',
+    body: JSON.stringify({ amount_cents: 110000, method: 'cash', memo: 'cash in person' }),
+  });
+  ok(r.status === 200, 'admin records a cash payment');
+
   r = await req('/api/tenant/loan', {}, tbCookie);
   ok(r.json.ledger.filter(l => l.type === 'payment').length === 2, 'cash payment posted to ledger');
 
@@ -915,8 +914,6 @@ async function main() {
   ok(r.json.length === 0, 'rival sees no expenses');
   r = await req('/api/admin/messages', {}, rivalCookie);
   ok(r.json.length === 0, 'rival sees no message threads');
-  r = await req('/api/admin/cash-slips', {}, rivalCookie);
-  ok(r.json.length === 0, 'rival sees no cash slips');
   r = await req(`/api/admin/tenants/${tbId}/location`, {}, rivalCookie);
   ok(r.status === 404, 'rival cannot read company A buyer location');
   r = await req(`/api/admin/loans/${loanId}/notices`, {}, rivalCookie);

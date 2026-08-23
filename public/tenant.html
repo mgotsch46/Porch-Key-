@@ -412,7 +412,6 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
         <div id="fee-box"></div>
         <button class="btn primary" id="pay-go" onclick="startPayment()">Continue</button>
         <p class="note" style="margin-top:12px" id="pay-foot"></p>
-        <div id="slip-box"></div>
       </div>
 
       <div class="card">
@@ -427,10 +426,6 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
         <p class="note" style="margin-top:10px">Your card and bank details are stored securely by Stripe. Porch Pay never sees or keeps your full numbers.</p>
       </div>
 
-      <div class="card" id="open-slips-card" style="display:none">
-        <h2>Your open cash codes</h2>
-        <div id="open-slips"></div>
-      </div>
     </section>
 
     <!-- ───── LOAN ───── -->
@@ -771,10 +766,6 @@ function render(){
     return `<div class="row"><span class="k">${fdate(p.entry_date)} · ${lbl}</span><span class="v" style="color:var(--red)">${fmt(Math.abs(p.amount_cents))}</span></div>`;
   }).join('') : '<p class="note">No activity yet.</p>';
 
-  // slips
-  const slips=DATA.slips||[];
-  $('open-slips-card').style.display=slips.length?'':'none';
-  if(slips.length) $('open-slips').innerHTML=slips.map(s=>slipHtml(s)).join('');
 
   // settings
   if(ME){
@@ -791,7 +782,8 @@ function render(){
   runCalc();
 }
 function methodName(m){
-  return {stripe_card:'Card',stripe_ach:'Bank transfer',stripe_cashapp:'Cash App Pay',cash_retail:'Cash at store',
+  return {stripe_card:'Card',stripe_ach:'Bank transfer',stripe_cashapp:'Cash App Pay',
+    zelle:'Zelle',venmo:'Venmo',applepay:'Apple Pay',paypal:'PayPal',cash_retail:'Cash at store',
     cash:'Cash',check:'Check',cashapp_manual:'Cash App',zelle:'Zelle',other:'Payment'}[m]||'Payment';
 }
 
@@ -926,15 +918,6 @@ async function startPayment(){
     location.href=r.url;
   }catch(e){ if(e.message!=='terms'){ $('pay-err').textContent=e.message; $('pay-err').classList.remove('hidden'); } }
 }
-function slipHtml(s,fresh){
-  return `<div class="slip">
-    ${fresh?'<div style="font-size:26px">✅</div>':''}
-    <div class="note" style="color:var(--brand);font-weight:600">Pay ${fmt(s.amount_cents)} in cash — show this at the register</div>
-    ${s.barcode_url?`<img src="${s.barcode_url}" alt="Payment barcode" style="max-width:100%;margin:12px 0;border-radius:10px">`:''}
-    <div class="code">${esc(s.slip_code)}</div>
-    <div class="note">Valid through ${fdate(s.expires_at)}<br>Walmart · 7-Eleven · CVS · Dollar General · Walgreens</div>
-  </div>`;
-}
 
 // ---------- extra payment calculator ----------
 function runCalc(){
@@ -968,7 +951,9 @@ async function loadNotices(){
   $('notices-list').innerHTML=NOTICES.map(n=>`
     <details onclick="markRead(${n.id})">
       <summary style="color:${n.read_at?'var(--mut)':'var(--red)'}">${n.read_at?'':'● '}${esc(n.subject)}</summary>
-      <div class="body">${n.body_html ? n.body_html : esc(n.body)}</div>
+      <div class="body">${n.body_html ? n.body_html : esc(n.body)}
+        <p style="margin-top:10px"><a href="/api/tenant/notices/${n.id}/pdf"
+          style="color:var(--brand);font-weight:600">⬇️ Download this notice as a PDF</a></p></div>
     </details>`).join('');
 }
 async function markRead(id){
@@ -998,7 +983,8 @@ async function pollMsgs(){
     $('nav-dot').classList.toggle('hidden',!unread||tab==='msgs');
     $('m-list').innerHTML=msgs.length?msgs.map(m=>{
       const when=new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
-      if(m.body_html) return `${m.body_html}<div class="note" style="margin:-6px 0 14px 4px">${when}</div>`;
+      if(m.body_html) return `${m.body_html}<div class="note" style="margin:-6px 0 14px 4px">${when}
+        · <a href="/api/tenant/messages/${m.id}/pdf" style="color:var(--brand);font-weight:600">⬇️ PDF</a></div>`;
       return `<div class="msg ${m.sender_role==='tenant'?'me':'them'}">${esc(m.body)}
        <div class="t">${m.sender_role==='tenant'?'You':esc(m.sender_name)} · ${when}</div></div>`;
     }).join(''):'<div class="card"><p class="note">No messages yet. Say hello — your servicer sees it right away.</p></div>';

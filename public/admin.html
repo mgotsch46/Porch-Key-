@@ -513,7 +513,6 @@ a{color:var(--brand);font-weight:600}
     <div class="navgrp">Money</div>
     <button id="nv-reports" onclick="nav('reports')"><span class="ico">📈</span><span class="lbl">Reports</span></button>
     <button id="nv-exp" onclick="nav('exp')"><span class="ico">🧾</span><span class="lbl">Expenses</span><span id="exp-badge" class="badge hidden"></span></button>
-    <button id="nv-slips" onclick="nav('slips')"><span class="ico">💵</span><span class="lbl">Cash Codes</span></button>
 
     <div class="navgrp">Tools</div>
     <button id="nv-calc" class="tab" onclick="nav('calc')"><span class="ico">🧮</span><span class="lbl">Calculator</span></button>
@@ -947,7 +946,11 @@ a{color:var(--brand);font-weight:600}
             </div>
             <textarea id="mt-input" rows="3" placeholder="Write a message to your buyer…"
               oninput="growComposer()" onkeydown="composerKey(event)"></textarea>
-            <div class="cfoot">
+            <div class="cfoot" style="flex-wrap:wrap;gap:10px">
+              <label class="note" style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                <input type="checkbox" id="ch-sms"> also text it</label>
+              <label class="note" style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                <input type="checkbox" id="ch-email"> also email it</label>
               <span class="ccount" id="mt-count"></span>
               <button class="primary" id="mt-send" onclick="sendAdminMsg()">Send message</button>
             </div>
@@ -1023,6 +1026,10 @@ a{color:var(--brand);font-weight:600}
         <div id="set-texting"><p class="note">Loading…</p></div></div>
 
       <div class="card">
+        <h2>&#128210; Books</h2>
+        <div id="set-books"><p class="note">Loading…</p></div></div>
+
+      <div class="card">
         <h2>&#9993;&#65039; Email</h2>
         <div id="set-email"><p class="note">Loading…</p></div>
       </div>
@@ -1033,13 +1040,6 @@ a{color:var(--brand);font-weight:600}
     </section>
 
     <!-- CASH SLIPS -->
-    <section id="pg-slips" class="hidden">
-      <h1>Cash Payment Codes</h1>
-      <p class="note" style="margin-bottom:12px">Codes buyers generated to pay cash at a retailer. When connected to PayNearMe these post automatically; until then, mark a code paid when the cash arrives.</p>
-      <div class="card"><div style="overflow-x:auto"><table>
-        <thead><tr><th>Code</th><th>Buyer</th><th>Property</th><th class="right">Amount</th><th>Status</th><th>Created</th><th></th></tr></thead>
-        <tbody id="slip-rows"></tbody></table></div></div>
-    </section>
   </main>
 </div>
 
@@ -1313,9 +1313,9 @@ function nav(pg){
   }
   if(pg==='dash'){loadDash();loadDashTasks();loadDashAgenda();} if(pg==='loans')loadLoans(); if(pg==='tbs')loadTBs();
   if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();loadLinked();}
-  if(pg==='msgs')openMsgs(); if(pg==='slips')loadSlips();
+  if(pg==='msgs')openMsgs();
   if(pg==='pml'){loadProps();loadPML();}
-  if(pg==='settings'){loadSettings();loadTexting();loadEmail();wireAddressFields();}
+  if(pg==='settings'){loadSettings();loadTexting();loadEmail();loadBooks();wireAddressFields();}
   if(pg==='invites')loadInvites();
   if(pg==='reports')loadReports();
   if(pg==='calc')calcSolve();
@@ -1487,11 +1487,20 @@ async function openProp(id){
       <button class="small" onclick="propDocModal(${p.id})">+ Upload document</button>
       <button class="small" onclick="pmlModal(${p.id})">+ Add PML loan</button>
       <button class="small" onclick="propTermsModal(${p.id})">Owner &amp; payment terms</button>
+      <button class="small" onclick="editPropModal(${p.id})">✏️ Edit</button>
+      ${p.archived_at
+        ? `<button class="small" onclick="restoreProp(${p.id})">Restore</button>`
+        : `<button class="small" onclick="archivePropModal(${p.id})">Archive</button>`}
+      <button class="small warn" onclick="deletePropModal(${p.id})">Delete</button>
     </div>
+    ${p.archived_at?`<div class="err" style="margin-top:10px"><b>Archived.</b>
+      ${p.archived_reason?esc(p.archived_reason)+' · ':''}Hidden from your property list. Nothing was
+      changed or removed — restore it any time.</div>`:''}
     <div class="phasebar">
       ${(f.phases||[]).map(ph=>`<button class="phasestep ${p.phase===ph?'on':''} ${(f.phases.indexOf(ph)<f.phases.indexOf(p.phase||'acquired'))?'done':''}"
         onclick="setPhase(${p.id},'${ph}')">${esc((f.phase_labels||{})[ph]||ph)}</button>`).join('')}
     </div>
+    ${listingRow(p)}
     <p class="note" style="margin-top:10px">Late fee ${p.late_fee_cents!=null?fmt(p.late_fee_cents):'not set'}
       · grace ${p.grace_days!=null?p.grace_days+' days':'5 days'}
       · due day ${p.due_day!=null?p.due_day:'from first payment date'}</p>
@@ -1565,10 +1574,473 @@ async function openProp(id){
     <p class="note" style="margin-bottom:12px">Anything worth remembering about this house — a phone call,
       a handshake, a code, a warning. Internal only; a buyer never sees these.</p>
     <div id="prop-notes"></div>
-  </div>`;
+  </div>
+  <div id="prop-books"></div>`;
   loadPropContacts(p.id);
   loadPropTasks(p.id);
   loadNotes({elId:'prop-notes', property_id:p.id});
+  loadPropBooks(p.id);
+}
+
+// ---------- payment methods ----------
+// Ways money arrives that are not Stripe. The server keeps the same list and rejects
+// anything else, so a typo cannot end up saved against a payment.
+const MANUAL_METHODS={cash:'Cash',check:'Check',zelle:'Zelle',venmo:'Venmo',
+  applepay:'Apple Pay',paypal:'PayPal',other:'Other'};
+// What the ledger shows. The two retired entries are here so payments taken before
+// those methods went away still read properly instead of turning into "Payment".
+const METHOD_LABELS={stripe_card:'Card',stripe_ach:'Bank transfer',stripe_cashapp:'Cash App Pay',
+  ...MANUAL_METHODS, cash_retail:'Cash at store',cashapp_manual:'Cash App'};
+const methodLabel=(m)=>METHOD_LABELS[m]||m||'';
+
+// ---------- edit, archive, delete a property ----------
+function editPropModal(pid){
+  const p=(PROPS||[]).find(x=>x.id===pid)||{};
+  const v=(x)=>x==null?'':x;
+  const dollars=(c)=>c==null?'':(c/100);
+  modal(`<h2>Edit this house</h2>
+    <div class="field"><label>Address</label><input id="ep-address" value="${esc(v(p.address))}"></div>
+    <div class="grid2">
+      <div class="field"><label>City</label><input id="ep-city" value="${esc(v(p.city))}"></div>
+      <div class="field"><label>State</label><input id="ep-state" maxlength="2" value="${esc(v(p.state))}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>ZIP</label><input id="ep-zip" value="${esc(v(p.zip))}"></div>
+      <div class="field"><label>County</label><input id="ep-county" value="${esc(v(p.county))}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Owner of record</label><input id="ep-owner" value="${esc(v(p.owner_name))}"></div>
+      <div class="field"><label>Held as</label><select id="ep-ownertype">
+        ${['llc','individual','land_trust','corporation','partnership','other']
+          .map(t=>`<option value="${t}"${p.owner_type===t?' selected':''}>${t.replace('_',' ')}</option>`).join('')}</select></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Trust name</label><input id="ep-trust" value="${esc(v(p.trust_name))}"></div>
+      <div class="field"><label>Trustee</label><input id="ep-trustee" value="${esc(v(p.trustee))}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Beds</label><input id="ep-beds" type="number" value="${v(p.beds)}"></div>
+      <div class="field"><label>Baths</label><input id="ep-baths" type="number" step="0.5" value="${v(p.baths)}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Square feet</label><input id="ep-sqft" type="number" value="${v(p.sqft)}"></div>
+      <div class="field"><label>Year built</label><input id="ep-year" type="number" value="${v(p.year_built)}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Acquired</label><input id="ep-acq" type="date" value="${v(p.acquired_date)}"></div>
+      <div class="field"><label>Purchase price ($)</label><input id="ep-price" type="number" step="0.01" value="${dollars(p.purchase_price_cents)}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Target sale price ($)</label><input id="ep-target" type="number" step="0.01" value="${dollars(p.target_sale_price_cents)}"></div>
+      <div class="field"><label>Late fee ($)</label><input id="ep-latefee" type="number" step="0.01" value="${dollars(p.late_fee_cents)}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Grace period (days)</label><input id="ep-grace" type="number" value="${v(p.grace_days)}"></div>
+      <div class="field"><label>Payment due day</label><input id="ep-dueday" type="number" min="1" max="31" value="${v(p.due_day)}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Insurance carrier</label><input id="ep-carrier" value="${esc(v(p.insurance_carrier))}"></div>
+      <div class="field"><label>Insurance expires</label><input id="ep-insexp" type="date" value="${v(p.insurance_expires)}"></div>
+    </div>
+    <div class="field"><label>Next tax due</label><input id="ep-taxdue" type="date" value="${v(p.tax_due_date)}"></div>
+    <div class="field"><label>Notes</label><textarea id="ep-notes" rows="3">${esc(v(p.notes))}</textarea></div>
+    <div id="ep-err" class="err hidden"></div>
+    <button class="primary" onclick="saveProp(${pid})">Save changes</button>`);
+}
+async function saveProp(pid){
+  const cents=(id)=>{const x=$(id).value; return x===''?null:Math.round(parseFloat(x)*100);};
+  const num=(id)=>{const x=$(id).value; return x===''?null:Number(x);};
+  try{
+    await api('/api/admin/properties/'+pid,{method:'PUT',body:JSON.stringify({
+      address:$('ep-address').value.trim(), city:$('ep-city').value.trim(),
+      state:$('ep-state').value.trim().toUpperCase(), zip:$('ep-zip').value.trim(),
+      county:$('ep-county').value.trim(), owner_name:$('ep-owner').value.trim(),
+      owner_type:$('ep-ownertype').value, trust_name:$('ep-trust').value.trim(),
+      trustee:$('ep-trustee').value.trim(), beds:num('ep-beds'), baths:num('ep-baths'),
+      sqft:num('ep-sqft'), year_built:num('ep-year'), acquired_date:$('ep-acq').value||null,
+      purchase_price_cents:cents('ep-price'), target_sale_price_cents:cents('ep-target'),
+      late_fee_cents:cents('ep-latefee'), grace_days:num('ep-grace'), due_day:num('ep-dueday'),
+      insurance_carrier:$('ep-carrier').value.trim(), insurance_expires:$('ep-insexp').value||null,
+      tax_due_date:$('ep-taxdue').value||null, notes:$('ep-notes').value })});
+    closeModal(); await loadProps(); openProp(pid);
+  }catch(e){ $('ep-err').textContent=e.message; $('ep-err').classList.remove('hidden'); }
+}
+function archivePropModal(pid){
+  modal(`<h2>Archive this house</h2>
+    <p class="note" style="margin-bottom:12px">It drops out of your property list. Nothing is changed or
+      removed — the ledger, documents and history all stay exactly as they are, and you can restore it
+      whenever you like.</p>
+    <div class="field"><label>Why (optional)</label><input id="ap-reason" placeholder="e.g. sold outright, never closed"></div>
+    <div id="ap-err" class="err hidden"></div>
+    <button class="primary" onclick="archiveProp(${pid})">Archive it</button>`);
+}
+async function archiveProp(pid){
+  try{
+    await api(`/api/admin/properties/${pid}/archive`,{method:'POST',body:JSON.stringify({reason:$('ap-reason').value.trim()})});
+    closeModal(); await loadProps(); nav('properties');
+  }catch(e){ $('ap-err').textContent=e.message; $('ap-err').classList.remove('hidden'); }
+}
+async function restoreProp(pid){
+  await api(`/api/admin/properties/${pid}/restore`,{method:'POST'});
+  await loadProps(); openProp(pid);
+}
+// Deleting is only offered when a house never became a deal. The moment there is a loan
+// or a ledger entry, deleting would strand money in the books, so archiving is the answer.
+async function deletePropModal(pid){
+  let t;
+  try{ t=await api(`/api/admin/properties/${pid}/ties`); }catch(e){ alert(e.message); return; }
+  if(!t.can_delete){
+    const bits=[t.loans?`${t.loans} loan${t.loans===1?'':'s'}`:null,
+                t.pml_loans?`${t.pml_loans} lender loan${t.pml_loans===1?'':'s'}`:null,
+                t.journal_entries?`${t.journal_entries} ledger entr${t.journal_entries===1?'y':'ies'}`:null]
+               .filter(Boolean).join(', ');
+    modal(`<h2>This one cannot be deleted</h2>
+      <p class="note" style="margin-bottom:12px">There ${t.loans+t.pml_loans+t.journal_entries===1?'is':'are'}
+        <b>${bits}</b> against this house. Deleting it would leave money in your books pointing at nothing.</p>
+      <p class="note" style="margin-bottom:12px">Archive it instead — it disappears from your lists and every
+        record stays intact.</p>
+      <button class="primary" onclick="closeModal();archivePropModal(${pid})">Archive it instead</button>
+      <button class="small" style="margin-left:8px" onclick="closeModal()">Cancel</button>`);
+    return;
+  }
+  const loose=[t.costs?`${t.costs} cost${t.costs===1?'':'s'}`:null,
+               t.documents?`${t.documents} document${t.documents===1?'':'s'}`:null,
+               t.expenses?`${t.expenses} expense${t.expenses===1?'':'s'}`:null].filter(Boolean).join(', ');
+  modal(`<h2>Delete this house for good?</h2>
+    <p class="note" style="margin-bottom:12px">There is no loan and nothing in the ledger against it, so this
+      is safe to remove.${loose?` Its ${loose} will go too — any imported expenses are released back to
+      unassigned rather than deleted.`:''}</p>
+    <p class="note" style="margin-bottom:12px"><b>This cannot be undone.</b> If you are not sure, archive it.</p>
+    <div class="field"><label>Type DELETE to confirm</label><input id="dp-confirm" placeholder="DELETE"></div>
+    <div id="dp-err" class="err hidden"></div>
+    <button class="primary warn" onclick="deleteProp(${pid})">Delete permanently</button>
+    <button class="small" style="margin-left:8px" onclick="closeModal();archivePropModal(${pid})">Archive instead</button>`);
+}
+async function deleteProp(pid){
+  try{
+    await api('/api/admin/properties/'+pid,{method:'DELETE',body:JSON.stringify({confirm:$('dp-confirm').value.trim()})});
+    closeModal(); await loadProps(); nav('properties');
+  }catch(e){ $('dp-err').textContent=e.message; $('dp-err').classList.remove('hidden'); }
+}
+
+// ---------- escrow ----------
+// Escrow is the buyer's money, held so their taxes and insurance actually get paid.
+// The analysis answers one question: at the lowest point this year, will there be
+// enough left to cover the next bill.
+const ESCROW_TYPES={property_tax:'Property tax',hazard_insurance:'Hazard insurance',
+  flood_insurance:'Flood insurance',hoa:'HOA dues',other:'Other'};
+const MONTH_NAMES=['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+async function loadEscrow(loanId){
+  const el=$('loan-escrow'); if(!el) return;
+  let d;
+  try{ d=await api(`/api/admin/loans/${loanId}/escrow`); }
+  catch(e){ el.innerHTML=`<div class="card"><h2>Escrow</h2><p class="note">Could not load: ${esc(e.message)}</p></div>`; return; }
+  const a=d.analysis, items=d.items||[], disbs=d.disbursements||[];
+
+  const verdict = a.deficiency_cents ? `<div class="err"><b>The account is overdrawn by ${fmt(a.deficiency_cents)}.</b>
+        That is money you advanced on the buyer's behalf. It is recovered over the next 12 months.</div>`
+    : a.shortage_cents ? `<div class="err"><b>Short by ${fmt(a.shortage_cents)}.</b>
+        At its lowest point this year the account dips ${fmt(a.required_low_point_cents-a.projected_low_point_cents)}
+        below the cushion. Spread over 12 months that is ${fmt(a.shortage_makeup_cents)} more per month.</div>`
+    : a.surplus_cents ? `<div class="okmsg"><b>Surplus of ${fmt(a.surplus_cents)}.</b>
+        ${a.surplus_action==='refund_within_30_days'
+          ? 'Over $50, so it should be refunded to the buyer within 30 days.'
+          : 'Under $50, so you may refund it or credit it against next year.'}</div>`
+    : `<p class="okmsg">The account is on track. No shortage, no surplus.</p>`;
+
+  el.innerHTML=`
+  <div class="card">
+    <h2>🏛️ Escrow <button class="small" style="float:right" onclick="escrowItemModal(${loanId})">+ Add a bill</button></h2>
+    ${!items.length
+      ? `<p class="note">Nothing escrowed on this loan yet. Add the property tax and insurance bills
+           and the app will work out what to collect each month and tell you before anything falls short.</p>`
+      : `
+      <div class="cards" style="margin:10px 0 14px">
+        <div class="stat"><div class="n">${fmt(d.held_cents)}</div><div class="l">Held for the buyer</div></div>
+        <div class="stat"><div class="n">${fmt(a.annual_disbursements_cents)}</div><div class="l">Bills due this year</div></div>
+        <div class="stat"><div class="n">${fmt(a.old_monthly_cents)}</div><div class="l">Collecting now</div></div>
+        <div class="stat"><div class="n" style="color:${a.new_monthly_cents>a.old_monthly_cents?'var(--red)':'var(--brand)'}">${fmt(a.new_monthly_cents)}</div><div class="l">Should collect</div></div>
+      </div>
+      ${verdict}
+      ${d.advanced_cents?`<p class="note" style="margin-top:8px">You have advanced ${fmt(d.advanced_cents)} of your own
+        money to cover bills on this loan. It comes back through the escrow payment.</p>`:''}
+
+      <table style="margin:14px 0"><thead><tr><th>Bill</th><th>Payee</th><th>Due</th><th class="right">Per year</th><th></th></tr></thead>
+      <tbody>${items.map(i=>`<tr>
+        <td>${esc(ESCROW_TYPES[i.item_type]||i.item_type)}</td>
+        <td class="note">${esc(i.payee||'—')}</td>
+        <td class="note">${escrowMonths(i.due_months)}</td>
+        <td class="right">${fmt(i.annual_amount_cents)}</td>
+        <td class="right"><button class="small warn" onclick="delEscrowItem(${i.id},${loanId})">✕</button></td>
+      </tr>`).join('')}</tbody></table>
+
+      <div class="actions">
+        <button class="primary" onclick="runEscrowAnalysis(${loanId},false)">Run the analysis</button>
+        ${a.new_monthly_cents!==a.old_monthly_cents
+          ? `<button class="small" onclick="runEscrowAnalysis(${loanId},true)">Run it and change the payment to ${fmt(a.new_monthly_cents)}</button>`:''}
+      </div>
+
+      <button class="disclose" style="margin-top:14px" onclick="toggleEscProj()">
+        <span class="chev" id="ep-chev">&#9656;</span><span class="t">Month by month</span>
+        <span class="note" style="margin-left:auto">lowest point ${fmt(a.projected_low_point_cents)} · cushion ${fmt(a.required_low_point_cents)}</span></button>
+      <div id="ep-panel" class="hidden" style="margin-top:10px">
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>Month</th><th class="right">In</th><th class="right">Out</th><th class="right">Balance</th></tr></thead>
+          <tbody>${a.projection.map(r=>`<tr${r.balance_cents<a.required_low_point_cents?' style="background:var(--red-pale)"':''}>
+            <td>${r.month}</td><td class="right">${fmt(r.deposit_cents)}</td>
+            <td class="right">${r.disbursement_cents?fmt(r.disbursement_cents):''}</td>
+            <td class="right">${fmt(r.balance_cents)}</td></tr>`).join('')}</tbody>
+        </table></div>
+        <p class="note" style="margin-top:8px">Shaded months fall below the cushion — no more than two months
+          of escrow payments, which is the most you are allowed to hold.</p>
+      </div>`}
+  </div>
+
+  ${disbs.length?`
+  <div class="card">
+    <h2>Bills</h2>
+    <table><thead><tr><th>Due</th><th>Payee</th><th class="right">Amount</th><th>Status</th><th>Receipt</th><th></th></tr></thead>
+    <tbody>${disbs.map(x=>`<tr>
+      <td>${fdate(x.scheduled_date)}</td>
+      <td>${esc(x.payee||'—')}</td>
+      <td class="right">${fmt(x.amount_cents)}</td>
+      <td>${x.status==='paid'
+            ? `<span class="pill ok">paid ${x.paid_date?fdate(x.paid_date):''}</span>${x.advanced_cents?` <span class="pill amber">${fmt(x.advanced_cents)} advanced</span>`:''}`
+            : `<span class="pill gray">${esc(x.status)}</span>`}</td>
+      <td class="note">${x.receipt_filename?`📎 ${esc(x.receipt_filename)}`:'—'}</td>
+      <td class="right">${x.status==='scheduled'?`<button class="small" onclick="payEscrowModal(${x.id},${x.amount_cents},${loanId})">Mark paid</button>`:''}</td>
+    </tr>`).join('')}</tbody></table>
+  </div>`:''}`;
+}
+function escrowMonths(csv){
+  return String(csv||'').split(',').map(n=>MONTH_NAMES[parseInt(n,10)]||'').filter(Boolean).join(', ');
+}
+function toggleEscProj(){
+  const p=$('ep-panel'), c=$('ep-chev'); if(!p) return;
+  const open=p.classList.toggle('hidden');
+  if(c) c.innerHTML = open ? '&#9656;' : '&#9662;';
+}
+function escrowItemModal(loanId){
+  modal(`<h2>Add an escrowed bill</h2>
+    <p class="note" style="margin-bottom:12px">What the buyer's escrow has to pay for, and when it falls due.</p>
+    <div class="field"><label>What is it</label><select id="ei-type">
+      ${Object.entries(ESCROW_TYPES).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></div>
+    <div class="field"><label>Payee</label><input id="ei-payee" placeholder="e.g. Wayne County Treasurer"></div>
+    <div class="grid2">
+      <div class="field"><label>Amount per year ($)</label><input id="ei-amt" type="number" step="0.01"></div>
+      <div class="field"><label>Due in which months</label><input id="ei-months" placeholder="2,8">
+        <p class="note" style="margin-top:4px">Numbers, comma separated. February and August is <b>2,8</b>.</p></div>
+    </div>
+    <div id="ei-err" class="err hidden"></div>
+    <button class="primary" onclick="saveEscrowItem(${loanId})">Add it</button>`);
+}
+async function saveEscrowItem(loanId){
+  try{
+    await api(`/api/admin/loans/${loanId}/escrow/items`,{method:'POST',body:JSON.stringify({
+      item_type:$('ei-type').value, payee:$('ei-payee').value.trim(),
+      annual_amount_cents:Math.round(parseFloat($('ei-amt').value||'0')*100),
+      due_months:$('ei-months').value })});
+    closeModal(); loadEscrow(loanId);
+  }catch(e){ $('ei-err').textContent=e.message; $('ei-err').classList.remove('hidden'); }
+}
+async function delEscrowItem(id,loanId){
+  if(!confirm('Remove this bill? Any scheduled payments for it that have not been made will go too.')) return;
+  await api(`/api/admin/escrow/items/${id}`,{method:'DELETE'}); loadEscrow(loanId);
+}
+async function runEscrowAnalysis(loanId,apply){
+  const r=await api(`/api/admin/loans/${loanId}/escrow/analyze`,{method:'POST',body:JSON.stringify({apply:!!apply})});
+  if(apply){ alert(`Escrow payment changed to ${fmt(r.new_monthly_cents)} a month.`); openLoan(loanId); }
+  else loadEscrow(loanId);
+}
+// A bill cannot be marked paid without its receipt — that is the document a buyer
+// eventually asks for, and the one you will want if the payment is ever questioned.
+function payEscrowModal(disbId,amountCents,loanId){
+  modal(`<h2>Mark this bill paid</h2>
+    <div class="grid2">
+      <div class="field"><label>Amount actually paid ($)</label>
+        <input id="pd-amt" type="number" step="0.01" value="${(amountCents/100).toFixed(2)}"></div>
+      <div class="field"><label>Date paid</label>
+        <input id="pd-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>How</label><select id="pd-method">
+        <option value="ach">Bank transfer</option><option value="check">Check</option>
+        <option value="card">Card</option><option value="other">Other</option></select></div>
+      <div class="field"><label>Confirmation number</label><input id="pd-conf"></div>
+    </div>
+    <div class="field"><label>Receipt <span class="note">(required)</span></label>
+      <input id="pd-file" type="file" accept=".pdf,image/*"></div>
+    <p class="note" style="margin-bottom:12px">If escrow does not cover the whole bill, the difference is
+      advanced from your operating account and recorded as owed back to you. The buyer's escrow is never
+      driven negative.</p>
+    <div id="pd-err" class="err hidden"></div>
+    <button class="primary" onclick="payEscrow(${disbId},${loanId})">Mark it paid</button>`);
+}
+async function payEscrow(disbId,loanId){
+  const btn=event&&event.target;
+  try{
+    const f=$('pd-file').files[0];
+    if(!f) throw new Error('Attach the receipt first');
+    if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
+    const doc=await api('/api/admin/documents',{method:'POST',body:JSON.stringify({
+      filename:f.name, mime:f.type, data_base64:await fileToB64(f), kind:'other',
+      loan_id:loanId, category:'taxes', title:'Escrow receipt' })});
+    await api(`/api/admin/escrow/disbursements/${disbId}/pay`,{method:'POST',body:JSON.stringify({
+      amount_cents:Math.round(parseFloat($('pd-amt').value)*100),
+      paid_date:$('pd-date').value, method:$('pd-method').value,
+      confirmation:$('pd-conf').value.trim(), receipt_document_id:doc.id })});
+    closeModal(); loadEscrow(loanId);
+  }catch(e){
+    $('pd-err').textContent=e.message; $('pd-err').classList.remove('hidden');
+    if(btn){ btn.disabled=false; btn.textContent='Mark it paid'; }
+  }
+}
+
+// ---------- the listing ----------
+// Sits under the milestone bar. Once a house reaches "listed" it asks for the link;
+// after that the link stays put, because what you advertised still matters after
+// the house sells — often more so.
+const LISTING_ICON = { zillow:'🏡', website:'🌐', facebook:'📣', other:'🔗' };
+
+function listingRow(p){
+  const phase = p.phase || 'acquired';
+  const reached = ['listed','sold','paid_off'].includes(phase);
+  if (!p.listing_url) {
+    // Nothing to show until the house is actually being advertised.
+    if (!reached) return '';
+    return `<p class="note" style="margin-top:10px">No listing link yet —
+      <a href="#" onclick="listingModal(${p.id});return false">add where this house is advertised</a>
+      so the terms you published stay on the record.</p>`;
+  }
+  const src = p.listing_source || 'other';
+  const terms = [
+    p.listing_price_cents!=null ? fmt(p.listing_price_cents) : null,
+    p.listing_down_cents!=null ? fmt(p.listing_down_cents)+' down' : null,
+    p.listing_payment_cents!=null ? fmt(p.listing_payment_cents)+'/mo' : null,
+    p.listing_rate_bps!=null ? (p.listing_rate_bps/100).toFixed(2)+'%' : null,
+  ].filter(Boolean).join(' · ');
+
+  return `
+  <div style="margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span>${LISTING_ICON[src]||'🔗'}</span>
+      <a href="${esc(p.listing_url)}" target="_blank" rel="noopener noreferrer"><b>View the listing</b></a>
+      <span class="pill gray">${esc(src)}</span>
+      <button class="small" style="margin-left:auto" onclick="listingModal(${p.id})">Edit</button>
+    </div>
+    ${terms?`<p class="note" style="margin-top:6px">Advertised: ${terms}</p>`:
+      `<p class="note" style="margin-top:6px">No advertised terms recorded — worth adding while the listing is still up.</p>`}
+    ${p.listing_notes?`<p class="note">${esc(p.listing_notes)}</p>`:''}
+  </div>`;
+}
+
+function listingModal(pid){
+  const p = (PROPS||[]).find(x=>x.id===pid) || {};
+  modal(`<h2>Where is this house advertised?</h2>
+    <p class="note" style="margin-bottom:12px">Paste the link, and write down the terms you published.
+      Listings come down once a house sells — the terms are what you will actually want later.</p>
+    <div class="field"><label>Listing link</label>
+      <input id="lst-url" placeholder="https://www.zillow.com/homedetails/..." value="${esc(p.listing_url||'')}"></div>
+    <div class="grid2">
+      <div class="field"><label>Advertised price</label>
+        <input id="lst-price" type="number" step="0.01" value="${p.listing_price_cents!=null?(p.listing_price_cents/100):''}"></div>
+      <div class="field"><label>Advertised down payment</label>
+        <input id="lst-down" type="number" step="0.01" value="${p.listing_down_cents!=null?(p.listing_down_cents/100):''}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Advertised monthly payment</label>
+        <input id="lst-pmt" type="number" step="0.01" value="${p.listing_payment_cents!=null?(p.listing_payment_cents/100):''}"></div>
+      <div class="field"><label>Advertised interest rate (%)</label>
+        <input id="lst-rate" type="number" step="0.01" value="${p.listing_rate_bps!=null?(p.listing_rate_bps/100):''}"></div>
+    </div>
+    <div class="field"><label>Notes</label>
+      <input id="lst-notes" placeholder="e.g. also posted in the Detroit CFD group" value="${esc(p.listing_notes||'')}"></div>
+    <div id="lst-err" class="err hidden"></div>
+    <button class="primary" onclick="saveListing(${pid})">Save</button>
+    ${p.listing_url?`<button class="small warn" style="margin-left:8px" onclick="clearListing(${pid})">Remove link</button>`:''}`);
+}
+
+async function saveListing(pid){
+  const cents=(id)=>{ const v=$(id).value; return v===''?null:Math.round(parseFloat(v)*100); };
+  try{
+    await api(`/api/admin/properties/${pid}/listing`,{method:'PUT',body:JSON.stringify({
+      listing_url:$('lst-url').value.trim(),
+      listing_price_cents:cents('lst-price'), listing_down_cents:cents('lst-down'),
+      listing_payment_cents:cents('lst-pmt'),
+      listing_rate_bps:$('lst-rate').value===''?null:Math.round(parseFloat($('lst-rate').value)*100),
+      listing_notes:$('lst-notes').value.trim() })});
+    closeModal(); await loadProps(); openProp(pid);
+  }catch(e){ $('lst-err').textContent=e.message; $('lst-err').classList.remove('hidden'); }
+}
+async function clearListing(pid){
+  if(!confirm('Remove the listing link and the advertised terms from this house?')) return;
+  await api(`/api/admin/properties/${pid}/listing`,{method:'PUT',body:JSON.stringify({listing_url:''})});
+  closeModal(); await loadProps(); openProp(pid);
+}
+
+// ---------- the books for one house ----------
+// Both notes on one page: what the buyer owes you, what you owe your lender, and the
+// gap between them. Every line comes from the double-entry journal, so these figures
+// and the ones on the loan screens cannot drift apart.
+async function loadPropBooks(pid){
+  const el=$('prop-books'); if(!el) return;
+  let d;
+  try{ d=await api(`/api/admin/properties/${pid}/ledger`); }
+  catch(e){ el.innerHTML=`<div class="card"><h2>Books</h2><p class="note">Could not load: ${esc(e.message)}</p></div>`; return; }
+  const s=d.summary, rows=d.rows||[];
+  const sign=(c)=>c<0?'var(--red)':'var(--brand)';
+
+  el.innerHTML=`
+  <div class="card">
+    <h2>📒 Books — buyer and lender together</h2>
+    <div class="cards" style="margin-bottom:14px">
+      <div class="stat"><div class="n">${fmt(s.tb_principal_cents)}</div><div class="l">Buyer still owes you</div></div>
+      <div class="stat"><div class="n">${fmt(s.pml_principal_cents)}</div><div class="l">You still owe your lender</div></div>
+      <div class="stat"><div class="n" style="color:${sign(s.equity_cents)}">${fmt(s.equity_cents)}</div><div class="l">Your equity in the note</div></div>
+      <div class="stat"><div class="n" style="color:${sign(s.net_spread_cents)}">${fmt(s.net_spread_cents)}</div><div class="l">Net spread to date</div></div>
+    </div>
+    <table style="margin-bottom:6px"><tbody>
+      <tr><td>Interest and fees collected from the buyer</td><td class="right">${fmt(s.income_cents)}</td></tr>
+      <tr><td>Interest paid to your lender</td><td class="right" style="color:var(--red)">(${fmt(s.interest_expense_cents)})</td></tr>
+      <tr><td>Taxes, insurance, repairs and other holding costs</td><td class="right" style="color:var(--red)">(${fmt(s.other_expense_cents)})</td></tr>
+      <tr style="border-top:2px solid var(--ink)"><td><b>Net spread</b></td>
+          <td class="right"><b style="color:${sign(s.net_spread_cents)}">${fmt(s.net_spread_cents)}</b></td></tr>
+    </tbody></table>
+    <p class="note">Cost basis ${fmt(s.basis_cents)} · escrow held for the buyer ${fmt(s.escrow_held_cents)}${
+      s.escrow_advanced_cents?` · you have advanced ${fmt(s.escrow_advanced_cents)} of escrow`:''}</p>
+  </div>
+
+  <div class="card">
+    <button class="disclose" onclick="togglePropJournal()">
+      <span class="chev" id="pj-chev">&#9656;</span>
+      <span class="t">Every entry on this house</span>
+      <span class="note" style="margin-left:auto">${rows.length} line${rows.length===1?'':'s'}</span>
+    </button>
+    <div id="pj-panel" class="hidden" style="margin-top:12px">
+      <div style="overflow-x:auto;max-height:460px"><table>
+        <thead><tr><th>Date</th><th>Description</th><th>Account</th>
+          <th class="right">Debit</th><th class="right">Credit</th><th class="right">Balance</th></tr></thead>
+        <tbody>${rows.slice().reverse().map(r=>`
+          <tr${r.reverses_id?' style="opacity:.55"':''}>
+            <td>${fdate(r.entry_date)}</td>
+            <td>${esc(r.description)}${r.reverses_id?' <span class="pill gray">reversal</span>':''}
+              ${r.fund==='trust'?'<span class="pill amber">trust</span>':''}</td>
+            <td class="note">${r.account_code} ${esc(r.account_name)}</td>
+            <td class="right">${r.debit_cents?fmt(r.debit_cents):''}</td>
+            <td class="right">${r.credit_cents?fmt(r.credit_cents):''}</td>
+            <td class="right">${fmt(r.running_balance_cents)}</td>
+          </tr>`).join('')||'<tr><td colspan="6" class="note">Nothing recorded on this house yet.</td></tr>'}</tbody>
+      </table></div>
+      <p class="note" style="margin-top:10px">Every line belongs to a balanced entry. Nothing here is ever
+        edited or deleted — a correction is posted as its own reversing entry, so the history stays intact.</p>
+    </div>
+  </div>`;
+}
+function togglePropJournal(){
+  const p=$('pj-panel'), c=$('pj-chev'); if(!p) return;
+  const open=p.classList.toggle('hidden');
+  if(c) c.innerHTML = open ? '&#9656;' : '&#9662;';
 }
 function propTermsModal(pid){
   const p=(PROPS||[]).find(x=>x.id===pid)||{};
@@ -2214,6 +2686,68 @@ async function sendTestText(){
     $('tt-ok').textContent='Sent. It should arrive within a few seconds.';
     $('tt-ok').classList.remove('hidden'); $('tt-err').classList.add('hidden');
   }catch(e){ $('tt-err').textContent=e.message; $('tt-err').classList.remove('hidden'); }
+}
+
+// ---------- books ----------
+// Does the double-entry journal agree with the loan balances the app has always shown?
+// Until this reads clean, the journal is a second opinion rather than the source of
+// truth, and every screen carries on reading the old tables.
+async function loadBooks(){
+  const el=$('set-books'); if(!el) return;
+  let d;
+  try{ d=await api('/api/admin/books'); }
+  catch(e){ el.innerHTML=`<p class="note">Could not load: ${esc(e.message)}</p>`; return; }
+
+  const offLoans=(d.loans||[]).filter(l=>l.principal_diff||l.escrow_diff);
+  const offPml=(d.pmls||[]).filter(p=>p.principal_diff);
+  const money=(c)=>fmt(Math.abs(c));
+
+  el.innerHTML=`
+    ${d.clean
+      ? `<p class="okmsg">Everything reconciles. The journal agrees with every loan balance, both funds
+           balance on their own, and escrow held matches escrow owed.</p>`
+      : `<div class="err" style="margin-bottom:12px">${offLoans.length+offPml.length} account(s) do not reconcile.
+           Nothing is broken — the app is still reading the old tables — but these are worth understanding
+           before anything switches over.</div>`}
+    <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+      <span class="note">Journal entries</span><b>${d.entries}</b></div>
+    <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+      <span class="note">Debits equal credits</span>
+      <b>${d.trial_balance.balanced?'yes':'NO — off by '+money(d.trial_balance.difference_cents)}</b></div>
+    <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+      <span class="note">Escrow held matches escrow owed</span>
+      <b>${d.trust.balanced?'yes':'NO — off by '+money(d.trust.trust_cash_cents-d.trust.escrow_owed_cents)}</b></div>
+
+    ${offLoans.length||offPml.length ? `
+      <h3 style="margin:16px 0 6px;font-size:14px">Not reconciling</h3>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Account</th><th class="right">App shows</th><th class="right">Journal shows</th><th class="right">Difference</th></tr></thead>
+        <tbody>
+        ${offLoans.map(l=>`<tr><td>Buyer loan #${l.loan_id}${l.escrow_diff?' (escrow)':''}</td>
+          <td class="right">${fmt(l.escrow_diff?l.escrow_old:l.principal_old)}</td>
+          <td class="right">${fmt(l.escrow_diff?l.escrow_journal:l.principal_journal)}</td>
+          <td class="right" style="color:var(--red)">${money(l.escrow_diff||l.principal_diff)}</td></tr>`).join('')}
+        ${offPml.map(p=>`<tr><td>Lender loan #${p.pml_loan_id}</td>
+          <td class="right">${fmt(p.principal_old)}</td><td class="right">${fmt(p.principal_journal)}</td>
+          <td class="right" style="color:var(--red)">${money(p.principal_diff)}</td></tr>`).join('')}
+        </tbody></table></div>` : ''}
+
+    <button class="disclose" style="margin-top:14px" onclick="toggleTrial()">
+      <span class="chev" id="tb-chev">&#9656;</span><span class="t">Account balances</span>
+      <span class="note" style="margin-left:auto">${(d.accounts||[]).length} in use</span></button>
+    <div id="tb-panel" class="hidden" style="margin-top:10px">
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Code</th><th>Account</th><th>Type</th><th class="right">Balance</th></tr></thead>
+        <tbody>${(d.accounts||[]).map(a=>`<tr>
+          <td class="note">${a.code}</td><td>${esc(a.name)}${a.fund==='trust'?' <span class="pill amber">trust</span>':''}</td>
+          <td class="note">${a.type}</td><td class="right">${fmt(a.balance_cents)}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
+}
+function toggleTrial(){
+  const p=$('tb-panel'), c=$('tb-chev'); if(!p) return;
+  const open=p.classList.toggle('hidden');
+  if(c) c.innerHTML = open ? '&#9656;' : '&#9662;';
 }
 
 // ---------- email setup ----------
@@ -3235,7 +3769,6 @@ async function loadSettings(){
     <span>${on?'<span class="pill ok">connected</span>':'<span class="pill gray">not configured</span>'}</span></div>`;
   $('set-integrations').innerHTML =
     chip(s.integrations.stripe,'Stripe','Card, bank transfer &amp; Cash App Pay — set STRIPE_SECRET_KEY')
-    + chip(s.integrations.paynearme,'PayNearMe','Cash at Walmart, 7-Eleven &amp; more — set PNM_API_KEY and PNM_SITE_ID')
     + chip(s.integrations.ai,'AI document reading','Closing docs &amp; bank statements — set ANTHROPIC_API_KEY');
   $('tb-url').href=location.origin+'/'; $('tb-url').textContent=location.origin+'/';
   try{
@@ -3710,12 +4243,13 @@ async function openLoan(id){
   </div>
   <div class="card"><h2>Ledger</h2><div style="overflow-x:auto;max-height:420px"><table>
     <thead><tr><th>Date</th><th>Type</th><th>Method</th><th class="right">Amount</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Escrow</th><th class="right">Fees</th><th class="right">Balance after</th><th>Memo</th></tr></thead>
-    <tbody>${f.ledger.slice().reverse().map(e=>`<tr><td>${fdate(e.entry_date)}</td><td>${e.type==='late_fee'?'Late fee':e.type}</td><td>${e.method||''}</td>
+    <tbody>${f.ledger.slice().reverse().map(e=>`<tr><td>${fdate(e.entry_date)}</td><td>${e.type==='late_fee'?'Late fee':e.type}</td><td>${esc(methodLabel(e.method))}</td>
       <td class="right" style="color:${e.amount_cents<0?'var(--red)':'var(--green)'}">${fmt(Math.abs(e.amount_cents))}</td>
       <td class="right">${e.to_interest_cents?fmt(e.to_interest_cents):''}</td><td class="right">${e.to_principal_cents?fmt(e.to_principal_cents):''}</td>
       <td class="right">${e.to_escrow_cents?fmt(e.to_escrow_cents):''}</td><td class="right">${e.to_fees_cents?fmt(e.to_fees_cents):''}</td>
       <td class="right">${e.principal_balance_after_cents!=null?fmt(e.principal_balance_after_cents):''}</td><td class="note">${esc(e.memo||'')}</td></tr>`).join('')||'<tr><td colspan="10" class="note">No entries yet.</td></tr>'}</tbody>
     </table></div></div>
+  <div id="loan-escrow"></div>
   <div class="card"><h2>📝 Notes</h2>
     <p class="note" style="margin-bottom:12px">One-off notes on this loan — what was said, what was promised,
       what to watch. Internal only; the buyer never sees these.</p>
@@ -3735,6 +4269,7 @@ async function openLoan(id){
   </table></div>`;
   LOANSCHED_OPEN=false;
   loadNotes({elId:'loan-notes', loan_id:L.id});
+  loadEscrow(L.id);
   loadNoticesAdmin();
   loadDocCenter();
   if (f.tenant) loadTBLocation(f.tenant.id);
@@ -4116,8 +4651,8 @@ function recordPaymentModal(){
     <div class="field"><label>Amount ($)</label><input id="rp-amt" type="number" step="0.01"></div>
     <div class="grid2">
       <div class="field"><label>Method</label><select id="rp-method">
-        <option value="check">Check</option>
-        <option value="cash">Cash (in person)</option></select></div>
+        ${Object.entries(MANUAL_METHODS).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}
+      </select></div>
       <div class="field"><label>Date</label><input id="rp-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
     </div>
     <div class="field"><label>Memo</label><input id="rp-memo"></div>
@@ -4402,7 +4937,8 @@ async function openThread(loanId,title){
   $('mt-list').innerHTML=msgs.map(m=>{
     const when=new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
     if(m.body_html) return `<div style="margin:0 0 12px auto;max-width:94%">${m.body_html}
-      <div class="note" style="text-align:right;margin-top:4px">Sent by ${esc(m.sender_name)} · ${when}</div></div>`;
+      <div class="note" style="text-align:right;margin-top:4px">Sent by ${esc(m.sender_name)} · ${when}
+        · <a href="/api/admin/messages/${m.id}/pdf">PDF</a>${deliveryNote(m)}</div></div>`;
     return `<div class="msg ${m.sender_role==='admin'?'me':'them'}">${esc(m.body)}<div class="t">${m.sender_role==='admin'?'You':esc(m.sender_name)} · ${when}</div></div>`;
   }).join('')||'<p class="note">No messages yet.</p>';
   pinThread($('mt-list'));
@@ -4438,14 +4974,37 @@ function growComposer(){
 function composerKey(e){
   if(e.key==='Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey){ e.preventDefault(); sendAdminMsg(); }
 }
+// Shows how a message actually went out, next to it in the thread. A text or email
+// that failed is worth seeing at a glance — otherwise you find out weeks later when
+// somebody says they never heard from you.
+function deliveryNote(m){
+  let d={}; try{ d=m.delivery_json?JSON.parse(m.delivery_json):{}; }catch{}
+  const bits=[];
+  for(const [ch,r] of Object.entries(d)){
+    if(ch==='app') continue;
+    const label=ch==='sms'?'texted':'emailed';
+    bits.push(r.ok ? `<span class="pill ok">${label}</span>`
+                   : `<span class="pill" style="background:var(--red-pale);color:var(--red)" title="${esc(r.error||'')}">${label} failed</span>`);
+  }
+  return bits.length?' '+bits.join(' '):'';
+}
+
 async function sendAdminMsg(){
   const t=$('mt-input');
   const v=t.value.trim(); if(!v)return;
   const btn=$('mt-send');
+  const channels=['app'];
+  if($('ch-sms')&&$('ch-sms').checked) channels.push('sms');
+  if($('ch-email')&&$('ch-email').checked) channels.push('email');
   if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
   try{
-    await api(`/api/admin/loans/${msgLoanId}/messages`,{method:'POST',body:JSON.stringify({body:v})});
+    const r=await api(`/api/admin/loans/${msgLoanId}/messages`,{method:'POST',
+      body:JSON.stringify({body:v, channels})});
     t.value=''; growComposer();
+    // The message is in the app either way; say plainly if a channel did not make it.
+    if(r.failures && r.failures.length){
+      alert('Message posted in the app, but:\n\n' + r.failures.join('\n'));
+    }
     await openThread(msgLoanId,$('mt-title').textContent);
   }catch(e){
     alert(e.message);          // keep what they wrote — do not throw the message away
@@ -4455,21 +5014,7 @@ async function sendAdminMsg(){
 }
 
 // ---------- cash slips ----------
-async function loadSlips(){
-  const rows=await api('/api/admin/cash-slips');
-  $('slip-rows').innerHTML=rows.map(s=>
-    `<tr><td><code>${esc(s.slip_code)}</code></td><td>${esc(s.tenant_name||'')}</td><td>${esc(s.address||'')}</td>
-     <td class="right">${fmt(s.amount_cents)}</td>
-     <td>${s.status==='open'?'<span class="pill amber">open</span>':s.status==='paid'?'<span class="pill ok">paid</span>':`<span class="pill gray">${s.status}</span>`}</td>
-     <td>${fdate((s.created_at||'').slice(0,10))}</td>
-     <td class="right">${s.status==='open'?`<button class="small" onclick="markSlip(${s.id})">Mark paid</button>`:''}</td></tr>`
-  ).join('')||'<tr><td colspan="7" class="note">No cash codes yet.</td></tr>';
-}
-async function markSlip(id){
-  if(!confirm('Confirm cash was received — this posts the payment to the ledger.'))return;
-  await api(`/api/admin/cash-slips/${id}/mark-paid`,{method:'POST',body:'{}'});
-  loadSlips();
-}
+
 // ---------- first-run setup wizard ----------
 let wzStep = 1, wzMax = 4;
 async function maybeWizard(){

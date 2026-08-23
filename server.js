@@ -26,6 +26,10 @@ journal.initSchema();
 const backfill = require('./backfill');
 backfill.maybeRunOnBoot();
 
+const pdfDoc = require('./pdf');
+const escrow = require('./escrow');
+escrow.initSchema();
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -138,29 +142,6 @@ app.post('/api/stripe/webhook', express.raw({ type: '*/*' }), (req, res) => {
   } catch (e) {
     res.status(400).send('Bad payload');
   }
-});
-
-// PayNearMe webhook — posts cash payments automatically once the store confirms.
-app.post('/api/paynearme/webhook', express.raw({ type: '*/*' }), (req, res) => {
-  const payload = req.body.toString('utf8');
-  if (!pay.verifyPnmSignature(payload, req.headers['x-paynearme-signature'], process.env.PNM_WEBHOOK_SECRET)) {
-    return res.status(400).send('Bad signature');
-  }
-  try {
-    // PayNearMe posts form-encoded or JSON depending on config; handle both.
-    let d;
-    try { d = JSON.parse(payload); } catch { d = Object.fromEntries(new URLSearchParams(payload)); }
-    const code = d.site_order_identifier || d.payment_identifier || d.order_identifier;
-    const status = (d.payment_status || d.status || '').toLowerCase();
-    const slip = code ? get('SELECT * FROM cash_slips WHERE slip_code=?', code) : null;
-    if (slip && slip.status === 'open' && (status === 'paid' || status === 'settled' || status === 'complete')) {
-      postPayment(slip.loan_id, slip.amount_cents, 'cash_retail', today(),
-        `pnm:${code}`, `Cash payment at retailer — ${code}`, null);
-      run("UPDATE cash_slips SET status='paid', paid_at=datetime('now') WHERE id=?", slip.id);
-      console.log(`PayNearMe cash payment posted for slip ${code}`);
-    }
-    res.json({ received: true });
-  } catch (e) { res.status(400).send('Bad payload'); }
 });
 
 app.use(express.json({ limit: '60mb' }));
@@ -282,7 +263,7 @@ function postStripePayment(session) {
 
 // ---------- automated late / legal notices ----------
 // A payment only counts as "confirmed" once it's on the ledger: admin-recorded payments,
-// Stripe webhook/confirm postings, or cash slips the admin marked paid. The sweep sends a
+// or Stripe webhook/confirm postings. The sweep sends a
 // late notice once a payment is past due + grace with nothing confirmed for that period,
 // and escalates to a legal notice after LEGAL_NOTICE_DAYS past due. Read receipts are
 // recorded when the buyer opens the notice in the app.
@@ -514,7 +495,7 @@ app.get('/api/admin/summary', adminOnly, (req, res) => {
     monthly_spread_cents: tbTotalMonthly - pmlTotalMonthly,
     properties_in_progress: all(`SELECT id, address, phase FROM properties
       WHERE company_id=? AND COALESCE(phase,'acquired') NOT IN ('sold','paid_off') ORDER BY id DESC`, req.companyId),
-    integrations: { stripe: pay.stripeEnabled(), ai: ai.aiEnabled(), paynearme: pay.pnmEnabled(), sms: sms.smsEnabled(myCompany(req)) },
+    integrations: { stripe: pay.stripeEnabled(), ai: ai.aiEnabled(), sms: sms.smsEnabled(myCompany(req)) },
     pending_invitations: get("SELECT COUNT(*) c FROM invitations WHERE company_id=? AND status IN ('pending','failed')", req.companyId).c,
     overdue_tasks: get(`SELECT COUNT(*) c FROM tasks WHERE company_id=? AND status='open'
       AND due_date IS NOT NULL AND due_date < date('now')`, req.companyId).c,
@@ -736,7 +717,9 @@ app.put('/api/super/companies/:id', superOnly, (req, res) => {
 
 // ---------- admin: properties ----------
 app.get('/api/admin/properties', adminOnly, (req, res) => {
-  const props = all('SELECT * FROM properties WHERE company_id=? ORDER BY id DESC', req.companyId);
+  const props = all(`SELECT * FROM properties WHERE company_id=?
+    AND (archived_at IS NULL OR ?='1') ORDER BY id DESC`,
+    req.companyId, req.query.archived === '1' ? '1' : '0');
   for (const p of props) {
     p.expense_total_cents = get("SELECT COALESCE(SUM(amount_cents),0) s FROM expenses WHERE property_id=? AND status='assigned'", p.id).s;
     p.cost_basis_cents = propertyBasis(p.id).total_cents;
@@ -755,15 +738,141 @@ app.post('/api/admin/properties', adminOnly, (req, res) => {
     trustee || null, notes || null, req.body.lat || null, req.body.lng || null, req.body.county || null);
   res.json(get('SELECT * FROM properties WHERE id=?', r.lastInsertRowid));
 });
+// ---------- listing ----------
+// Only http and https are stored. A link is rendered as something a person clicks, so
+// anything else — javascript:, data: — has no business being saved in the first place.
+function cleanListingUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  let u;
+  try { u = new URL(s); } catch { throw new Error('That does not look like a web address'); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error('A listing link has to start with http:// or https://');
+  }
+  return u.toString();
+}
+function listingSource(url) {
+  const h = (() => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; } })();
+  if (/zillow\./i.test(h)) return 'zillow';
+  if (/facebook\.|fb\./i.test(h)) return 'facebook';
+  if (/realtor\.|redfin\.|trulia\./i.test(h)) return 'other';
+  return h ? 'website' : 'other';
+}
+
+app.put('/api/admin/properties/:id/listing', adminOnly, (req, res, next) => {
+  try {
+    const p = ownedProperty(req, req.params.id);
+    if (!p) return res.status(404).json({ error: 'Not found' });
+    const b = req.body || {};
+    const url = cleanListingUrl(b.listing_url);
+    const num = (v) => (v === '' || v == null ? null : Math.round(Number(v)));
+    run(`UPDATE properties SET listing_url=?, listing_source=?, listing_price_cents=?,
+         listing_down_cents=?, listing_payment_cents=?, listing_rate_bps=?,
+         listing_notes=?, listing_captured_at=? WHERE id=?`,
+      url, url ? (b.listing_source || listingSource(url)) : null,
+      num(b.listing_price_cents), num(b.listing_down_cents),
+      num(b.listing_payment_cents), num(b.listing_rate_bps),
+      b.listing_notes || null,
+      url ? (p.listing_captured_at || new Date().toISOString()) : null, p.id);
+    res.json(get('SELECT * FROM properties WHERE id=?', p.id));
+  } catch (e) { next(e); }
+});
+
 app.put('/api/admin/properties/:id', adminOnly, (req, res) => {
   const p = ownedProperty(req, req.params.id);
   if (!p) return res.status(404).json({ error: 'Not found' });
   const b = { ...p, ...req.body };
-  run(`UPDATE properties SET address=?, city=?, state=?, zip=?, trust_name=?, trustee=?, notes=?,
-       lat=?, lng=?, county=? WHERE id=?`,
-    b.address, b.city, b.state, b.zip, b.trust_name, b.trustee, b.notes,
-    b.lat ?? null, b.lng ?? null, b.county ?? null, p.id);
+  const n = (v) => (v === '' || v == null ? null : Math.round(Number(v)));
+  run(`UPDATE properties SET address=?, city=?, state=?, zip=?, county=?, trust_name=?, trustee=?,
+       notes=?, lat=?, lng=?, owner_name=?, owner_type=?, beds=?, baths=?, sqft=?, year_built=?,
+       acquired_date=?, purchase_price_cents=?, target_sale_price_cents=?,
+       late_fee_cents=?, grace_days=?, due_day=?,
+       insurance_carrier=?, insurance_expires=?, tax_due_date=? WHERE id=?`,
+    b.address, b.city, b.state, b.zip, b.county ?? null, b.trust_name, b.trustee,
+    b.notes, b.lat ?? null, b.lng ?? null, b.owner_name ?? null, b.owner_type ?? null,
+    n(b.beds), b.baths === '' || b.baths == null ? null : Number(b.baths), n(b.sqft), n(b.year_built),
+    b.acquired_date || null, n(b.purchase_price_cents), n(b.target_sale_price_cents),
+    n(b.late_fee_cents), n(b.grace_days), n(b.due_day),
+    b.insurance_carrier || null, b.insurance_expires || null, b.tax_due_date || null, p.id);
   res.json(get('SELECT * FROM properties WHERE id=?', p.id));
+});
+
+// ---------- archive / delete ----------
+// Archiving is the safe one: the house drops out of your lists and nothing else changes.
+app.post('/api/admin/properties/:id/archive', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  if (p.archived_at) return res.status(400).json({ error: 'Already archived' });
+  const activeLoan = get("SELECT id FROM loans WHERE property_id=? AND status='active'", p.id);
+  if (activeLoan) {
+    return res.status(400).json({
+      error: 'This house still has an active loan on it. Archiving would hide a buyer who is still paying you.' });
+  }
+  run("UPDATE properties SET archived_at=datetime('now'), archived_reason=? WHERE id=?",
+    (req.body && req.body.reason) || null, p.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/properties/:id/restore', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  run('UPDATE properties SET archived_at=NULL, archived_reason=NULL WHERE id=?', p.id);
+  res.json({ ok: true });
+});
+
+// What a house is carrying, so a delete can refuse for a reason rather than just refusing.
+function propertyTies(id) {
+  const c = (sql, ...a) => get(sql, ...a).c;
+  return {
+    loans: c('SELECT COUNT(*) c FROM loans WHERE property_id=?', id),
+    pml_loans: c('SELECT COUNT(*) c FROM pml_loans WHERE property_id=?', id),
+    journal_entries: c('SELECT COUNT(*) c FROM journal_entries WHERE property_id=?', id),
+    costs: c('SELECT COUNT(*) c FROM property_costs WHERE property_id=?', id),
+    documents: c('SELECT COUNT(*) c FROM documents WHERE property_id=?', id),
+    expenses: c('SELECT COUNT(*) c FROM expenses WHERE property_id=?', id),
+  };
+}
+
+app.get('/api/admin/properties/:id/ties', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  const t = propertyTies(p.id);
+  const blocking = t.loans + t.pml_loans + t.journal_entries;
+  res.json({ ...t, can_delete: blocking === 0, blocking });
+});
+
+// Deleting is only allowed for a house that never became a deal. Once there is a loan
+// or a single journal entry against it, the record is part of the books and archiving
+// is the right answer — a deleted property would leave money pointing at nothing.
+app.delete('/api/admin/properties/:id', adminOnly, (req, res, next) => {
+  try {
+    const p = ownedProperty(req, req.params.id);
+    if (!p) return res.status(404).json({ error: 'Not found' });
+    if (!req.body || req.body.confirm !== 'DELETE') {
+      return res.status(400).json({ error: 'Type DELETE to confirm' });
+    }
+    const t = propertyTies(p.id);
+    if (t.loans || t.pml_loans || t.journal_entries) {
+      const why = [
+        t.loans ? `${t.loans} loan${t.loans === 1 ? '' : 's'}` : null,
+        t.pml_loans ? `${t.pml_loans} lender loan${t.pml_loans === 1 ? '' : 's'}` : null,
+        t.journal_entries ? `${t.journal_entries} ledger entr${t.journal_entries === 1 ? 'y' : 'ies'}` : null,
+      ].filter(Boolean).join(', ');
+      return res.status(400).json({
+        error: `This house has ${why} against it. Deleting it would leave money in your books pointing at nothing. Archive it instead.`,
+        ties: t,
+      });
+    }
+    // Safe to remove: only loose attachments, nothing financial.
+    run('DELETE FROM property_costs WHERE property_id=?', p.id);
+    run('UPDATE expenses SET property_id=NULL, status=\'unassigned\' WHERE property_id=?', p.id);
+    run('DELETE FROM property_contacts WHERE property_id=?', p.id);
+    run('DELETE FROM tasks WHERE property_id=?', p.id);
+    run('DELETE FROM notes WHERE property_id=?', p.id);
+    run('DELETE FROM documents WHERE property_id=?', p.id);
+    run('DELETE FROM properties WHERE id=?', p.id);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
 });
 
 // ---------- tasks & calendar ----------
@@ -1645,6 +1754,205 @@ app.delete('/api/admin/texting', ownerOnly, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- downloads ----------
+// Any message or notice, as a letter on the company's paper. A buyer who wants to show
+// something to a lawyer, a lender or a relative should not have to screenshot the app.
+function sendPdf(res, buf, filename) {
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename.replace(/[^\w.\- ]/g, '')}"`);
+  res.setHeader('Content-Length', buf.length);
+  res.send(buf);
+}
+
+// The company's own logo for the letterhead. If none has been uploaded the letter goes
+// out with the name alone — better a plain letterhead than Porch Pay's mark on paper
+// that is meant to be theirs.
+function companyLogo(co) {
+  if (!co || !co.logo_path) return null;
+  try {
+    const f = path.join(UPLOAD_DIR, co.logo_path);
+    if (!f.startsWith(UPLOAD_DIR)) return null;      // no traversing out of uploads
+    return fs.readFileSync(f);
+  } catch { return null; }
+}
+
+function messagePdf(msg, loan) {
+  const co = get('SELECT * FROM companies WHERE id=?', loan.company_id);
+  const prop = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+  const meta = [];
+  if (prop) meta.push(['Property', [prop.address, prop.city, prop.state].filter(Boolean).join(', ')]);
+  meta.push(['Sent', String(msg.created_at || '').slice(0, 10)]);
+  return pdfDoc.letter({
+    company: co, logo: companyLogo(co),
+    subject: msg.subject || 'Message',
+    bodyHtml: msg.body_html || null,
+    bodyText: msg.body_html ? null : msg.body,
+    meta, sentAt: msg.created_at,
+  });
+}
+
+function noticePdf(notice, loan) {
+  const co = get('SELECT * FROM companies WHERE id=?', loan.company_id);
+  const prop = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+  const meta = [];
+  if (prop) meta.push(['Property', [prop.address, prop.city, prop.state].filter(Boolean).join(', ')]);
+  meta.push(['Notice type', notice.type === 'legal_notice' ? 'Notice of Default'
+    : notice.type === 'late_notice' ? 'Late Payment Notice' : 'Notice']);
+  meta.push(['Date issued', String(notice.sent_at || notice.created_at || '').slice(0, 10)]);
+  return pdfDoc.letter({
+    company: co, logo: companyLogo(co),
+    subject: notice.subject, bodyText: notice.body,
+    meta, sentAt: notice.sent_at || notice.created_at,
+    footer: 'This notice was delivered through Porch Pay and recorded with the date and time it was sent.',
+  });
+}
+
+app.get('/api/admin/messages/:id/pdf', adminOnly, (req, res, next) => {
+  try {
+    const m = get(`SELECT m.* FROM messages m JOIN loans l ON l.id=m.loan_id
+      WHERE m.id=? AND l.company_id=?`, Number(req.params.id), req.companyId);
+    if (!m) return res.status(404).json({ error: 'Not found' });
+    const loan = get('SELECT * FROM loans WHERE id=?', m.loan_id);
+    sendPdf(res, messagePdf(m, loan), `message-${m.id}.pdf`);
+  } catch (e) { next(e); }
+});
+
+app.get('/api/tenant/messages/:id/pdf', tenantReady, (req, res, next) => {
+  try {
+    const loan = tenantLoan(req);
+    if (!loan) return res.status(404).json({ error: 'No loan' });
+    const m = get('SELECT * FROM messages WHERE id=? AND loan_id=?', Number(req.params.id), loan.id);
+    if (!m) return res.status(404).json({ error: 'Not found' });
+    sendPdf(res, messagePdf(m, loan), `message-${m.id}.pdf`);
+  } catch (e) { next(e); }
+});
+
+app.get('/api/admin/notices/:id/pdf', adminOnly, (req, res, next) => {
+  try {
+    const n = get(`SELECT n.* FROM notices n JOIN loans l ON l.id=n.loan_id
+      WHERE n.id=? AND l.company_id=?`, Number(req.params.id), req.companyId);
+    if (!n) return res.status(404).json({ error: 'Not found' });
+    const loan = get('SELECT * FROM loans WHERE id=?', n.loan_id);
+    sendPdf(res, noticePdf(n, loan), `notice-${n.id}.pdf`);
+  } catch (e) { next(e); }
+});
+
+app.get('/api/tenant/notices/:id/pdf', tenantReady, (req, res, next) => {
+  try {
+    const loan = tenantLoan(req);
+    if (!loan) return res.status(404).json({ error: 'No loan' });
+    const n = get('SELECT * FROM notices WHERE id=? AND loan_id=?', Number(req.params.id), loan.id);
+    if (!n) return res.status(404).json({ error: 'Not found' });
+    sendPdf(res, noticePdf(n, loan), `notice-${n.id}.pdf`);
+  } catch (e) { next(e); }
+});
+
+// ---------- payment methods ----------
+// Money that arrives outside Stripe still has to land on the ledger, and it matters
+// which way it came — a Zelle transfer and a handful of cash are not the same thing
+// when you are reconciling a bank statement a year later.
+const MANUAL_METHODS = {
+  cash:     'Cash',
+  check:    'Check',
+  zelle:    'Zelle',
+  venmo:    'Venmo',
+  applepay: 'Apple Pay',
+  paypal:   'PayPal',
+  other:    'Other',
+};
+// Everything the ledger can show, including the Stripe methods and two retired ones
+// kept so old rows still read properly rather than turning into "Payment".
+const ALL_METHOD_LABELS = {
+  stripe_card: 'Card', stripe_ach: 'Bank transfer', stripe_cashapp: 'Cash App Pay',
+  ...MANUAL_METHODS,
+  cash_retail: 'Cash at store (retired)', cashapp_manual: 'Cash App (retired)',
+};
+
+app.get('/api/admin/payment-methods', adminOnly, (req, res) => {
+  res.json({ manual: MANUAL_METHODS, all: ALL_METHOD_LABELS });
+});
+
+// ---------- escrow ----------
+// Escrow is the buyer's money held for their taxes and insurance. Everything here runs
+// through the trust side of the journal, so a bill can never be paid with somebody
+// else's escrow.
+app.get('/api/admin/loans/:id/escrow', adminOnly, (req, res, next) => {
+  try {
+    const loan = ownedLoan(req, Number(req.params.id));
+    if (!loan) return res.status(404).json({ error: 'No such loan' });
+    res.json({
+      items: all('SELECT * FROM escrow_items WHERE loan_id=? AND active=1 ORDER BY id', loan.id),
+      analysis: escrow.analyze(loan.id),
+      last_saved: get('SELECT * FROM escrow_analyses WHERE loan_id=? ORDER BY id DESC LIMIT 1', loan.id),
+      disbursements: all(`SELECT d.*, doc.filename receipt_filename
+        FROM escrow_disbursements d
+        LEFT JOIN documents doc ON doc.id = d.receipt_document_id
+        WHERE d.loan_id=? ORDER BY d.scheduled_date DESC, d.id DESC LIMIT 40`, loan.id),
+      held_cents: journal.balance('2100', { loan_id: loan.id }),
+      advanced_cents: journal.balance('1260', { loan_id: loan.id }),
+    });
+  } catch (e) { next(e); }
+});
+
+app.post('/api/admin/loans/:id/escrow/items', adminOnly, (req, res, next) => {
+  try {
+    const loan = ownedLoan(req, Number(req.params.id));
+    if (!loan) return res.status(404).json({ error: 'No such loan' });
+    const b = req.body || {};
+    const months = escrow.monthsOf(b.due_months);
+    if (!months.length) return res.status(400).json({ error: 'Say which month or months the bill is due, e.g. 2,8' });
+    if (!b.annual_amount_cents) return res.status(400).json({ error: 'How much is it for the year?' });
+    const r = run(`INSERT INTO escrow_items (loan_id,item_type,payee,account_number,
+      annual_amount_cents,due_months) VALUES (?,?,?,?,?,?)`,
+      loan.id, b.item_type || 'property_tax', b.payee || null, b.account_number || null,
+      Math.round(b.annual_amount_cents), months.join(','));
+    escrow.rebuildSchedule(loan.id);
+    res.json(get('SELECT * FROM escrow_items WHERE id=?', r.lastInsertRowid));
+  } catch (e) { next(e); }
+});
+
+app.delete('/api/admin/escrow/items/:id', adminOnly, (req, res, next) => {
+  try {
+    const it = get(`SELECT ei.* FROM escrow_items ei JOIN loans l ON l.id=ei.loan_id
+      WHERE ei.id=? AND l.company_id=?`, Number(req.params.id), req.companyId);
+    if (!it) return res.status(404).json({ error: 'Not found' });
+    run('UPDATE escrow_items SET active=0 WHERE id=?', it.id);
+    run("DELETE FROM escrow_disbursements WHERE escrow_item_id=? AND status='scheduled'", it.id);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// Run the analysis and keep it, because the statement you send has to be reproducible.
+app.post('/api/admin/loans/:id/escrow/analyze', adminOnly, (req, res, next) => {
+  try {
+    const loan = ownedLoan(req, Number(req.params.id));
+    if (!loan) return res.status(404).json({ error: 'No such loan' });
+    const a = escrow.analyze(loan.id);
+    const id = escrow.saveAnalysis(a);
+    if (req.body && req.body.apply) {
+      run('UPDATE loans SET escrow_cents=? WHERE id=?', a.new_monthly_cents, loan.id);
+    }
+    escrow.rebuildSchedule(loan.id);
+    res.json({ ...a, saved_id: id, applied: !!(req.body && req.body.apply) });
+  } catch (e) { next(e); }
+});
+
+app.post('/api/admin/escrow/disbursements/:id/pay', adminOnly, (req, res, next) => {
+  try {
+    const d = get(`SELECT d.* FROM escrow_disbursements d JOIN loans l ON l.id=d.loan_id
+      WHERE d.id=? AND l.company_id=?`, Number(req.params.id), req.companyId);
+    if (!d) return res.status(404).json({ error: 'Not found' });
+    res.json(escrow.payDisbursement(d.id, { ...(req.body || {}), created_by: req.user.id }));
+  } catch (e) { next(e); }
+});
+
+// Bills coming up that escrow will not cover. You still have to pay them — this is
+// notice to get the money ready, not permission to let a tax bill lapse.
+app.get('/api/admin/escrow/shortfalls', adminOnly, (req, res, next) => {
+  try { res.json(escrow.upcomingShortfalls(req.companyId, Number(req.query.days) || 45)); }
+  catch (e) { next(e); }
+});
+
 // ---------- books ----------
 // Whether the double-entry journal agrees with the old tables, loan by loan. Until this
 // reads clean, nothing on any screen is served from the journal.
@@ -2009,7 +2317,13 @@ app.post('/api/admin/loans/:id/payments', adminOnly, (req, res) => {
   const { amount_cents, method, entry_date, memo } = req.body || {};
   if (!ownedLoan(req, req.params.id)) return res.status(404).json({ error: 'Loan not found' });
   if (!amount_cents || amount_cents <= 0) return res.status(400).json({ error: 'Amount required' });
-  const result = postPayment(Number(req.params.id), amount_cents, method || 'cash', entry_date || today(), null, memo, req.user.id);
+  const m = method || 'cash';
+  // The method is free text in the database, so it is checked here instead. A typo
+  // saved once would show as an unlabelled "Payment" on that row for ever.
+  if (!MANUAL_METHODS[m]) {
+    return res.status(400).json({ error: `Not a payment method we recognise: ${m}` });
+  }
+  const result = postPayment(Number(req.params.id), amount_cents, m, entry_date || today(), null, memo, req.user.id);
   res.json(result);
 });
 app.post('/api/admin/loans/:id/latefee', adminOnly, (req, res) => {
@@ -2304,35 +2618,92 @@ app.get('/api/admin/loans/:id/messages', adminOnly, (req, res) => {
   run('UPDATE messages SET read_by_admin=1 WHERE loan_id=?', req.params.id);
   res.json(all('SELECT m.*, u.name AS sender_name, u.role AS sender_role FROM messages m JOIN users u ON u.id=m.sender_user_id WHERE m.loan_id=? ORDER BY m.id', req.params.id));
 });
-app.post('/api/admin/loans/:id/messages', adminOnly, (req, res) => {
-  const loan = ownedLoan(req, req.params.id);
-  if (!loan) return res.status(404).json({ error: 'Loan not found' });
-  const b = req.body || {};
-  if (!b.body && !b.body_html) return res.status(400).json({ error: 'Message required' });
+app.post('/api/admin/loans/:id/messages', adminOnly, async (req, res, next) => {
+  try {
+    const loan = ownedLoan(req, req.params.id);
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    const b = req.body || {};
+    if (!b.body && !b.body_html) return res.status(400).json({ error: 'Message required' });
 
-  // A plain typed message stays plain. A template or HTML body is merged, sanitised,
-  // and wrapped in the company's letterhead before it is stored.
-  if (b.body_html) {
+    const co = myCompany(req);
     const ctx = mergeContextForLoan(req, loan.id);
     const values = tpl.buildMergeValues(ctx);
-    const subject = tpl.applyMerge(b.subject || '', values);
-    const merged = tpl.applyMerge(tpl.sanitizeHtml(b.body_html), values);
-    const html = tpl.brandedShell({ company: ctx.company, bodyHtml: merged, subject, baseUrl: ctx.baseUrl });
-    run(`INSERT INTO messages (loan_id, sender_user_id, body, body_html, subject, template_id, read_by_admin)
-         VALUES (?,?,?,?,?,?,1)`, loan.id, req.user.id, tpl.htmlToText(merged), html,
-      subject || null, b.template_id || null);
-  } else {
-    run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
-      loan.id, req.user.id, b.body);
-  }
-  if (loan.tenant_user_id) {
-    const co = myCompany(req);
-    notify.notify(loan.tenant_user_id, {
-      kind: 'message', title: `New message from ${co ? tpl.outboundName(co) : 'your servicer'}`,
-      body: b.subject || (b.body || '').slice(0, 120), url: '/?tab=msgs',
-    }).catch(() => {});
-  }
-  res.json({ ok: true });
+    const buyer = loan.tenant_user_id
+      ? get('SELECT id, name, email, phone FROM users WHERE id=?', loan.tenant_user_id) : null;
+
+    // The in-app copy is always written — it is the one delivery that cannot fail.
+    // Text and email are extra ways to reach the same message.
+    const wanted = Array.isArray(b.channels) && b.channels.length ? b.channels : ['app'];
+    const channels = ['app', ...wanted.filter(c => c === 'sms' || c === 'email')];
+
+    let subject = null, merged = null, storedHtml = null, plain;
+    if (b.body_html) {
+      subject = tpl.applyMerge(b.subject || '', values);
+      merged = tpl.applyMerge(tpl.sanitizeHtml(b.body_html), values);
+      storedHtml = tpl.brandedShell({ company: ctx.company, bodyHtml: merged, subject, baseUrl: ctx.baseUrl });
+      plain = tpl.htmlToText(merged);
+    } else {
+      subject = b.subject ? tpl.applyMerge(b.subject, values) : null;
+      plain = tpl.applyMerge(b.body, values);
+    }
+
+    const ins = run(`INSERT INTO messages (loan_id, sender_user_id, body, body_html, subject,
+      template_id, read_by_admin, channels) VALUES (?,?,?,?,?,?,1,?)`,
+      loan.id, req.user.id, plain, storedHtml, subject || null,
+      b.template_id || null, channels.join(','));
+    const messageId = ins.lastInsertRowid;
+
+    const delivery = { app: { ok: true } };
+
+    if (channels.includes('email')) {
+      if (!buyer || !buyer.email) delivery.email = { ok: false, error: 'No email address on file for this buyer' };
+      else if (!email.emailEnabled(co)) delivery.email = { ok: false, error: 'Email is not connected — see Settings → Email' };
+      else {
+        // The company's own letterhead, built for mail clients rather than the app.
+        const html = tpl.emailShell({
+          company: ctx.company, subject: subject || `A message from ${tpl.outboundName(co)}`,
+          bodyHtml: merged || plain.split('\n\n').map(p => `<p>${tpl.escapeHtml(p)}</p>`).join(''),
+          baseUrl: ctx.baseUrl, preheader: plain.slice(0, 120),
+        });
+        try {
+          const r = await email.sendEmail(buyer.email, {
+            subject: subject || `A message from ${tpl.outboundName(co)}`,
+            text: plain, html, kind: 'message', loanId: loan.id, companyId: req.companyId,
+          }, co);
+          delivery.email = { ok: true, to: r.to, from: r.from };
+        } catch (e) { delivery.email = { ok: false, error: e.message }; }
+      }
+    }
+
+    if (channels.includes('sms')) {
+      if (!buyer || !buyer.phone) delivery.sms = { ok: false, error: 'No mobile number on file for this buyer' };
+      else if (!sms.smsEnabled(co)) delivery.sms = { ok: false, error: 'Texting is not connected — see Settings → Texting' };
+      else {
+        // A text is a nudge, not the message. Long HTML would arrive as a wall of
+        // fragments, so it points back at the app where the whole thing lives.
+        const short = plain.length > 300
+          ? `${subject ? subject + '\n\n' : ''}${plain.slice(0, 240).trim()}…\n\nRead it in full: ${ctx.baseUrl || ''}/`
+          : `${subject ? subject + '\n\n' : ''}${plain}`;
+        try {
+          await sms.sendSms(buyer.phone, short, co);
+          delivery.sms = { ok: true, to: buyer.phone };
+        } catch (e) { delivery.sms = { ok: false, error: e.message }; }
+      }
+    }
+
+    run('UPDATE messages SET delivery_json=? WHERE id=?', JSON.stringify(delivery), messageId);
+
+    if (loan.tenant_user_id) {
+      notify.notify(loan.tenant_user_id, {
+        kind: 'message', title: `New message from ${co ? tpl.outboundName(co) : 'your servicer'}`,
+        body: subject || plain.slice(0, 120), url: '/?tab=msgs',
+      }).catch(() => {});
+    }
+
+    // Report what actually happened per channel rather than a blanket ok.
+    const failures = Object.entries(delivery).filter(([, v]) => !v.ok).map(([k, v]) => `${k}: ${v.error}`);
+    res.json({ ok: true, message_id: messageId, delivery, failures });
+  } catch (e) { next(e); }
 });
 
 // ---------- PML loans (admin only — never exposed to tenant routes) ----------
@@ -3008,7 +3379,6 @@ app.get('/api/tenant/loan', tenantReady, (req, res) => {
   f.schedule = loanEngine.amortizationSchedule(loan);
   f.payoff = loanEngine.payoffQuote(f.loan, today());
   f.documents = all('SELECT id, filename, created_at FROM documents WHERE loan_id=? AND visible_to_tenant=1', loan.id);
-  f.slips = all("SELECT * FROM cash_slips WHERE loan_id=? AND status='open' ORDER BY id DESC", loan.id);
   f.stripe_enabled = pay.stripeEnabled();
   f.location_consent_at = req.user.location_consent_at;
   f.terms_accepted_at = req.user.terms_accepted_at;
@@ -3052,16 +3422,6 @@ app.get('/api/tenant/pay/confirm', tenantReady, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
-});
-app.post('/api/tenant/pay/cash-slip', tenantReady, async (req, res) => {
-  const loan = tenantLoan(req);
-  if (!loan) return res.status(404).json({ error: 'No loan' });
-  const amount = Number(req.body.amount_cents);
-  if (!amount || amount < 100) return res.status(400).json({ error: 'Enter a valid amount' });
-  try {
-    const slip = await pay.createRetailSlip(loan.id, amount, req.user);
-    res.json(slip);
-  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get('/api/tenant/messages', tenantReady, (req, res) => {
   const loan = tenantLoan(req);
@@ -3144,21 +3504,6 @@ app.get('/api/admin/tenants/:id/location', adminOnly, (req, res) => {
       geocoded: !!(home.lat && home.lng) } : null,
     miles_from_home: withDistance.length ? withDistance[0].miles_from_home : null,
   });
-});
-
-// ---------- admin: cash slips (mark paid when cash received) ----------
-app.get('/api/admin/cash-slips', adminOnly, (req, res) => {
-  res.json(all(`SELECT s.*, p.address, u.name AS tenant_name FROM cash_slips s
-    JOIN loans l ON l.id=s.loan_id LEFT JOIN properties p ON p.id=l.property_id
-    LEFT JOIN users u ON u.id=l.tenant_user_id WHERE l.company_id=? ORDER BY s.id DESC`, req.companyId));
-});
-app.post('/api/admin/cash-slips/:id/mark-paid', adminOnly, (req, res) => {
-  const slip = get(`SELECT s.* FROM cash_slips s JOIN loans l ON l.id=s.loan_id
-    WHERE s.id=? AND l.company_id=?`, req.params.id, req.companyId);
-  if (!slip || slip.status !== 'open') return res.status(400).json({ error: 'Slip not open' });
-  postPayment(slip.loan_id, slip.amount_cents, 'cash_retail', today(), `slip:${slip.slip_code}`, `Cash payment — slip ${slip.slip_code}`, req.user.id);
-  run("UPDATE cash_slips SET status='paid', paid_at=datetime('now') WHERE id=?", slip.id);
-  res.json({ ok: true });
 });
 
 // ---------- pages ----------

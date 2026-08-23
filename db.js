@@ -109,7 +109,9 @@ CREATE TABLE IF NOT EXISTS ledger (
   loan_id INTEGER NOT NULL REFERENCES loans(id),
   entry_date TEXT NOT NULL,
   type TEXT NOT NULL CHECK (type IN ('payment','late_fee','fee','adjustment','escrow_disbursement','note')),
-  method TEXT,           -- stripe_card | stripe_ach | stripe_cashapp | cash_retail | cash | check | cashapp_manual | zelle | other
+  method TEXT,           -- stripe_card | stripe_ach | stripe_cashapp        (through Stripe)
+                         -- cash | check | zelle | venmo | applepay | paypal | other  (recorded by hand)
+                         -- cash_retail | cashapp_manual                         (retired, old rows only)
   amount_cents INTEGER NOT NULL,             -- total received (positive) or charge (negative for fees assessed)
   to_interest_cents INTEGER DEFAULT 0,
   to_principal_cents INTEGER DEFAULT 0,
@@ -133,6 +135,9 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- RETIRED. Cash-at-retail through PayNearMe was removed; nothing reads or writes this
+-- any more. The table stays because dropping it in SQLite cannot be undone, and if a
+-- buyer ever did pay cash against a code, that record should outlive the feature.
 CREATE TABLE IF NOT EXISTS cash_slips (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   slip_code TEXT UNIQUE NOT NULL,
@@ -492,8 +497,28 @@ addColumnIfMissing('properties', 'phase', "TEXT DEFAULT 'acquired'");
 addColumnIfMissing('messages', 'body_html', 'TEXT');
 addColumnIfMissing('messages', 'subject', 'TEXT');
 addColumnIfMissing('messages', 'template_id', 'INTEGER');
+// Which ways a message was sent, and how each one went. The in-app copy always exists;
+// text and email are extra, and a failure on either has to be visible rather than
+// swallowed — "I never got it" is a conversation worth having evidence for.
+addColumnIfMissing('messages', 'channels', 'TEXT');        // csv: app,sms,email
+addColumnIfMissing('messages', 'delivery_json', 'TEXT');   // per-channel result
 addColumnIfMissing('notices', 'body_html', 'TEXT');
 addColumnIfMissing('properties', 'phase_updated_at', 'TEXT');
+// Where the house was advertised, and on what terms. The link alone is not enough —
+// a Zillow listing disappears the day it sells, and two years later a dead link proves
+// nothing. So the advertised terms are written down here at the same time, and compared
+// against the agreement actually signed.
+// Archiving hides a house without touching a thing. Reversible, unlike deleting.
+addColumnIfMissing('properties', 'archived_at', 'TEXT');
+addColumnIfMissing('properties', 'archived_reason', 'TEXT');
+addColumnIfMissing('properties', 'listing_url', 'TEXT');
+addColumnIfMissing('properties', 'listing_source', 'TEXT');      // zillow | website | facebook | other
+addColumnIfMissing('properties', 'listing_price_cents', 'INTEGER');
+addColumnIfMissing('properties', 'listing_down_cents', 'INTEGER');
+addColumnIfMissing('properties', 'listing_payment_cents', 'INTEGER');
+addColumnIfMissing('properties', 'listing_rate_bps', 'INTEGER');
+addColumnIfMissing('properties', 'listing_captured_at', 'TEXT');
+addColumnIfMissing('properties', 'listing_notes', 'TEXT');
 // Scheduled lender payments: when they are due and whether to auto-record them.
 addColumnIfMissing('pml_loans', 'payment_day', 'INTEGER');
 addColumnIfMissing('pml_loans', 'autopay_enabled', 'INTEGER DEFAULT 0');
