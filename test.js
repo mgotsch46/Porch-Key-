@@ -408,6 +408,30 @@ async function main() {
   r = await req('/api/admin/loans/' + loanId);
   ok(r.status === 200 && r.json.ledger.length > 0, 'the real loan and its ledger are untouched');
 
+  console.log('— deleting a loan that has attachments but no money history');
+  {
+    // The bug this guards: foreign keys are enforced, and a loan with a document, a
+    // task, or an escrow item — but no payments — used to die with "FOREIGN KEY
+    // constraint failed" on Delete for good.
+    const ap = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '7 Attach Ln', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const al = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+      property_id: ap.json.id, loan_type: 'land_contract', sale_price_cents: 5000000, down_payment_cents: 0,
+      principal_cents: 5000000, interest_rate_bps: 900, term_months: 120, first_payment_date: '2099-01-01' }) });
+    const attLoan = al.json.loan.id;
+    const b64doc = Buffer.from('%PDF-1.4 attached').toString('base64');
+    const doc = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+      filename: 'attached.pdf', mime: 'application/pdf', data_base64: b64doc, loan_id: attLoan, category: 'loan_docs' }) });
+    await req(`/api/admin/loans/${attLoan}/escrow/items`, { method: 'POST', body: JSON.stringify({
+      kind: 'tax', payee: 'County', annual_cents: 120000, next_due: '2027-03-01' }) });
+    r = await req('/api/admin/loans/' + attLoan, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+    ok(r.status === 200, 'loan with a document and an escrow item deletes cleanly');
+    r = await req('/api/admin/loans/' + attLoan);
+    ok(r.status === 404, 'and it is gone');
+    r = await req(`/api/admin/properties/${ap.json.id}/documents`);
+    const kept = Object.values(r.json).flatMap(f => f.documents).find(d => d.filename === 'attached.pdf');
+    ok(!!kept, 'its document was re-filed on the property, not lost');
+  }
+
   console.log('— purging a loan WITH history (backup first, then gone)');
   {
     // Build a disposable loan with real history: a payment and a notice.

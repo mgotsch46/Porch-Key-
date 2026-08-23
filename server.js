@@ -2902,12 +2902,25 @@ app.delete('/api/admin/loans/:id', adminOnly, (req, res, next) => {
     const t = loanTies(loan.id);
     const hasHistory = !!(t.ledger || t.journal_entries || t.notices);
 
+    // Every table that references loans(id). Foreign keys are enforced, so any child
+    // row left behind turns the delete into "FOREIGN KEY constraint failed" — an error
+    // that names nothing. One list, used by both delete paths, so a new table with a
+    // loan_id gets added HERE or the delete breaks loudly in tests.
+    const LOAN_CHILDREN = ['journal-special', 'ledger', 'notices', 'charges', 'messages',
+      'escrow_items', 'escrow_analyses', 'escrow_disbursements', 'payoff_quotes',
+      'cash_slips', 'invitations', 'autopay', 'email_log', 'tasks', 'notes'];
+    const clearChildren = () => {
+      run('DELETE FROM journal_lines WHERE entry_id IN (SELECT id FROM journal_entries WHERE loan_id=?)', loan.id);
+      run('DELETE FROM journal_entries WHERE loan_id=?', loan.id);
+      for (const tbl of LOAN_CHILDREN.slice(1)) run(`DELETE FROM ${tbl} WHERE loan_id=?`, loan.id);
+      // Documents uploaded to the loan: the purge removes them (they are in the backup);
+      // the light delete keeps the files but re-files them on the property.
+    };
+
     if (!hasHistory) {
       if (b.confirm !== 'DELETE') return res.status(400).json({ error: 'Type DELETE to confirm' });
-      run('DELETE FROM charges WHERE loan_id=?', loan.id);
-      run('DELETE FROM messages WHERE loan_id=?', loan.id);
-      run('DELETE FROM escrow_items WHERE loan_id=?', loan.id);
-      run('DELETE FROM payoff_quotes WHERE loan_id=?', loan.id);
+      clearChildren();
+      run('UPDATE documents SET loan_id=NULL, property_id=COALESCE(property_id, ?) WHERE loan_id=?', loan.property_id, loan.id);
       run('DELETE FROM loans WHERE id=?', loan.id);
       return res.json({ ok: true });
     }
@@ -2943,6 +2956,13 @@ app.delete('/api/admin/loans/:id', adminOnly, (req, res, next) => {
       escrow_items: all('SELECT * FROM escrow_items WHERE loan_id=?', loan.id),
       payoff_quotes: all('SELECT * FROM payoff_quotes WHERE loan_id=?', loan.id),
       messages: all('SELECT * FROM messages WHERE loan_id=?', loan.id),
+      escrow_analyses: all('SELECT * FROM escrow_analyses WHERE loan_id=?', loan.id),
+      escrow_disbursements: all('SELECT * FROM escrow_disbursements WHERE loan_id=?', loan.id),
+      cash_slips: all('SELECT * FROM cash_slips WHERE loan_id=?', loan.id),
+      autopay: all('SELECT * FROM autopay WHERE loan_id=?', loan.id),
+      tasks: all('SELECT * FROM tasks WHERE loan_id=?', loan.id),
+      notes: all('SELECT * FROM notes WHERE loan_id=?', loan.id),
+      email_log: all('SELECT * FROM email_log WHERE loan_id=?', loan.id),
       journal_entries: all('SELECT * FROM journal_entries WHERE loan_id=?', loan.id),
       journal_lines: all('SELECT * FROM journal_lines WHERE loan_id=? OR entry_id IN (SELECT id FROM journal_entries WHERE loan_id=?)', loan.id, loan.id),
       documents: all('SELECT id, filename, category, title, created_at FROM documents WHERE loan_id=?', loan.id),
@@ -2957,11 +2977,7 @@ app.delete('/api/admin/loans/:id', adminOnly, (req, res, next) => {
 
     // Now the removal, children before parent. Journal lines go with their entries so
     // the books stay balanced — both sides of every entry leave together.
-    run('DELETE FROM journal_lines WHERE entry_id IN (SELECT id FROM journal_entries WHERE loan_id=?)', loan.id);
-    run('DELETE FROM journal_entries WHERE loan_id=?', loan.id);
-    for (const table of ['ledger', 'notices', 'charges', 'escrow_items', 'payoff_quotes', 'messages']) {
-      run(`DELETE FROM ${table} WHERE loan_id=?`, loan.id);
-    }
+    clearChildren();
     for (const d of all('SELECT * FROM documents WHERE loan_id=?', loan.id)) {
       try { fs.unlinkSync(path.join(UPLOAD_DIR, d.stored_name)); } catch {}
       run('DELETE FROM documents WHERE id=?', d.id);

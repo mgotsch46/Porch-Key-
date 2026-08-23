@@ -4925,7 +4925,23 @@ async function deleteLoan(id,purge){
       confirm:$('ld-confirm').value.trim(), purge:!!purge })});
     closeModal(); nav('loans'); loadLoans();
     if(r.purged) toast('Loan purged. The backup file is in the property’s documents.');
-  }catch(e){ $('ld-err').textContent=e.message; $('ld-err').classList.remove('hidden'); }
+  }catch(e){
+    // The modal guessed "no history" from the ledger, but the server also counts
+    // notices and journal entries. When it says the loan is purgeable, switch the
+    // modal to the purge flow instead of leaving the person at a dead end.
+    if(!purge && /purge/i.test(e.message)){
+      modal(`<h2>This loan has history</h2>
+        <p class="note" style="margin-bottom:12px">${esc(e.message)}</p>
+        <div class="err" style="margin-bottom:12px"><b>Purging:</b> everything — ledger, notices, journal
+          entries, messages, documents — is first backed up to a JSON file saved on the property, then
+          permanently removed. Owner only.</div>
+        <div class="field"><label>Type <b>DELETE EVERYTHING</b> to confirm</label><input id="ld-confirm" placeholder="DELETE EVERYTHING"></div>
+        <div id="ld-err" class="err hidden"></div>
+        <button class="warn" onclick="deleteLoan(${id},true)">Back it up, then delete it all</button>`);
+      return;
+    }
+    $('ld-err').textContent=e.message; $('ld-err').classList.remove('hidden');
+  }
 }
 function editLoanModal(){
   const L=LOAN_F&&LOAN_F.loan; if(!L) return;
