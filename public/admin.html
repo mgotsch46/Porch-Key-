@@ -2955,7 +2955,8 @@ async function loadOrphans(){
           <select id="or-prop-${esc(f.stored_name.slice(0,8))}" style="max-width:180px">
             <option value="">no property</option>
             ${PROPS.map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('')}</select>
-          <button class="small primary" onclick="restoreOrphan('${esc(f.stored_name)}')">Re-file</button></span>
+          <button class="small primary" onclick="restoreOrphan('${esc(f.stored_name)}')">Re-file</button>
+          <button class="small warn" onclick="discardOrphan('${esc(f.stored_name)}')">✕</button></span>
       </div>`).join('')}`;
 }
 async function restoreOrphan(stored){
@@ -2968,6 +2969,11 @@ async function restoreOrphan(stored){
     toast('Re-filed. It is in the documents (private folder).');
     loadOrphans();
   }catch(e){ alert(e.message); }
+}
+async function discardOrphan(stored){
+  if(!confirm('Delete this stranded file for good? Only do this if you have the original elsewhere.'))return;
+  try{ await api('/api/admin/orphan-files/'+stored,{method:'DELETE'}); }catch(e){ alert(e.message); }
+  loadOrphans();
 }
 async function loadBooks(){
   const el=$('set-books'); if(!el) return;
@@ -3251,7 +3257,7 @@ async function loadContacts(){
       </div>
       <div class="actions" style="margin:0;flex:0 0 auto">
         ${c.phone?`<button class="small" onclick="contactThread(${c.id})">💬 Text</button>
-        <a class="small" style="text-decoration:none;display:inline-block" href="tel:${esc(String(c.phone).replace(/[^+\d]/g,''))}"><button class="small">📞 Call</button></a>`:''}
+        <button class="small" onclick="location.href='tel:'+String('${esc(String(c.phone))}').replace(/[^+\d]/g,'')">📞 Call</button>`:''}
         <button class="small" onclick="contactModal(${c.id})">✏️ Edit</button>
         <button class="small" onclick="archiveContact(${c.id},${ctArchived?1:0})">${ctArchived?'Restore':'Archive'}</button>
       </div>
@@ -3374,7 +3380,7 @@ async function loadPropContacts(pid){
       </div>
       <div class="actions" style="margin:0;flex:0 0 auto">
         ${c.phone?`<button class="small" onclick="contactThread(${c.id},${pid})">💬 Text</button>
-        <a class="small" style="text-decoration:none;display:inline-block" href="tel:${esc(String(c.phone).replace(/[^+\d]/g,''))}"><button class="small">📞 Call</button></a>`:''}
+        <button class="small" onclick="location.href='tel:'+String('${esc(String(c.phone))}').replace(/[^+\d]/g,'')">📞 Call</button>`:''}
         <button class="small warn" onclick="unlinkContact(${pid},${c.id})">✕</button>
       </div>
     </div>`).join('')
@@ -4624,7 +4630,8 @@ async function openLoan(id){
       ${L.beneficial_interest_pct?' · BI '+L.beneficial_interest_pct+'%':''}</p>
     <p class="note" style="margin-top:4px">${f.tenant?('📧 <a href="mailto:'+esc(f.tenant.email)+'">'+esc(f.tenant.email)+'</a>'
       +(f.tenant.phone?' · 📱 <a href="tel:'+esc(String(f.tenant.phone).replace(/[^+\d]/g,''))+'">'+esc(f.tenant.phone)+'</a>'
-        +' <a href="tel:'+esc(String(f.tenant.phone).replace(/[^+\d]/g,''))+'" style="text-decoration:none"><button class="small">📞 Call</button></a>'
+        +' <button class="small" onclick="location.href=\'tel:'+esc(String(f.tenant.phone).replace(/[^+\d]/g,''))+'\'">📞 Call</button>'
+        +' <button class="small" onclick="location.href=\'sms:'+esc(String(f.tenant.phone).replace(/[^+\d]/g,''))+'\'">📲 Text</button>'
         +' <button class="small" onclick="openMsgsFor('+L.id+')">💬 Message</button>':'')):''} <span id="tb-loc"></span></p>
     <div class="actions">
       <button class="primary" onclick="recordPaymentModal()">💵 Record payment</button>

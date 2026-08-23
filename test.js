@@ -452,6 +452,21 @@ async function main() {
     ok(r.status === 400, 'cannot re-file the same file twice');
     r = await req('/api/admin/orphan-files/../../etc/passwd/view');
     ok(r.status === 404, 'path traversal goes nowhere');
+    // A stranded file can also just be thrown away — but never one a document still names.
+    const db64b = Buffer.from('%PDF-1.4 to discard').toString('base64');
+    const dp2 = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '405 Gone St', city: 'Flint', state: 'MI', zip: '48503' }) });
+    await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+      filename: 'toss.pdf', mime: 'application/pdf', data_base64: db64b, property_id: dp2.json.id, category: 'acquisition' }) });
+    await req('/api/admin/properties/' + dp2.json.id, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+    r = await req('/api/admin/orphan-files');
+    const toss = r.json.files.find(f => f.ext === '.pdf');
+    ok(!!toss, 'second stranded file present');
+    r = await req('/api/admin/orphan-files/' + toss.stored_name, { method: 'DELETE' });
+    ok(r.status === 200, 'stranded file discarded');
+    r = await req('/api/admin/orphan-files');
+    ok(!r.json.files.some(f => f.stored_name === toss.stored_name), 'and it is gone from the list');
+    r = await req('/api/admin/orphan-files/' + 'not-there.pdf', { method: 'DELETE' });
+    ok(r.status === 404, 'discarding a missing file 404s');
   }
 
   console.log('— recurring costs');

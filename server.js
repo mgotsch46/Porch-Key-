@@ -1105,6 +1105,20 @@ app.get('/api/admin/orphan-files/:name/view', ownerOnly, (req, res, next) => {
     res.send(fs.readFileSync(full));
   } catch (e) { next(e); }
 });
+// Or throw the stranded file away — the owner already has the original elsewhere.
+// Only files no document row references can be deleted this way.
+app.delete('/api/admin/orphan-files/:name', ownerOnly, (req, res, next) => {
+  try {
+    const name = path.basename(req.params.name);
+    const full = path.join(UPLOAD_DIR, name);
+    if (!fs.existsSync(full)) return res.status(404).json({ error: 'Not found' });
+    if (get('SELECT id FROM documents WHERE stored_name=?', name)) {
+      return res.status(400).json({ error: 'That file is filed on a document — delete the document instead' });
+    }
+    fs.unlinkSync(full);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
 app.post('/api/admin/orphan-files/:name/restore', ownerOnly, (req, res, next) => {
   try {
     const name = path.basename(req.params.name);
