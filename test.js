@@ -426,6 +426,34 @@ async function main() {
   r = await req('/api/admin/loans/' + loanId);
   ok(r.status === 200 && r.json.ledger.length > 0, 'the real loan and its ledger are untouched');
 
+  console.log('— property delete backs up, orphaned files recoverable');
+  {
+    const dp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '404 Gone St', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const dpid = dp.json.id;
+    await req(`/api/admin/properties/${dpid}/costs`, { method: 'POST', body: JSON.stringify({
+      category: 'rehab', description: 'New roof', amount_cents: 750000 }) });
+    const db64 = Buffer.from('%PDF-1.4 the deed').toString('base64');
+    const dd = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+      filename: 'deed.pdf', mime: 'application/pdf', data_base64: db64, property_id: dpid, category: 'acquisition' }) });
+    r = await req('/api/admin/properties/' + dpid, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+    ok(r.status === 200 && r.json.backed_up, 'property deleted — and everything on it backed up first');
+    // The backup is findable as a company document.
+    r = await req(`/api/admin/loans/${loanId}/documents`);   // any docs listing includes company-wide? No — check via orphans instead.
+    // The deed's file is now orphaned and recoverable.
+    r = await req('/api/admin/orphan-files');
+    ok(r.status === 200 && r.json.files.length >= 1, `orphaned file(s) found after the delete (${r.json.files.length})`);
+    const orphan = r.json.files.find(f => f.ext === '.pdf');
+    ok(!!orphan, 'the deed file survived the delete');
+    r = await req(`/api/admin/orphan-files/${orphan.stored_name}/view`);
+    ok(r.status === 200, 'orphan can be opened to identify it');
+    r = await req(`/api/admin/orphan-files/${orphan.stored_name}/restore`, { method: 'POST', body: JSON.stringify({ title: 'Recovered deed', property_id: propId }) });
+    ok(r.status === 200, 'orphan re-filed onto a property');
+    r = await req(`/api/admin/orphan-files/${orphan.stored_name}/restore`, { method: 'POST', body: '{}' });
+    ok(r.status === 400, 'cannot re-file the same file twice');
+    r = await req('/api/admin/orphan-files/../../etc/passwd/view');
+    ok(r.status === 404, 'path traversal goes nowhere');
+  }
+
   console.log('— recurring costs');
   {
     const rp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '5 Repeat Rd', city: 'Flint', state: 'MI', zip: '48503' }) });

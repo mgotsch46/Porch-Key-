@@ -1033,15 +1033,92 @@ app.delete('/api/admin/properties/:id', adminOnly, (req, res, next) => {
         ties: t,
       });
     }
-    // Safe to remove: only loose attachments, nothing financial.
+    // Safe to remove financially — but "safe" is not the same as "worthless". Costs,
+    // documents and notes took time to enter, and a delete typed on autopilot should
+    // not be able to destroy the only copy. So: everything this delete removes goes
+    // into a JSON backup first, filed as a company document. The backup keeps each
+    // document row's stored filename, and the files themselves are never unlinked,
+    // so a deleted property's paperwork can be re-filed from Settings later.
+    const backup = {
+      deleted_at: new Date().toISOString(), deleted_by: req.user.email,
+      property: p,
+      costs: all('SELECT * FROM property_costs WHERE property_id=?', p.id),
+      recurring_costs: all('SELECT * FROM recurring_costs WHERE property_id=?', p.id),
+      contacts: all('SELECT * FROM property_contacts WHERE property_id=?', p.id),
+      tasks: all('SELECT * FROM tasks WHERE property_id=?', p.id),
+      notes: all('SELECT * FROM notes WHERE property_id=?', p.id),
+      documents: all('SELECT * FROM documents WHERE property_id=?', p.id),
+    };
+    const hasAnything = Object.values(backup).some(v => Array.isArray(v) && v.length);
+    if (hasAnything) {
+      const stored = crypto.randomUUID() + '.json';
+      fs.writeFileSync(path.join(UPLOAD_DIR, stored), JSON.stringify(backup, null, 2));
+      run(`INSERT INTO documents (company_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+           VALUES (?,?,?,?,?,?,?,0)`,
+        req.companyId, 'other', 'private',
+        `Backup — deleted property ${p.address || ('#' + p.id)} (${new Date().toISOString().slice(0, 10)})`,
+        `deleted-property-${p.id}.json`, stored, 'application/json');
+    }
     run('DELETE FROM property_costs WHERE property_id=?', p.id);
+    run('DELETE FROM recurring_costs WHERE property_id=?', p.id);
     run('UPDATE expenses SET property_id=NULL, status=\'unassigned\' WHERE property_id=?', p.id);
     run('DELETE FROM property_contacts WHERE property_id=?', p.id);
     run('DELETE FROM tasks WHERE property_id=?', p.id);
     run('DELETE FROM notes WHERE property_id=?', p.id);
     run('DELETE FROM documents WHERE property_id=?', p.id);
     run('DELETE FROM properties WHERE id=?', p.id);
-    res.json({ ok: true });
+    res.json({ ok: true, backed_up: hasAnything });
+  } catch (e) { next(e); }
+});
+
+// ---------- orphaned file recovery ----------
+// Document rows can die while their files live on — nothing here ever unlinked a
+// property's files on delete. These endpoints find those files and let the owner
+// re-file them, which is how paperwork comes back after a delete that shouldn't
+// have happened.
+app.get('/api/admin/orphan-files', ownerOnly, (req, res, next) => {
+  try {
+    const known = new Set(all('SELECT stored_name FROM documents').map(d => d.stored_name));
+    const files = fs.readdirSync(UPLOAD_DIR)
+      .filter(f => !known.has(f) && !f.startsWith('.'))
+      .map(f => {
+        const st = fs.statSync(path.join(UPLOAD_DIR, f));
+        return { stored_name: f, size: st.size, modified: st.mtime.toISOString(),
+                 ext: path.extname(f).toLowerCase() };
+      })
+      .sort((a, b) => b.modified.localeCompare(a.modified));
+    res.json({ files });
+  } catch (e) { next(e); }
+});
+// Look at one orphan to identify it. basename() strips any path tricks; the file must
+// actually be in the uploads directory and unreferenced paths cannot escape it.
+app.get('/api/admin/orphan-files/:name/view', ownerOnly, (req, res, next) => {
+  try {
+    const name = path.basename(req.params.name);
+    const full = path.join(UPLOAD_DIR, name);
+    if (!fs.existsSync(full)) return res.status(404).json({ error: 'Not found' });
+    const mime = { '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
+                   '.jpeg': 'image/jpeg', '.json': 'application/json', '.txt': 'text/plain' }[path.extname(name).toLowerCase()];
+    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Type', mime || 'application/octet-stream');
+    res.send(fs.readFileSync(full));
+  } catch (e) { next(e); }
+});
+app.post('/api/admin/orphan-files/:name/restore', ownerOnly, (req, res, next) => {
+  try {
+    const name = path.basename(req.params.name);
+    if (!fs.existsSync(path.join(UPLOAD_DIR, name))) return res.status(404).json({ error: 'Not found' });
+    if (get('SELECT id FROM documents WHERE stored_name=?', name)) return res.status(400).json({ error: 'That file is already filed' });
+    const b = req.body || {};
+    const propertyId = b.property_id && ownedProperty(req, b.property_id) ? Number(b.property_id) : null;
+    const r = run(`INSERT INTO documents (company_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+         VALUES (?,?,?,?,?,?,?,?,0)`,
+      req.companyId, propertyId, 'other', 'private',
+      b.title || `Recovered file (${name.slice(0, 8)})`,
+      b.filename || ('recovered' + path.extname(name)), name,
+      { '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg' }[path.extname(name).toLowerCase()] || null);
+    res.json(get('SELECT id, title, filename FROM documents WHERE id=?', r.lastInsertRowid));
   } catch (e) { next(e); }
 });
 

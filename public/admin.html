@@ -1077,6 +1077,11 @@ a{color:var(--brand);font-weight:600}
         <h2>&#128238; Certified mail</h2>
         <div id="set-lob"><p class="note">Loading…</p></div>
       </div>
+
+      <div class="card">
+        <h2>&#128736;&#65039; File recovery</h2>
+        <div id="set-orphans"><p class="note">Loading…</p></div>
+      </div>
       <div class="card">
         <h2>Buyer app</h2>
         <p class="note">Your tenant buyers use <b>PorchPay</b> at <a id="tb-url" href="/" target="_blank">this address</a> — they can add it to their phone home screen. Public pages: <a href="/privacy" target="_blank">Privacy</a> · <a href="/terms" target="_blank">Terms</a> · <a href="/support" target="_blank">Support</a></p>
@@ -1370,7 +1375,7 @@ function nav(pg){
   if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();loadLinked();}
   if(pg==='msgs')openMsgs();
   if(pg==='pml'){loadProps();loadPML();}
-  if(pg==='settings'){loadSettings();loadTexting();loadEmail();loadBooks();loadNotices();loadLob();wireAddressFields();}
+  if(pg==='settings'){loadSettings();loadTexting();loadEmail();loadBooks();loadNotices();loadLob();loadOrphans();wireAddressFields();}
   if(pg==='invites')loadInvites();
   if(pg==='reports')loadReports();
   if(pg==='calc')calcSolve();
@@ -2929,6 +2934,40 @@ async function saveLob(){
 async function refreshMailStatus(noticeId){
   try{ await api(`/api/admin/notices/${noticeId}/mail-status`); }catch(e){ alert(e.message); }
   loadNoticesAdmin();
+}
+async function loadOrphans(){
+  const el=$('set-orphans'); if(!el) return;
+  let d;
+  try{ d=await api('/api/admin/orphan-files'); }
+  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  if(!d.files.length){ el.innerHTML='<p class="note">Nothing to recover — every file on the server is filed where it belongs.</p>'; return; }
+  if(!PROPS.length){ try{ await loadProps(); }catch{} }
+  el.innerHTML=`
+    <p class="note" style="margin-bottom:10px">Files still on the server whose records were deleted — usually the
+      paperwork of a deleted property. Open each one to identify it, then re-file it onto a property. Deletion
+      backups (JSON) can be opened here too; they hold the numbers that were removed.</p>
+    ${d.files.map(f=>`
+      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f2f4f7;font-size:13px">
+        <span>📄 <a href="/api/admin/orphan-files/${esc(f.stored_name)}/view" target="_blank" rel="noopener">${esc(f.stored_name.slice(0,8))}…${esc(f.ext)}</a>
+          <span class="note">· ${(f.size/1024).toFixed(0)} KB · ${fdate(f.modified.slice(0,10))}</span></span>
+        <span style="display:flex;align-items:center;gap:6px">
+          <input id="or-name-${esc(f.stored_name.slice(0,8))}" placeholder="name it" style="width:150px">
+          <select id="or-prop-${esc(f.stored_name.slice(0,8))}" style="max-width:180px">
+            <option value="">no property</option>
+            ${PROPS.map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('')}</select>
+          <button class="small primary" onclick="restoreOrphan('${esc(f.stored_name)}')">Re-file</button></span>
+      </div>`).join('')}`;
+}
+async function restoreOrphan(stored){
+  const k=stored.slice(0,8);
+  try{
+    await api(`/api/admin/orphan-files/${stored}/restore`,{method:'POST',body:JSON.stringify({
+      title:$('or-name-'+k).value||undefined,
+      filename:($('or-name-'+k).value?$('or-name-'+k).value.replace(/[^\w .-]/g,'')+stored.slice(stored.lastIndexOf('.')):undefined),
+      property_id:$('or-prop-'+k).value?Number($('or-prop-'+k).value):undefined })});
+    toast('Re-filed. It is in the documents (private folder).');
+    loadOrphans();
+  }catch(e){ alert(e.message); }
 }
 async function loadBooks(){
   const el=$('set-books'); if(!el) return;
