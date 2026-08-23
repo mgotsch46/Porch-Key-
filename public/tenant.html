@@ -430,6 +430,7 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
 
     <!-- ───── LOAN ───── -->
     <section id="tab-loan" class="hidden">
+      <div id="tb-payoff"></div>
       <div class="card">
         <h2>Your monthly payment</h2>
         <div id="l-breakdown"></div>
@@ -649,7 +650,7 @@ async function enter(){
   try { DATA = await api('/api/tenant/loan'); }
   catch(e){ if(e.message==='terms') return; DATA=null; }
   ME = await api('/api/me').catch(()=>ME);
-  loadNotices(); pollMsgs();
+  loadNotices(); pollMsgs(); loadPayoff();
   registerSW(); refreshBadges(); notifUi();
   setInterval(refreshBadges, 60000);
   // Deep link from a tapped notification.
@@ -942,6 +943,44 @@ function runCalc(){
       <div class="d">and finish ${base.m-w.m} months sooner</div></span></div>
     <div class="row"><span class="k">Paid off in</span><span class="v">${w.m} months <small style="display:inline;font-weight:400">(was ${base.m})</small></span></div>
     <div class="row"><span class="k">Total interest</span><span class="v">${fmt(w.i)}</span></div>`;
+}
+
+// ---------- payoff ----------
+// What it would cost to own the house outright. A buyer should be able to find that out
+// without asking anyone, and to hand the answer to a bank on headed paper.
+async function loadPayoff(){
+  const el=$('tb-payoff'); if(!el) return;
+  let d;
+  try{ d=await api('/api/tenant/payoff'); }catch{ el.innerHTML=''; return; }
+  const qs=d.quotes||[];
+  const live=qs.find(q=>q.status==='issued');
+
+  el.innerHTML=`<div class="card">
+    <h2>Paying off your home</h2>
+    ${live?`
+      <div class="row"><span class="k">Total to pay in full<small>Statement ${esc(live.quote_number)}</small></span>
+        <span class="v">${fmt(live.total_cents)}</span></div>
+      <div class="row"><span class="k">Good through</span><span class="v">${fdate(live.good_through_date)}</span></div>
+      <div class="row"><span class="k">After that, per day</span><span class="v">${fmt(live.per_diem_cents)}</span></div>
+      <a class="btn primary" style="margin-top:12px;display:block;text-align:center;text-decoration:none"
+         href="/api/tenant/payoffs/${live.id}/pdf">⬇️ Download the statement (PDF)</a>
+      <p class="note" style="margin-top:10px">Take this to a bank or a title company if you are arranging
+        finance. It shows the exact amount and the date it is good until.</p>`
+    : `<p class="note" style="margin-bottom:12px">Ask for a payoff statement and you will get the exact
+         amount needed to pay your home off in full, on your servicer's letterhead.</p>
+       <button class="btn primary" onclick="requestPayoff()">Request a payoff statement</button>`}
+    ${qs.length>1?`<p class="note" style="margin-top:12px">Earlier statements: ${
+      qs.filter(q=>q!==live).map(q=>`<a href="/api/tenant/payoffs/${q.id}/pdf">${esc(q.quote_number)}</a>`).join(' · ')}</p>`:''}
+  </div>`;
+}
+async function requestPayoff(){
+  try{
+    const r=await api('/api/tenant/payoff/request',{method:'POST',body:JSON.stringify({days:30})});
+    await loadPayoff();
+    alert(r.reused
+      ? 'You already have a current statement — it is on your loan screen.'
+      : 'Your payoff statement is ready. You can download it from your loan screen.');
+  }catch(e){ alert(e.message); }
 }
 
 // ---------- notices ----------

@@ -30,6 +30,12 @@ const pdfDoc = require('./pdf');
 const escrow = require('./escrow');
 escrow.initSchema();
 
+const payoff = require('./payoff');
+payoff.initSchema();
+
+const noticeRules = require('./notices');
+noticeRules.initSchema();
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -261,30 +267,87 @@ function postStripePayment(session) {
   return postPayment(loanId, amount, method, today(), `stripe:${session.id}`, 'Online payment', null, fee);
 }
 
-// ---------- automated late / legal notices ----------
-// A payment only counts as "confirmed" once it's on the ledger: admin-recorded payments,
-// or Stripe webhook/confirm postings. The sweep sends a
-// late notice once a payment is past due + grace with nothing confirmed for that period,
-// and escalates to a legal notice after LEGAL_NOTICE_DAYS past due. Read receipts are
-// recorded when the buyer opens the notice in the app.
+// ---------- the late-notice ladder ----------
+// Driven by notice_rules, so the days and the wording are yours to change without a
+// deploy. Every rung fires on the app, by text and by email at the same moment — a
+// buyer should not find out about a default notice from whichever channel they happen
+// to open first.
 const LEGAL_NOTICE_DAYS = Number(process.env.LEGAL_NOTICE_DAYS || 30);
 
-function noticeTemplates(loan, property, tenant, amountDueCents, dueDate, daysPast) {
-  const amt = '$' + (amountDueCents / 100).toFixed(2);
-  const addr = property ? property.address : 'your property';
-  return {
-    late_notice: {
-      subject: `Late Payment Notice — ${addr}`,
-      body: `Dear ${tenant.name},\n\nOur records show that your payment of ${amt} due ${dueDate} for ${addr} has not been received and is now ${daysPast} days past due (beyond the ${loan.grace_days}-day grace period).${loan.late_fee_cents ? ` A late fee of $${(loan.late_fee_cents/100).toFixed(2)} may apply per your agreement.` : ''}\n\nPlease make your payment through the app (card, bank transfer, Cash App Pay, or cash at a participating retailer) or contact us immediately to discuss your account.\n\nIf you have already sent payment, please disregard this notice and message us so we can confirm receipt.\n\n— Loan Servicing`,
-    },
-    legal_notice: {
-      subject: `IMPORTANT: Notice of Default — ${addr}`,
-      body: `Dear ${tenant.name},\n\nThis is a formal notice that your account for ${addr} is seriously past due. The payment of ${amt} due ${dueDate} remains unpaid ${daysPast} days after its due date, and prior notices have not resolved the delinquency.\n\nUnder the terms of your agreement, continued non-payment may result in default proceedings, including forfeiture/eviction action and additional fees and costs as permitted by law.\n\nTo avoid further action, pay the full past-due amount immediately through the app or contact us today to make arrangements.\n\nThis notice is provided in addition to, and does not replace, any notices required to be delivered by other means under your agreement or applicable law.\n\n— Loan Servicing`,
-    },
-  };
+async function sendLadderNotice({ rule, loan, property, tenant, co, status, dueDate, period, daysPast }) {
+  const wording = (rule.subject && rule.body)
+    ? { subject: rule.subject, body: rule.body }
+    : noticeRules.defaultWording(rule, {
+        loan, property, tenant, amountCents: status.owed_now_cents, dueDate, daysPast });
+
+  const paras = wording.body.split('\n\n').map(par => `<p>${tpl.escapeHtml(par)}</p>`).join('');
+  const baseUrl = process.env.BASE_URL || '';
+  const appHtml = tpl.brandedShell({ company: co, subject: wording.subject, bodyHtml: paras, baseUrl });
+  const channels = String(rule.channels || 'app,sms,email').split(',').map(c => c.trim());
+  const delivery = {};
+
+  // 1. The record. This is the delivery that cannot fail, and the one with the read
+  //    receipt on it.
+  const ins = run(`INSERT INTO notices (loan_id, type, period, stage, subject, body, body_html, days_past_due)
+    VALUES (?,?,?,?,?,?,?,?)`,
+    loan.id, rule.notice_type, period, rule.stage, wording.subject, wording.body, appHtml, daysPast);
+  const noticeId = ins.lastInsertRowid;
+  delivery.app = { ok: true };
+
+  // 2. In the message thread, so it is where they already look.
+  const adminId = get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL ORDER BY id LIMIT 1", loan.company_id);
+  if (adminId) {
+    run(`INSERT INTO messages (loan_id, sender_user_id, body, body_html, subject, read_by_admin, channels)
+      VALUES (?,?,?,?,?,1,?)`, loan.id, adminId.id, wording.body, appHtml, wording.subject,
+      channels.join(','));
+  }
+  notify.notify(loan.tenant_user_id, {
+    kind: 'notice', title: wording.subject, body: 'Open the app to read this notice.',
+    url: '/', dedupeKey: `notice:${rule.stage}:${period}:${loan.id}`,
+  }).catch(() => {});
+
+  // 3. Email, from whichever address this rung names.
+  if (channels.includes('email')) {
+    if (!tenant || !tenant.email) delivery.email = { ok: false, error: 'No email address on file' };
+    else if (!email.emailEnabled(co)) delivery.email = { ok: false, error: 'Email is not connected' };
+    else {
+      try {
+        const mailHtml = tpl.emailShell({
+          company: co, subject: wording.subject, bodyHtml: paras, baseUrl, tone: 'notice',
+          preheader: `${property ? property.address : 'Your account'} — $${(status.owed_now_cents / 100).toFixed(2)} past due.`,
+        });
+        const r = await email.sendEmail(tenant.email, {
+          subject: wording.subject, text: wording.body, html: mailHtml,
+          kind: rule.notice_type, daysPastDue: daysPast,
+          identity: rule.email_identity, loanId: loan.id, companyId: loan.company_id,
+        }, co);
+        delivery.email = { ok: true, to: r.to, from: r.from, identity: r.identity };
+      } catch (e) { delivery.email = { ok: false, error: e.message }; }
+    }
+  }
+
+  // 4. Text. Short, and pointing at the full notice rather than trying to be it.
+  if (channels.includes('sms')) {
+    if (!tenant || !tenant.phone) delivery.sms = { ok: false, error: 'No mobile number on file' };
+    else if (!sms.smsEnabled(co)) delivery.sms = { ok: false, error: 'Texting is not connected' };
+    else {
+      const short = `${wording.subject}\n\n$${(status.owed_now_cents / 100).toFixed(2)} is ${daysPast} days past due on ` +
+        `${property ? property.address : 'your account'}. The full notice is in your app: ${baseUrl || ''}/`;
+      try {
+        await sms.sendSms(tenant.phone, short, co);
+        delivery.sms = { ok: true, to: tenant.phone };
+      } catch (e) { delivery.sms = { ok: false, error: e.message }; }
+    }
+  }
+
+  run('UPDATE notices SET delivery_json=? WHERE id=?', JSON.stringify(delivery), noticeId);
+  const failed = Object.entries(delivery).filter(([, v]) => !v.ok).map(([k]) => k);
+  console.log(`${rule.label} sent for loan ${loan.id} (${period}, day ${daysPast})` +
+    (failed.length ? ` — ${failed.join(' and ')} did not go` : ''));
+  return noticeId;
 }
 
-function runNoticeSweep() {
+async function runNoticeSweep() {
   const loans = all("SELECT * FROM loans WHERE status='active' AND tenant_user_id IS NOT NULL");
   const nowDate = new Date(today() + 'T00:00:00Z');
   for (let loan of loans) {
@@ -293,66 +356,63 @@ function runNoticeSweep() {
       const ledger = all('SELECT * FROM ledger WHERE loan_id=?', loan.id);
       const status = loanEngine.loanStatus(loan, ledger, today());
       if (!status.is_past_due) continue;
-      // earliest unmet payment period
-      const idx = status.payments_made_equiv; // 0-based count of covered payments
+
+      const idx = status.payments_made_equiv;
       const first = new Date(loan.first_payment_date + 'T00:00:00Z');
       const dueDateObj = loanEngine.addMonthsUTC(first, idx);
       const dueDate = dueDateObj.toISOString().slice(0, 10);
       const period = dueDate.slice(0, 7);
       const daysPast = Math.floor((nowDate - dueDateObj) / 86400000);
-      if (daysPast <= loan.grace_days) continue;
+
+      // Never inside the grace period their agreement gives them.
+      if (daysPast <= (loan.grace_days || 0)) continue;
+
+      const co0 = get('SELECT * FROM companies WHERE id=?', loan.company_id);
+
+      // The ladder stops once the matter is with a lawyer. From here the notices that
+      // count are the statutory ones counsel serves, and an automated one arriving in
+      // the middle of that is at best confusing.
+      if (loan.legal_hold_at) continue;
+
+      // Paying the arrears ends the cycle on its own — the account stops being past due
+      // and the check above has already sent us on. What is left is the partial payment,
+      // and that is a judgement rather than a rule: a token amount should not be able to
+      // silence a real default for ever. So it buys quiet for a set number of days, which
+      // each company sets for itself and which is zero unless somebody turns it on.
+      const pauseDays = Number(co0 && co0.notice_pause_days) || 0;
+      if (pauseDays > 0) {
+        const recentPayment = get(`SELECT id FROM ledger WHERE loan_id=? AND type='payment'
+          AND entry_date >= date('now', ?) LIMIT 1`, loan.id, `-${pauseDays} days`);
+        if (recentPayment) continue;
+      }
+
+      noticeRules.seedLadder(loan.company_id);
+      const due = noticeRules.dueRule(loan.company_id, loan.id, period, daysPast);
+      if (!due) continue;
+
       const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
       const tenant = get('SELECT * FROM users WHERE id=?', loan.tenant_user_id);
-      const noticeSet = noticeTemplates(loan, property, tenant, status.owed_now_cents, dueDate, daysPast);
-      const sendNotice = (type) => {
-        if (get('SELECT id FROM notices WHERE loan_id=? AND type=? AND period=?', loan.id, type, period)) return;
-        const t = noticeSet[type];
-        const co = get('SELECT * FROM companies WHERE id=?', loan.company_id);
-        const noticeHtml = tpl.brandedShell({
-          company: co, subject: t.subject,
-          bodyHtml: t.body.split('\n\n').map(par => `<p>${tpl.escapeHtml(par)}</p>`).join(''),
-          baseUrl: process.env.BASE_URL || '',
-        });
-        run('INSERT INTO notices (loan_id, type, period, subject, body, body_html) VALUES (?,?,?,?,?,?)',
-          loan.id, type, period, t.subject, t.body, noticeHtml);
-        // also drop it into the message thread so the buyer sees it immediately
-        run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
-          loan.id, get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') ORDER BY id LIMIT 1", loan.company_id).id,
-          `📄 ${t.subject} — open the Notices section on your Home screen to read this important notice.`);
-        if (loan.tenant_user_id) {
-          notify.notify(loan.tenant_user_id, { kind: 'notice', title: t.subject,
-            body: 'Open the app to read this notice.', url: '/', dedupeKey: `notice:${type}:${period}:${loan.id}` })
-            .catch(() => {});
-        }
-        // Email it as well, from the servicing address for a late notice and the legal
-        // address once the account is LEGAL_NOTICE_DAYS or more past due. The in-app
-        // notice above is the delivery that always happens; this is the extra channel,
-        // so a mail failure is logged and never stops the sweep.
-        if (tenant && tenant.email && email.emailEnabled(co)) {
-          // A separate shell for email: noticeHtml above relies on the app's stylesheet,
-          // which no mail client has. This one carries its own styles inline.
-          const mailHtml = tpl.emailShell({
-            company: co, subject: t.subject,
-            bodyHtml: t.body.split('\n\n').map(par => `<p>${tpl.escapeHtml(par)}</p>`).join(''),
-            baseUrl: process.env.BASE_URL || '',
-            preheader: `Regarding ${property ? property.address : 'your account'} — $${(status.owed_now_cents / 100).toFixed(2)} past due.`,
-            tone: 'notice',
-          });
-          email.sendEmail(tenant.email, {
-            subject: t.subject, text: t.body, html: mailHtml,
-            kind: type, daysPastDue: daysPast,
-            loanId: loan.id, companyId: loan.company_id,
-          }, co).catch((e) => console.error(`Notice email failed for loan ${loan.id}:`, e.message));
-        }
-        console.log(`Sent ${type} for loan ${loan.id} period ${period}`);
-      };
-      sendNotice('late_notice');
-      if (daysPast > LEGAL_NOTICE_DAYS) sendNotice('legal_notice');
+      const co = co0;
+
+      // Rungs that came due while nothing was running are recorded, not sent. Four
+      // notices arriving together about one missed payment helps nobody.
+      for (const skipped of due.skip) {
+        run(`INSERT INTO notices (loan_id, type, period, stage, subject, body, days_past_due, delivery_json)
+          VALUES (?,?,?,?,?,?,?,?)`, loan.id, skipped.notice_type, period, skipped.stage,
+          `${skipped.label} (superseded)`,
+          `Not sent: the account had already reached ${due.fire.label} by the time this was evaluated.`,
+          daysPast, JSON.stringify({ skipped: true }));
+      }
+
+      await sendLadderNotice({ rule: due.fire, loan, property, tenant, co, status, dueDate, period, daysPast });
     } catch (e) { console.error('Notice sweep error for loan', loan.id, e.message); }
   }
 }
-setInterval(runNoticeSweep, 60 * 60 * 1000); // hourly
-setTimeout(runNoticeSweep, 5000);            // shortly after boot
+// A payoff statement is only good through its date; sweep the expired ones with the notices.
+setInterval(() => { try { payoff.expireStale(); } catch (e) { console.error('Payoff expiry:', e.message); } },
+  60 * 60 * 1000);
+setInterval(() => { runNoticeSweep().catch(e => console.error('Notice sweep:', e.message)); }, 60 * 60 * 1000);
+setTimeout(() => { runNoticeSweep().catch(e => console.error('Notice sweep:', e.message)); }, 5000);
 
 function loanFull(loan) {
   loan = assessRecurringCharges(loan);
@@ -1847,6 +1907,263 @@ app.get('/api/tenant/notices/:id/pdf', tenantReady, (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---------- legal hold ----------
+// Marks an account as being handled through the courts. Nothing automated goes out
+// after this, on any channel, until it is lifted.
+app.post('/api/admin/loans/:id/legal-hold', adminOnly, (req, res) => {
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  if (loan.legal_hold_at) return res.status(400).json({ error: 'This account is already on legal hold' });
+  run(`UPDATE loans SET legal_hold_at=datetime('now'), legal_hold_reason=?, legal_hold_by=? WHERE id=?`,
+    (req.body && req.body.reason) || null, req.user.id, loan.id);
+  run(`INSERT INTO notes (company_id, loan_id, property_id, body, created_by)
+    VALUES (?,?,?,?,?)`, req.companyId, loan.id, loan.property_id,
+    `Legal hold placed — automated late notices stopped.${req.body && req.body.reason ? ' ' + req.body.reason : ''}`,
+    req.user.id);
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/loans/:id/legal-hold', adminOnly, (req, res) => {
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  run('UPDATE loans SET legal_hold_at=NULL, legal_hold_reason=NULL, legal_hold_by=NULL WHERE id=?', loan.id);
+  run(`INSERT INTO notes (company_id, loan_id, property_id, body, created_by)
+    VALUES (?,?,?,?,?)`, req.companyId, loan.id, loan.property_id,
+    'Legal hold lifted — automated late notices resume.', req.user.id);
+  res.json({ ok: true });
+});
+
+// The ladder as it stands, and what has already gone out on this loan.
+app.get('/api/admin/loans/:id/notice-ladder', adminOnly, (req, res, next) => {
+  try {
+    const loan = ownedLoan(req, req.params.id);
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    noticeRules.seedLadder(req.companyId);
+    res.json({
+      rules: noticeRules.rulesFor(req.companyId),
+      legal_hold_at: loan.legal_hold_at,
+      legal_hold_reason: loan.legal_hold_reason,
+      grace_days: loan.grace_days,
+      sent: all(`SELECT id, type, stage, period, subject, days_past_due, sent_at, read_at, delivery_json
+        FROM notices WHERE loan_id=? ORDER BY id DESC LIMIT 30`, loan.id),
+    });
+  } catch (e) { next(e); }
+});
+
+app.put('/api/admin/notice-rules/:id', adminOnly, (req, res) => {
+  const r = get('SELECT * FROM notice_rules WHERE id=? AND company_id=?', Number(req.params.id), req.companyId);
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  const b = req.body || {};
+  const day = b.trigger_day == null ? r.trigger_day : Math.max(1, Math.round(Number(b.trigger_day)));
+  const identity = b.email_identity === 'legal' ? 'legal'
+    : b.email_identity === 'servicing' ? 'servicing' : r.email_identity;
+  const chans = Array.isArray(b.channels) ? b.channels.filter(c => ['app','sms','email'].includes(c)) : null;
+  run(`UPDATE notice_rules SET trigger_day=?, email_identity=?, channels=?, subject=?, body=?, active=?
+       WHERE id=?`,
+    day, identity, chans && chans.length ? ['app', ...chans.filter(c => c !== 'app')].join(',') : r.channels,
+    b.subject !== undefined ? (b.subject || null) : r.subject,
+    b.body !== undefined ? (b.body || null) : r.body,
+    b.active === undefined ? r.active : (b.active ? 1 : 0), r.id);
+  res.json(get('SELECT * FROM notice_rules WHERE id=?', r.id));
+});
+
+// ---------- payoff letters ----------
+// The letter someone wires money against. Built from the figures stored when the quote
+// was issued, never recalculated — a payoff letter that quietly changes is worse than
+// no letter at all.
+function payoffPdf(q, loan) {
+  const co = get('SELECT * FROM companies WHERE id=?', loan.company_id);
+  const prop = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+  const buyer = loan.tenant_user_id ? get('SELECT name FROM users WHERE id=?', loan.tenant_user_id) : null;
+  const money = (c) => '$' + (c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const { charges, credits } = payoff.letterLines(q);
+
+  const d = new pdfDoc.Doc({
+    title: `Payoff statement ${q.quote_number}`,
+    footer: `${q.quote_number} · issued ${String(q.issued_at || '').slice(0, 10)} · good through ${q.good_through_date}`,
+  });
+  d.letterhead(co, { logo: companyLogo(co) });
+  d.space(6);
+  d.text('PAYOFF STATEMENT', { size: 15, bold: true, gap: 8 });
+
+  d.row('Statement number', q.quote_number, { size: 9.5 });
+  d.row('Statement date', q.quote_date, { size: 9.5 });
+  d.row('Good through', q.good_through_date, { size: 9.5, bold: true });
+  if (buyer) d.row('Buyer', buyer.name, { size: 9.5 });
+  if (prop) d.row('Property', [prop.address, prop.city, prop.state].filter(Boolean).join(', '), { size: 9.5 });
+  d.space(6); d.rule();
+
+  d.space(4);
+  d.text('Amount required to pay this account in full', { size: 11, bold: true, gap: 8 });
+  for (const [label, amount] of charges) d.row(label, money(amount), { size: 10 });
+  if (credits.length) {
+    d.space(2);
+    for (const [label, amount] of credits) d.row(label, '(' + money(-amount) + ')', { size: 10 });
+  }
+  d.space(4); d.rule('0.2 0.2 0.2');
+  d.row('TOTAL DUE', money(q.total_cents), { size: 12, bold: true });
+  d.space(8);
+
+  d.text(`If payment is received after ${q.good_through_date}, add ${money(q.per_diem_cents)} for each ` +
+    `additional day. This statement is void after that date and a new one must be requested.`,
+    { size: 10, gap: 5 });
+  d.space(6);
+
+  d.heading('How to pay', 11);
+  d.text('Payment must be by wire, cashier\'s check or certified funds. Personal checks are not ' +
+    'accepted for a payoff. Contact us for wire instructions before sending funds.', { size: 10, gap: 5 });
+  d.space(4);
+
+  // Paying off a contract for deed means conveying title, not releasing a lien — the
+  // buyer needs to know what they get and when.
+  d.heading('What happens when this is paid', 11);
+  d.text('On receipt of the full amount in cleared funds, we will prepare and deliver a deed ' +
+    'conveying title to you, and record the documents needed to show this contract satisfied. ' +
+    'Any escrow balance remaining after the payoff is refunded to you within 20 days, not counting ' +
+    'weekends or public holidays.', { size: 10, gap: 5 });
+  d.space(6);
+
+  d.heading('Please read', 11);
+  d.text('This statement assumes no further payments, returned payments, advances or fees between ' +
+    'the statement date and the date the payoff is received. If any occur, the amount will change. ' +
+    'Funds received after 2:00 PM local time are credited the next business day.', { size: 9, gap: 4 });
+  return d.build();
+}
+
+app.get('/api/admin/loans/:id/payoff', adminOnly, (req, res, next) => {
+  try {
+    const loan = ownedLoan(req, Number(req.params.id));
+    if (!loan) return res.status(404).json({ error: 'No such loan' });
+    res.json({
+      preview: payoff.calculate(loan.id),
+      quotes: all('SELECT * FROM payoff_quotes WHERE loan_id=? ORDER BY id DESC LIMIT 20', loan.id),
+    });
+  } catch (e) { next(e); }
+});
+
+app.post('/api/admin/loans/:id/payoff', adminOnly, (req, res, next) => {
+  try {
+    const loan = ownedLoan(req, Number(req.params.id));
+    if (!loan) return res.status(404).json({ error: 'No such loan' });
+    const b = req.body || {};
+    const q = payoff.issue(loan.id, {
+      goodThroughDate: b.good_through_date,
+      releaseFeeCents: Math.round(b.release_fee_cents || 0),
+      requestedBy: b.requested_by || 'admin',
+      requesterNote: b.note,
+      createdBy: req.user.id,
+    });
+    res.json(q);
+  } catch (e) { next(e); }
+});
+
+app.get('/api/admin/payoffs/:id/pdf', adminOnly, (req, res, next) => {
+  try {
+    const q = get(`SELECT q.* FROM payoff_quotes q WHERE q.id=? AND q.company_id=?`,
+      Number(req.params.id), req.companyId);
+    if (!q) return res.status(404).json({ error: 'Not found' });
+    const loan = get('SELECT * FROM loans WHERE id=?', q.loan_id);
+    sendPdf(res, payoffPdf(q, loan), `payoff-${q.quote_number}.pdf`);
+  } catch (e) { next(e); }
+});
+
+// Send the statement to the buyer, with the letter attached as a link they can open.
+app.post('/api/admin/payoffs/:id/send', adminOnly, async (req, res, next) => {
+  try {
+    const q = get('SELECT * FROM payoff_quotes WHERE id=? AND company_id=?', Number(req.params.id), req.companyId);
+    if (!q) return res.status(404).json({ error: 'Not found' });
+    const loan = get('SELECT * FROM loans WHERE id=?', q.loan_id);
+    const co = myCompany(req);
+    const buyer = loan.tenant_user_id ? get('SELECT * FROM users WHERE id=?', loan.tenant_user_id) : null;
+    const money = (c) => '$' + (c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const delivery = {};
+    const base = process.env.BASE_URL || baseUrlOf(req);
+    const subject = `Payoff statement ${q.quote_number} — good through ${q.good_through_date}`;
+    const bodyHtml = `<p>Here is the payoff statement you asked for.</p>
+      <p><b>Total due: ${money(q.total_cents)}</b>, good through <b>${q.good_through_date}</b>.
+      After that date add ${money(q.per_diem_cents)} per day.</p>
+      <p>The full statement is in your app, and can be downloaded as a PDF.</p>`;
+
+    if (buyer && buyer.email && email.emailEnabled(co)) {
+      try {
+        const html = tpl.emailShell({ company: co, subject, bodyHtml, baseUrl: base,
+          preheader: `Total due ${money(q.total_cents)}` });
+        const r = await email.sendEmail(buyer.email, { subject, html,
+          text: tpl.htmlToText(bodyHtml), kind: 'payoff', loanId: loan.id, companyId: req.companyId }, co);
+        delivery.email = { ok: true, to: r.to };
+      } catch (e) { delivery.email = { ok: false, error: e.message }; }
+    }
+    // Always drop it in the app thread so the buyer has it wherever they look.
+    run(`INSERT INTO messages (loan_id, sender_user_id, body, body_html, subject, read_by_admin, channels)
+      VALUES (?,?,?,?,?,1,?)`, loan.id, req.user.id, tpl.htmlToText(bodyHtml),
+      tpl.brandedShell({ company: co, subject, bodyHtml, baseUrl: base }), subject,
+      Object.keys(delivery).length ? 'app,email' : 'app');
+
+    run("UPDATE payoff_quotes SET delivered_at=datetime('now'), delivery_json=? WHERE id=?",
+      JSON.stringify(delivery), q.id);
+    if (loan.tenant_user_id) {
+      notify.notify(loan.tenant_user_id, { kind: 'general', title: subject,
+        body: `Total due ${money(q.total_cents)}`, url: '/?tab=loan' }).catch(() => {});
+    }
+    res.json({ ok: true, delivery });
+  } catch (e) { next(e); }
+});
+
+// Quotes still open, oldest first — the seven business days are running on each.
+app.get('/api/admin/payoffs/sla', adminOnly, (req, res, next) => {
+  try { res.json(payoff.slaWatch(req.companyId)); } catch (e) { next(e); }
+});
+
+// ---------- buyer self-serve ----------
+// A buyer asking what it costs to pay off their own home should not have to wait on
+// somebody to get to it.
+app.get('/api/tenant/payoff', tenantReady, (req, res, next) => {
+  try {
+    const loan = tenantLoan(req);
+    if (!loan) return res.status(404).json({ error: 'No loan' });
+    res.json({
+      quotes: all(`SELECT id, quote_number, quote_date, good_through_date, total_cents,
+        per_diem_cents, status, issued_at FROM payoff_quotes
+        WHERE loan_id=? AND status IN ('issued','honored') ORDER BY id DESC LIMIT 5`, loan.id),
+      can_request: !get(`SELECT id FROM payoff_quotes WHERE loan_id=? AND status='issued'
+        AND request_received_at > datetime('now','-7 days')`, loan.id),
+    });
+  } catch (e) { next(e); }
+});
+
+app.post('/api/tenant/payoff/request', tenantReady, (req, res, next) => {
+  try {
+    const loan = tenantLoan(req);
+    if (!loan) return res.status(404).json({ error: 'No loan' });
+    // One a week is plenty. More than that and nobody knows which number is current.
+    const recent = get(`SELECT * FROM payoff_quotes WHERE loan_id=? AND status='issued'
+      AND request_received_at > datetime('now','-7 days') ORDER BY id DESC LIMIT 1`, loan.id);
+    if (recent) return res.json({ ok: true, quote: recent, reused: true });
+
+    const days = Math.min(60, Math.max(1, Number(req.body && req.body.days) || 30));
+    const good = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+    const q = payoff.issue(loan.id, {
+      goodThroughDate: good, requestedBy: 'buyer', requestedByUserId: req.user.id,
+      requesterNote: (req.body && req.body.note) || null,
+    });
+    for (const a of all("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL AND archived_at IS NULL", loan.company_id)) {
+      notify.notify(a.id, { kind: 'general', title: 'A buyer requested a payoff statement',
+        body: `${q.quote_number} — good through ${q.good_through_date}`, url: '/admin' }).catch(() => {});
+    }
+    res.json({ ok: true, quote: q, reused: false });
+  } catch (e) { next(e); }
+});
+
+app.get('/api/tenant/payoffs/:id/pdf', tenantReady, (req, res, next) => {
+  try {
+    const loan = tenantLoan(req);
+    if (!loan) return res.status(404).json({ error: 'No loan' });
+    const q = get('SELECT * FROM payoff_quotes WHERE id=? AND loan_id=?', Number(req.params.id), loan.id);
+    if (!q) return res.status(404).json({ error: 'Not found' });
+    sendPdf(res, payoffPdf(q, loan), `payoff-${q.quote_number}.pdf`);
+  } catch (e) { next(e); }
+});
+
 // ---------- payment methods ----------
 // Money that arrives outside Stripe still has to land on the ledger, and it matters
 // which way it came — a Zelle transfer and a handful of cash are not the same thing
@@ -2877,7 +3194,11 @@ app.post('/api/admin/loans/:id/notices', adminOnly, (req, res) => {
     req.params.id, req.user.id, `📄 ${subject} — open the Notices section on your Home screen to read this notice.`);
   res.json({ ok: true });
 });
-app.post('/api/admin/notice-sweep', adminOnly, (req, res) => { runNoticeSweep(); res.json({ ok: true }); });
+// Awaits the sweep, so a caller that asks for it and then reads the notices sees the
+// result rather than racing it.
+app.post('/api/admin/notice-sweep', adminOnly, async (req, res, next) => {
+  try { await runNoticeSweep(); res.json({ ok: true }); } catch (e) { next(e); }
+});
 app.get('/api/tenant/notices', tenantReady, (req, res) => {
   const loan = get('SELECT * FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', req.user.id);
   if (!loan) return res.json([]);

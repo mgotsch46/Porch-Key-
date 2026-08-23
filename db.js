@@ -488,6 +488,17 @@ addColumnIfMissing('loans', 'monthly_servicing_cents', 'INTEGER DEFAULT 0');
 addColumnIfMissing('loans', 'monthly_misc_cents', 'INTEGER DEFAULT 0');
 addColumnIfMissing('loans', 'misc_label', "TEXT DEFAULT 'Other monthly charge'");
 addColumnIfMissing('loans', 'final_payment_date', 'TEXT');   // maturity, from first payment + term
+// Once forfeiture or eviction is under way the automated ladder stops. From that point
+// the notices that count are the statutory ones counsel sends, and an automated one
+// landing beside them is a liability.
+// Days of quiet after any payment before the ladder may escalate again. 0 means a
+// partial payment does not by itself stop the notices — paying the arrears does, because
+// the account stops being past due. Set it to 15 and anyone who pays anything buys a
+// fortnight. Left at 0 by default so a token payment cannot silence a real default.
+addColumnIfMissing('companies', 'notice_pause_days', 'INTEGER DEFAULT 0');
+addColumnIfMissing('loans', 'legal_hold_at', 'TEXT');
+addColumnIfMissing('loans', 'legal_hold_reason', 'TEXT');
+addColumnIfMissing('loans', 'legal_hold_by', 'INTEGER');
 addColumnIfMissing('properties', 'lat', 'REAL');
 addColumnIfMissing('properties', 'lng', 'REAL');
 addColumnIfMissing('properties', 'county', 'TEXT');   // individual | llc | land_trust | corporation | partnership | other

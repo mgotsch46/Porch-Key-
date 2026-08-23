@@ -1723,6 +1723,90 @@ async function deleteProp(pid){
   }catch(e){ $('dp-err').textContent=e.message; $('dp-err').classList.remove('hidden'); }
 }
 
+// ---------- payoff statements ----------
+// The preview is live; an issued statement is frozen. That distinction is the whole
+// point — somebody wires money against the issued one.
+async function loadPayoff(loanId){
+  const el=$('loan-payoff'); if(!el) return;
+  let d;
+  try{ d=await api(`/api/admin/loans/${loanId}/payoff`); }
+  catch(e){ el.innerHTML=`<div class="card"><h2>Payoff</h2><p class="note">${esc(e.message)}</p></div>`; return; }
+  const p=d.preview, quotes=d.quotes||[];
+  const live=quotes.find(q=>q.status==='issued');
+
+  el.innerHTML=`
+  <div class="card">
+    <h2>💵 Payoff <button class="small primary" style="float:right" onclick="issuePayoffModal(${loanId},${p.per_diem_cents})">Issue a statement</button></h2>
+    <p class="note" style="margin-bottom:12px">What it would take to pay this account in full today.
+      Nothing here is binding until you issue a statement.</p>
+    <table><tbody>
+      <tr><td>Unpaid principal</td><td class="right">${fmt(p.principal_cents)}</td></tr>
+      <tr><td>Interest accrued${p.interest_accrual_days?` (${p.interest_accrual_days} days since ${fdate(p.interest_paid_to)})`:''}</td>
+          <td class="right">${fmt(p.interest_to_quote_cents)}</td></tr>
+      ${p.fees_cents?`<tr><td>Fees outstanding</td><td class="right">${fmt(p.fees_cents)}</td></tr>`:''}
+      ${p.escrow_advance_cents?`<tr><td>Escrow you advanced</td><td class="right">${fmt(p.escrow_advance_cents)}</td></tr>`:''}
+      ${p.escrow_credit_cents?`<tr><td>Escrow held for the buyer</td><td class="right" style="color:var(--red)">(${fmt(p.escrow_credit_cents)})</td></tr>`:''}
+      ${p.suspense_credit_cents?`<tr><td>Unapplied funds</td><td class="right" style="color:var(--red)">(${fmt(p.suspense_credit_cents)})</td></tr>`:''}
+      <tr style="border-top:2px solid var(--ink)"><td><b>Payoff today</b></td>
+          <td class="right"><b>${fmt(p.total_cents)}</b></td></tr>
+    </tbody></table>
+    <p class="note" style="margin-top:10px">Per diem <b>${fmt(p.per_diem_cents)}</b> a day
+      (${p.day_count_basis}-day year). Each day past the good-through date adds that much.</p>
+    ${live?`<div class="okmsg" style="margin-top:12px">Statement <b>${esc(live.quote_number)}</b> is live —
+      ${fmt(live.total_cents)} good through ${fdate(live.good_through_date)}.</div>`:''}
+  </div>
+
+  ${quotes.length?`
+  <div class="card">
+    <h2>Statements issued</h2>
+    <table><thead><tr><th>Number</th><th>Issued</th><th>Good through</th><th class="right">Total</th><th>Status</th><th></th></tr></thead>
+    <tbody>${quotes.map(q=>`<tr${q.status!=='issued'?' style="opacity:.6"':''}>
+      <td><code>${esc(q.quote_number)}</code></td>
+      <td>${fdate((q.issued_at||'').slice(0,10))}</td>
+      <td>${fdate(q.good_through_date)}</td>
+      <td class="right">${fmt(q.total_cents)}</td>
+      <td>${q.status==='issued'?'<span class="pill ok">live</span>'
+           :q.status==='expired'?'<span class="pill gray">expired</span>'
+           :q.status==='honored'?'<span class="pill ok">paid</span>'
+           :`<span class="pill gray">${esc(q.status)}</span>`}
+        ${q.requested_by==='buyer'?'<span class="pill amber">buyer asked</span>':''}
+        ${q.delivered_at?'<span class="pill gray">sent</span>':''}</td>
+      <td class="right">
+        <a class="small" href="/api/admin/payoffs/${q.id}/pdf">PDF</a>
+        ${q.status==='issued'?`<button class="small" onclick="sendPayoff(${q.id},${loanId})">Send</button>`:''}
+      </td></tr>`).join('')}</tbody></table>
+  </div>`:''}`;
+}
+function issuePayoffModal(loanId,perDiem){
+  const d=new Date(Date.now()+30*86400000).toISOString().slice(0,10);
+  modal(`<h2>Issue a payoff statement</h2>
+    <p class="note" style="margin-bottom:12px">Once issued the figures are fixed. Someone may wire money
+      against this, so it does not quietly change if the account does.</p>
+    <div class="field"><label>Good through</label><input id="po-date" type="date" value="${d}">
+      <p class="note" style="margin-top:4px">Interest runs to this date at ${fmt(perDiem)} a day.
+        After it, the statement is void.</p></div>
+    <div class="field"><label>Release and recording fee ($)</label>
+      <input id="po-fee" type="number" step="0.01" placeholder="0.00"></div>
+    <div id="po-err" class="err hidden"></div>
+    <button class="primary" onclick="issuePayoff(${loanId})">Issue it</button>`);
+}
+async function issuePayoff(loanId){
+  try{
+    const fee=$('po-fee').value;
+    await api(`/api/admin/loans/${loanId}/payoff`,{method:'POST',body:JSON.stringify({
+      good_through_date:$('po-date').value,
+      release_fee_cents:fee===''?0:Math.round(parseFloat(fee)*100)})});
+    closeModal(); loadPayoff(loanId);
+  }catch(e){ $('po-err').textContent=e.message; $('po-err').classList.remove('hidden'); }
+}
+async function sendPayoff(id,loanId){
+  if(!confirm('Send this statement to the buyer?')) return;
+  const r=await api(`/api/admin/payoffs/${id}/send`,{method:'POST',body:'{}'});
+  const bad=Object.entries(r.delivery||{}).filter(([,v])=>!v.ok).map(([k,v])=>`${k}: ${v.error}`);
+  alert(bad.length?'Posted in the app, but:\n\n'+bad.join('\n'):'Sent.');
+  loadPayoff(loanId);
+}
+
 // ---------- escrow ----------
 // Escrow is the buyer's money, held so their taxes and insurance actually get paid.
 // The analysis answers one question: at the lowest point this year, will there be
@@ -4249,6 +4333,7 @@ async function openLoan(id){
       <td class="right">${e.to_escrow_cents?fmt(e.to_escrow_cents):''}</td><td class="right">${e.to_fees_cents?fmt(e.to_fees_cents):''}</td>
       <td class="right">${e.principal_balance_after_cents!=null?fmt(e.principal_balance_after_cents):''}</td><td class="note">${esc(e.memo||'')}</td></tr>`).join('')||'<tr><td colspan="10" class="note">No entries yet.</td></tr>'}</tbody>
     </table></div></div>
+  <div id="loan-payoff"></div>
   <div id="loan-escrow"></div>
   <div class="card"><h2>📝 Notes</h2>
     <p class="note" style="margin-bottom:12px">One-off notes on this loan — what was said, what was promised,
@@ -4270,6 +4355,7 @@ async function openLoan(id){
   LOANSCHED_OPEN=false;
   loadNotes({elId:'loan-notes', loan_id:L.id});
   loadEscrow(L.id);
+  loadPayoff(L.id);
   loadNoticesAdmin();
   loadDocCenter();
   if (f.tenant) loadTBLocation(f.tenant.id);

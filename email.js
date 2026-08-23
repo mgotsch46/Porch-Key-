@@ -60,7 +60,10 @@ const emailEnabled = (company) => !!creds(company);
 // something drafted at day 28 that goes out at day 31 must come from the legal address.
 const LEGAL_KINDS = new Set(['legal_notice', 'default_notice', 'forfeiture_notice']);
 
-function identityFor({ kind, daysPastDue } = {}) {
+function identityFor({ kind, daysPastDue, identity } = {}) {
+  // An explicit choice wins — the late-notice ladder names the address it wants for
+  // each rung rather than inferring it.
+  if (identity === 'legal' || identity === 'servicing') return identity;
   if (kind && LEGAL_KINDS.has(kind)) return 'legal';
   const threshold = Number(process.env.LEGAL_NOTICE_DAYS || 30);
   if (typeof daysPastDue === 'number' && daysPastDue >= threshold) return 'legal';
@@ -278,9 +281,9 @@ function smtpError(text, code) {
 // ---------- public API ----------
 // kind and daysPastDue pick the identity. Everything is logged either way, because for a
 // late notice the record that it was sent is part of the file.
-async function sendEmail(to, { subject, text, html, kind, daysPastDue, loanId, companyId }, company) {
+async function sendEmail(to, { subject, text, html, kind, daysPastDue, identity: want, loanId, companyId }, company) {
   const address = validAddress(to);
-  const identity = identityFor({ kind, daysPastDue });
+  const identity = identityFor({ kind, daysPastDue, identity: want });
   const c = creds(company, identity);
 
   const logFailure = (message) => {
