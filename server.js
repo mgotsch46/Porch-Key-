@@ -3872,9 +3872,14 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'tenant.h
 
 // Any unhandled route error comes back as JSON so the apps can surface a real message.
 app.use((err, req, res, next) => {
-  console.error(`${req.method} ${req.path} —`, err.message);
+  // An error with no message used to surface as a bare "Server error", which tells
+  // nobody anything. Log the whole thing, and never return an empty message.
+  console.error(`${req.method} ${req.path} —`, err && (err.stack || err.message || err));
   if (res.headersSent) return next(err);
-  res.status(500).json({ error: err.message || 'Server error' });
+  const msg = (err && err.message && String(err.message).trim())
+    || (err && err.code ? `Something went wrong (${err.code})` : null)
+    || 'Something went wrong and the app could not say what. The server log has the detail.';
+  res.status(500).json({ error: msg });
 });
 
 app.listen(PORT, () => console.log(`PorchPay running on port ${PORT}`));

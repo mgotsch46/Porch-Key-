@@ -175,7 +175,9 @@ function smtpConverse({ host, port, user, pass, from, to, data, timeoutMs = 2000
     };
 
     const timer = setTimeout(
-      () => finish(new Error(`The mail server at ${host} did not respond in time.`)),
+      () => finish(new Error(
+        `No answer from ${host} on port ${port} within ${timeoutMs / 1000} seconds. ` +
+        `If port 465 is blocked where this is hosted, try 587 instead.`)),
       timeoutMs);
 
     const send = (line) => socket.write(line + '\r\n');
@@ -200,7 +202,7 @@ function smtpConverse({ host, port, user, pass, from, to, data, timeoutMs = 2000
     const attach = () => {
       socket.setEncoding('utf8');
       socket.on('data', onData);
-      socket.on('error', (e) => { clearTimeout(timer); finish(new Error(smtpError(e.message))); });
+      socket.on('error', (e) => { clearTimeout(timer); finish(new Error(smtpError(e.message, null, e.code))); });
       socket.on('close', () => {
         clearTimeout(timer);
         if (!settled) finish(new Error('The mail server closed the connection unexpectedly.'));
@@ -239,7 +241,7 @@ function smtpConverse({ host, port, user, pass, from, to, data, timeoutMs = 2000
           attach();
           send(queue[0].send);
         });
-        socket.on('error', (e) => { clearTimeout(timer); finish(new Error(smtpError(e.message))); });
+        socket.on('error', (e) => { clearTimeout(timer); finish(new Error(smtpError(e.message, null, e.code))); });
         step = 1;
         return;
       }
@@ -255,7 +257,7 @@ function smtpConverse({ host, port, user, pass, from, to, data, timeoutMs = 2000
 }
 
 // SMTP codes are as opaque as Twilio's. Translate the ones that actually happen.
-function smtpError(text, code) {
+function smtpError(text, code, errCode) {
   const t = String(text || '');
   if (/535|Username and Password not accepted|BadCredentials/i.test(t)) {
     return 'The mail server rejected the username or password. For Google Workspace you must use a 16-character App Password, not your normal account password — and 2-Step Verification has to be on first.';
@@ -275,7 +277,25 @@ function smtpError(text, code) {
   if (/ECONNREFUSED/i.test(t)) return 'The mail server refused the connection. Check the port — Google Workspace uses 465.';
   if (/ETIMEDOUT|timed out/i.test(t)) return 'The mail server did not respond. Check the host and port.';
   if (/self.signed|certificate/i.test(t)) return 'The mail server presented a certificate that could not be verified.';
-  return code ? `Mail server error ${code}: ${t}`.slice(0, 300) : t.slice(0, 300);
+
+  // Network-level failures arrive as a code with little or no text. Say what the code
+  // means rather than passing an empty string up to the screen.
+  const byCode = {
+    ECONNREFUSED: 'The mail server refused the connection. Check the port — Google Workspace uses 465, or try 587.',
+    ETIMEDOUT: 'The connection timed out. Some hosts block outbound mail ports; if 465 is blocked, try 587.',
+    ECONNRESET: 'The connection was closed by the other end before anything was sent. This is usually an outbound port being blocked.',
+    EHOSTUNREACH: 'That mail server could not be reached from this network.',
+    ENETUNREACH: 'That mail server could not be reached from this network.',
+    EAI_AGAIN: 'The mail server hostname could not be looked up. Check the spelling of the mail server.',
+    ENOTFOUND: 'That mail server hostname does not exist. Check the spelling.',
+    EPIPE: 'The connection dropped mid-conversation.',
+  };
+  if (errCode && byCode[errCode]) return byCode[errCode];
+  if (code) return `Mail server error ${code}: ${t}`.slice(0, 300);
+  if (t.trim()) return t.slice(0, 300);
+  // Last resort: never hand back an empty string.
+  return `The mail server closed the connection without explaining why${errCode ? ` (${errCode})` : ''}. ` +
+    'This most often means the outbound mail port is blocked where the app is hosted.';
 }
 
 // ---------- public API ----------
