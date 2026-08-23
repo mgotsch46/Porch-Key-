@@ -718,6 +718,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_property ON tasks(property_id);
 addColumnIfMissing('properties', 'insurance_expires', 'TEXT');
 addColumnIfMissing('properties', 'insurance_carrier', 'TEXT');
 addColumnIfMissing('properties', 'tax_due_date', 'TEXT');
+// Auto-generated tasks carry the thing they came from, so the sweep that creates them
+// can run as often as it likes without ever making a second copy.
+addColumnIfMissing('tasks', 'source_key', 'TEXT');
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_source
+  ON tasks(source_key) WHERE source_key IS NOT NULL;`);
 
 
 // ---------- contacts ----------

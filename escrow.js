@@ -294,7 +294,93 @@ function upcomingShortfalls(companyId, daysAhead = 45) {
   }).filter(r => r.short_by_cents > 0);
 }
 
+// ---------- getting ready for a bill ----------
+// A tax bill you find out about on the day is a scramble; one you saw three weeks out is
+// an errand. So every bill that is coming gets a task fifteen working days ahead of it,
+// which is roughly three weeks of actual time to find the money, check the amount and
+// get it paid.
+const PREP_WORKING_DAYS = 15;
+
+function subtractBusinessDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  let left = n;
+  while (left > 0) {
+    d.setUTCDate(d.getUTCDate() - 1);
+    const wd = d.getUTCDay();
+    if (wd !== 0 && wd !== 6) left--;        // weekends only; holidays are not modelled
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+// Idempotent: every generated task carries a key derived from what it came from, so
+// running this repeatedly changes nothing. A task somebody has already ticked off is
+// left alone rather than resurrected.
+function syncPrepTasks(companyId, { workingDays = PREP_WORKING_DAYS } = {}) {
+  const today = new Date().toISOString().slice(0, 10);
+  const horizon = new Date(Date.now() + 400 * 86400000).toISOString().slice(0, 10);
+  let made = 0;
+
+  const ensure = ({ key, propertyId, loanId, title, notes, dueDate, category }) => {
+    if (dueDate < today) return;                     // no point in a task for last week
+    if (get('SELECT id FROM tasks WHERE source_key=?', key)) return;
+    run(`INSERT INTO tasks (company_id, property_id, loan_id, title, notes, category,
+      priority, due_date, remind_days_before, source_key)
+      VALUES (?,?,?,?,?,?,'high',?,3,?)`,
+      companyId, propertyId || null, loanId || null, title, notes, category, dueDate, key);
+    made++;
+  };
+
+  // Bills the escrow schedule already knows about.
+  const disbs = all(`SELECT d.*, l.property_id, l.company_id, p.address, ei.item_type
+    FROM escrow_disbursements d
+    JOIN loans l ON l.id = d.loan_id
+    LEFT JOIN properties p ON p.id = l.property_id
+    LEFT JOIN escrow_items ei ON ei.id = d.escrow_item_id
+    WHERE l.company_id=? AND d.status='scheduled' AND d.scheduled_date <= ?`,
+    companyId, horizon);
+
+  for (const d of disbs) {
+    const what = d.item_type === 'hazard_insurance' ? 'Insurance'
+      : d.item_type === 'flood_insurance' ? 'Flood insurance'
+      : d.item_type === 'hoa' ? 'HOA dues' : 'Property tax';
+    ensure({
+      key: `escrow_disb:${d.id}`,
+      propertyId: d.property_id, loanId: d.loan_id,
+      title: `${what} due ${d.scheduled_date} — ${d.address || 'property'}`,
+      notes: `$${(d.amount_cents / 100).toFixed(2)}${d.payee ? ` to ${d.payee}` : ''}. ` +
+        `Paid from the buyer's escrow — check the balance covers it before the due date.`,
+      dueDate: subtractBusinessDays(d.scheduled_date, workingDays),
+      category: d.item_type === 'property_tax' ? 'taxes' : 'insurance',
+    });
+  }
+
+  // And the dates recorded straight on a property, for houses with no escrow set up.
+  const props = all(`SELECT id, address, tax_due_date, insurance_expires, insurance_carrier
+    FROM properties WHERE company_id=? AND archived_at IS NULL`, companyId);
+  for (const p of props) {
+    if (p.tax_due_date && p.tax_due_date <= horizon) {
+      ensure({
+        key: `prop_tax:${p.id}:${p.tax_due_date}`, propertyId: p.id,
+        title: `Property tax due ${p.tax_due_date} — ${p.address}`,
+        notes: 'Recorded on the property. Confirm the amount with the county before paying.',
+        dueDate: subtractBusinessDays(p.tax_due_date, workingDays), category: 'taxes',
+      });
+    }
+    if (p.insurance_expires && p.insurance_expires <= horizon) {
+      ensure({
+        key: `prop_ins:${p.id}:${p.insurance_expires}`, propertyId: p.id,
+        title: `Insurance renews ${p.insurance_expires} — ${p.address}`,
+        notes: `${p.insurance_carrier ? p.insurance_carrier + '. ' : ''}Renew or re-shop before it lapses. ` +
+          'An uninsured house is the one thing on this list that cannot be fixed afterwards.',
+        dueDate: subtractBusinessDays(p.insurance_expires, workingDays), category: 'insurance',
+      });
+    }
+  }
+  return made;
+}
+
 module.exports = {
   initSchema, analyze, saveAnalysis, rebuildSchedule, payDisbursement,
-  upcomingShortfalls, monthsOf, CUSHION_MAX_MONTHS, SURPLUS_REFUND_FLOOR_CENTS,
+  upcomingShortfalls, monthsOf, syncPrepTasks, subtractBusinessDays,
+  CUSHION_MAX_MONTHS, SURPLUS_REFUND_FLOOR_CENTS, PREP_WORKING_DAYS,
 };

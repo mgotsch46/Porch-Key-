@@ -30,6 +30,19 @@ const pdfDoc = require('./pdf');
 const escrow = require('./escrow');
 escrow.initSchema();
 
+// Bills that are coming get a task fifteen working days ahead of them. Runs on boot and
+// once a day; it is idempotent, so running it often costs nothing.
+function syncAllPrepTasks() {
+  for (const co of all('SELECT id FROM companies')) {
+    try {
+      const n = escrow.syncPrepTasks(co.id);
+      if (n) console.log(`Created ${n} tax/insurance prep task(s) for company ${co.id}`);
+    } catch (e) { console.error('Prep task sync failed for company', co.id, e.message); }
+  }
+}
+setTimeout(syncAllPrepTasks, 8000);
+setInterval(syncAllPrepTasks, 24 * 60 * 60 * 1000);
+
 const payoff = require('./payoff');
 payoff.initSchema();
 
@@ -1171,7 +1184,29 @@ app.get('/api/admin/calendar', adminOnly, (req, res) => {
     }
   }
 
-  // 4. Renewals that belong to the house.
+  // 4. Escrow bills that are actually scheduled, which is more precise than the
+  //    single renewal date on the property.
+  if (want('renewals')) {
+    for (const d of all(`SELECT d.*, l.property_id, p.address, ei.item_type
+      FROM escrow_disbursements d
+      JOIN loans l ON l.id = d.loan_id
+      LEFT JOIN properties p ON p.id = l.property_id
+      LEFT JOIN escrow_items ei ON ei.id = d.escrow_item_id
+      WHERE l.company_id=? AND d.scheduled_date >= ? AND d.scheduled_date <= ?`,
+      req.companyId, from, to)) {
+      const tax = d.item_type !== 'hazard_insurance' && d.item_type !== 'flood_insurance';
+      events.push({
+        source: 'renewal', id: `esc-${d.id}`, date: d.scheduled_date,
+        icon: tax ? '🏛️' : '🛡️',
+        title: `${tax ? 'Property tax' : 'Insurance'} ${d.status === 'paid' ? 'paid' : 'due'} — ` +
+               `$${(d.amount_cents / 100).toFixed(2)}${d.payee ? ' to ' + d.payee : ''}`,
+        property_id: d.property_id, property_address: d.address,
+        overdue: d.status === 'scheduled' && d.scheduled_date < todayStr(),
+      });
+    }
+  }
+
+  // 5. Renewals that belong to the house.
   if (want('renewals')) {
     for (const p of all(`SELECT id, address, insurance_expires, insurance_carrier, tax_due_date
       FROM properties WHERE company_id=?`, req.companyId)) {
