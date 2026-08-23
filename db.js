@@ -495,6 +495,20 @@ addColumnIfMissing('loans', 'final_payment_date', 'TEXT');   // maturity, from f
 // partial payment does not by itself stop the notices — paying the arrears does, because
 // the account stops being past due. Set it to 15 and anyone who pays anything buys a
 // fortnight. Left at 0 by default so a token payment cannot silence a real default.
+// How mail actually leaves. 'smtp' talks to a mail server on port 465/587; 'resend'
+// posts over HTTPS on 443. The second exists because a lot of hosts — Railway among
+// them — block outbound SMTP entirely, and no amount of correct credentials gets past
+// a blocked port. HTTPS is never blocked, and the provider reports back what happened
+// to each message, which for a default notice is part of the file.
+addColumnIfMissing('companies', 'email_provider', "TEXT DEFAULT 'smtp'");
+addColumnIfMissing('companies', 'email_api_key', 'TEXT');
+addColumnIfMissing('companies', 'email_webhook_secret', 'TEXT');
+// Delivery evidence, filled in later by the provider's webhook. Kept as timestamps
+// beside status rather than as new status values, so the existing CHECK still holds.
+addColumnIfMissing('email_log', 'provider_message_id', 'TEXT');
+addColumnIfMissing('email_log', 'delivered_at', 'TEXT');
+addColumnIfMissing('email_log', 'bounced_at', 'TEXT');
+addColumnIfMissing('email_log', 'bounce_reason', 'TEXT');
 addColumnIfMissing('companies', 'notice_pause_days', 'INTEGER DEFAULT 0');
 // What a payment has to be worth before it earns that quiet. Without this the pause is a
 // footgun: $1 against $900 of arrears would buy the same silence as $800, over and over,

@@ -163,6 +163,49 @@ app.post('/api/stripe/webhook', express.raw({ type: '*/*' }), (req, res) => {
   }
 });
 
+// ---------- email delivery webhook, also raw-body for its signature ----------
+// What became of each notice. For an ordinary receipt this is a nicety; for a 30-day
+// default notice, "delivered at 09:14 on the 3rd" is the difference between believing
+// it arrived and being able to show it did. Bounces matter as much — an address that
+// hard-bounces means the buyer never got the notice, and carrying on as though they
+// did is how a forfeiture gets unwound.
+app.post('/api/email/webhook', express.raw({ type: '*/*' }), (req, res) => {
+  const payload = req.body.toString('utf8');
+  let ev;
+  try { ev = JSON.parse(payload); } catch { return res.status(400).send('Bad payload'); }
+
+  const messageId = ev && ev.data && ev.data.email_id;
+  if (!messageId) return res.json({ received: true });
+
+  const row = get('SELECT id, company_id FROM email_log WHERE provider_message_id=?', messageId);
+  if (!row) return res.json({ received: true });   // not ours, or already pruned
+
+  // Signature is checked against the secret belonging to the company that sent it, so
+  // one tenant's secret cannot be used to write delivery history onto another's mail.
+  const co = get('SELECT email_webhook_secret FROM companies WHERE id=?', row.company_id);
+  const secret = (co && co.email_webhook_secret) || process.env.RESEND_WEBHOOK_SECRET;
+  if (secret) {
+    const okSig = email.verifyWebhook({
+      secret, body: payload,
+      id: req.headers['svix-id'], timestamp: req.headers['svix-timestamp'],
+      signature: req.headers['svix-signature'],
+    });
+    if (!okSig) return res.status(400).send('Bad signature');
+  }
+
+  try {
+    const t = (ev.created_at || new Date().toISOString()).slice(0, 19).replace('T', ' ');
+    if (ev.type === 'email.delivered') {
+      run('UPDATE email_log SET delivered_at=? WHERE id=? AND delivered_at IS NULL', t, row.id);
+    } else if (ev.type === 'email.bounced' || ev.type === 'email.complained') {
+      const why = (ev.data && (ev.data.reason || (ev.data.bounce && ev.data.bounce.message)))
+        || (ev.type === 'email.complained' ? 'Marked as spam by the recipient' : 'Bounced');
+      run('UPDATE email_log SET bounced_at=?, bounce_reason=? WHERE id=?', t, String(why).slice(0, 300), row.id);
+    }
+  } catch (e) { console.error('Email webhook:', e.message); }
+  res.json({ received: true });
+});
+
 app.use(express.json({ limit: '60mb' }));
 app.use(express.urlencoded({ extended: false }));   // Twilio posts form-encoded
 
@@ -2387,6 +2430,15 @@ app.get('/api/admin/email', adminOnly, (req, res) => {
   res.json({
     connected: !!c,
     source: c ? c.source : null,
+    provider: email.providerOf(co),
+    api_key_set: !!co.email_api_key,
+    webhook_secret_set: !!co.email_webhook_secret,
+    webhook_url: baseUrlOf(req) + '/api/email/webhook',
+    delivery: get(`SELECT
+        COUNT(*) sent,
+        SUM(CASE WHEN delivered_at IS NOT NULL THEN 1 ELSE 0 END) delivered,
+        SUM(CASE WHEN bounced_at   IS NOT NULL THEN 1 ELSE 0 END) bounced
+      FROM email_log WHERE company_id=? AND status='sent'`, req.companyId),
     host: co.smtp_host || process.env.SMTP_HOST || null,
     port: co.smtp_port || Number(process.env.SMTP_PORT || 465),
     user: co.smtp_user || process.env.SMTP_USER || null,
@@ -2395,13 +2447,41 @@ app.get('/api/admin/email', adminOnly, (req, res) => {
     reply_to: legal ? legal.replyTo : null,
     legal_has_own_login: !!co.email_legal_user,
     legal_notice_days: LEGAL_NOTICE_DAYS,
-    recent: all(`SELECT id, identity, to_address, subject, kind, status, error, created_at
+    recent: all(`SELECT id, identity, to_address, subject, kind, status, error, created_at,
+                        delivered_at, bounced_at, bounce_reason
                  FROM email_log WHERE company_id=? ORDER BY id DESC LIMIT 20`, req.companyId),
   });
 });
 
 app.put('/api/admin/email', ownerOnly, async (req, res, next) => {
   const b = req.body || {};
+
+  // The HTTPS path. Kept first and separate because it shares nothing with SMTP except
+  // the from-addresses — no host, no port, no per-mailbox password.
+  if (String(b.provider || '').toLowerCase() === 'resend') {
+    const co = myCompany(req);
+    const key = String(b.api_key || '').trim() || co.email_api_key;
+    const servicingR = email.validAddress(b.from_servicing);
+    const legalR = email.validAddress(b.from_legal) || servicingR;
+    const replyToR = b.reply_to ? email.validAddress(b.reply_to) : null;
+    if (!key) return res.status(400).json({ error: 'An API key is needed' });
+    if (!servicingR) return res.status(400).json({ error: 'The servicing "from" address does not look valid' });
+    try {
+      await email.verifyApiKey({ key, from: servicingR, fromName: tpl.outboundName(co) });
+      // Only check the legal address separately when it is a different one — otherwise
+      // connecting would send two identical test messages to the same inbox.
+      if (legalR && legalR !== servicingR) {
+        await email.verifyApiKey({ key, from: legalR, fromName: tpl.outboundName(co) });
+      }
+      run(`UPDATE companies SET email_provider='resend', email_api_key=?,
+             email_from_servicing=?, email_from_legal=?, email_reply_to=?,
+             email_webhook_secret=? WHERE id=?`,
+        key, servicingR, legalR, replyToR,
+        String(b.webhook_secret || '').trim() || co.email_webhook_secret || null, req.companyId);
+      return res.json({ ok: true, provider: 'resend', from_servicing: servicingR, from_legal: legalR });
+    } catch (e) { return next(e); }
+  }
+
   const host = String(b.host || '').trim();
   const port = Number(b.port || 465);
   const user = String(b.user || '').trim();
@@ -2435,7 +2515,8 @@ app.put('/api/admin/email', ownerOnly, async (req, res, next) => {
 app.delete('/api/admin/email', ownerOnly, (req, res) => {
   run(`UPDATE companies SET smtp_host=NULL, smtp_port=NULL, smtp_user=NULL, smtp_pass=NULL,
        email_from_servicing=NULL, email_from_legal=NULL, email_reply_to=NULL,
-       email_legal_user=NULL, email_legal_pass=NULL WHERE id=?`, req.companyId);
+       email_legal_user=NULL, email_legal_pass=NULL,
+       email_provider='smtp', email_api_key=NULL, email_webhook_secret=NULL WHERE id=?`, req.companyId);
   res.json({ ok: true });
 });
 
@@ -2703,6 +2784,37 @@ app.put('/api/admin/loans/:id', adminOnly, (req, res) => {
   if (sets.length) run(`UPDATE loans SET ${sets.join(',')} WHERE id=?`, ...vals, loan.id);
   res.json(loanFull(get('SELECT * FROM loans WHERE id=?', loan.id)));
 });
+// Only a loan entered by mistake can be deleted. One that has taken a payment or reached
+// a buyer is part of the record — cancel it instead, which keeps the file intact.
+app.delete('/api/admin/loans/:id', adminOnly, (req, res, next) => {
+  try {
+    const loan = ownedLoan(req, req.params.id);
+    if (!loan) return res.status(404).json({ error: 'Not found' });
+    if (!req.body || req.body.confirm !== 'DELETE') return res.status(400).json({ error: 'Type DELETE to confirm' });
+    const t = loanTies(loan.id);
+    if (t.ledger || t.journal_entries || t.notices) {
+      const why = [
+        t.payments ? `${t.payments} payment${t.payments === 1 ? '' : 's'}` : null,
+        t.ledger - t.payments > 0 ? `${t.ledger - t.payments} other ledger entr${t.ledger - t.payments === 1 ? 'y' : 'ies'}` : null,
+        t.journal_entries ? `${t.journal_entries} journal entr${t.journal_entries === 1 ? 'y' : 'ies'}` : null,
+        t.notices ? `${t.notices} notice${t.notices === 1 ? '' : 's'} sent` : null,
+      ].filter(Boolean).join(', ');
+      return res.status(400).json({
+        error: `This loan has ${why} against it. Deleting it would leave money in your books pointing ` +
+               `at nothing, and remove the record of notices you sent. Set its status to cancelled instead.`,
+        ties: t,
+      });
+    }
+    // Nothing financial ever happened. Clear the loose attachments and remove it.
+    run('DELETE FROM charges WHERE loan_id=?', loan.id);
+    run('DELETE FROM messages WHERE loan_id=?', loan.id);
+    run('DELETE FROM escrow_items WHERE loan_id=?', loan.id);
+    run('DELETE FROM payoff_quotes WHERE loan_id=?', loan.id);
+    run('DELETE FROM loans WHERE id=?', loan.id);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
 app.post('/api/admin/loans/:id/payments', adminOnly, (req, res) => {
   const { amount_cents, method, entry_date, memo } = req.body || {};
   if (!ownedLoan(req, req.params.id)) return res.status(404).json({ error: 'Loan not found' });
@@ -3148,6 +3260,90 @@ app.get('/api/admin/pml/:id', adminOnly, (req, res) => {
     equity_spread_cents: (tb ? tb.principal_balance_cents : 0) - pml.principal_balance_cents,
   });
 });
+// What a loan has against it. Deleting one with money behind it would leave journal
+// entries and payments pointing at a row that no longer exists, so the answer is to
+// mark it paid off or cancelled instead — the history stays, the loan stops being live.
+function loanTies(id) {
+  const c = (sql, ...a) => get(sql, ...a).c;
+  return {
+    payments: c("SELECT COUNT(*) c FROM ledger WHERE loan_id=? AND type='payment'", id),
+    ledger: c('SELECT COUNT(*) c FROM ledger WHERE loan_id=?', id),
+    journal_entries: c('SELECT COUNT(*) c FROM journal_entries WHERE loan_id=?', id),
+    notices: c('SELECT COUNT(*) c FROM notices WHERE loan_id=?', id),
+  };
+}
+function pmlTies(id) {
+  const c = (sql, ...a) => get(sql, ...a).c;
+  return {
+    ledger: c('SELECT COUNT(*) c FROM pml_ledger WHERE pml_loan_id=?', id),
+    journal_entries: c('SELECT COUNT(*) c FROM journal_entries WHERE pml_loan_id=?', id),
+  };
+}
+
+app.put('/api/admin/pml/:id', adminOnly, (req, res, next) => {
+  try {
+    const pml = get('SELECT * FROM pml_loans WHERE id=? AND company_id=?', req.params.id, req.companyId);
+    if (!pml) return res.status(404).json({ error: 'Not found' });
+    const b = req.body || {};
+    const num = (v, fallback) => (v === undefined || v === null || v === '' ? fallback : Number(v));
+
+    const principal = num(b.principal_cents, pml.principal_cents);
+    const rate = num(b.interest_rate_bps, pml.interest_rate_bps);
+    const term = num(b.term_months, pml.term_months);
+    const type = b.payment_type || pml.payment_type;
+    if (!(principal > 0)) return res.status(400).json({ error: 'Principal must be more than zero' });
+    if (!(term > 0)) return res.status(400).json({ error: 'Term must be at least one month' });
+    if (rate < 0) return res.status(400).json({ error: 'Interest rate cannot be negative' });
+
+    // Recalculate the payment only when asked, or when it was never set by hand. Quietly
+    // changing what a lender is owed because the rate was edited is not a favour.
+    let payment = num(b.payment_cents, pml.payment_cents);
+    if (b.recalc_payment) {
+      payment = type === 'interest_only'
+        ? Math.round(principal * (rate / 10000) / 12)
+        : loanEngine.calcPayment(principal, rate, term);
+    }
+
+    // The balance moves with the principal only when nothing has been paid yet. Once
+    // there are payments, the balance is a fact the ledger owns, not a field to retype.
+    const paidAnything = pmlTies(pml.id).ledger > 0;
+    const balance = paidAnything ? pml.principal_balance_cents
+      : num(b.principal_balance_cents, principal);
+
+    run(`UPDATE pml_loans SET lender_name=?, lender_contact=?, lien_position=?, status=?,
+           principal_cents=?, interest_rate_bps=?, term_months=?, payment_type=?, payment_cents=?,
+           balloon_date=?, first_payment_date=?, principal_balance_cents=?, notes=? WHERE id=?`,
+      String(b.lender_name || pml.lender_name).trim(),
+      b.lender_contact !== undefined ? (b.lender_contact || null) : pml.lender_contact,
+      num(b.lien_position, pml.lien_position), b.status || pml.status,
+      principal, rate, term, type, payment,
+      b.balloon_date !== undefined ? (b.balloon_date || null) : pml.balloon_date,
+      b.first_payment_date || pml.first_payment_date, balance,
+      b.notes !== undefined ? (b.notes || null) : pml.notes, pml.id);
+
+    res.json({ ...get('SELECT * FROM pml_loans WHERE id=?', pml.id), balance_locked: paidAnything });
+  } catch (e) { next(e); }
+});
+
+app.delete('/api/admin/pml/:id', adminOnly, (req, res, next) => {
+  try {
+    const pml = get('SELECT * FROM pml_loans WHERE id=? AND company_id=?', req.params.id, req.companyId);
+    if (!pml) return res.status(404).json({ error: 'Not found' });
+    if (!req.body || req.body.confirm !== 'DELETE') return res.status(400).json({ error: 'Type DELETE to confirm' });
+    const t = pmlTies(pml.id);
+    if (t.ledger || t.journal_entries) {
+      return res.status(400).json({
+        error: `This lender loan has ${t.ledger} ledger entr${t.ledger === 1 ? 'y' : 'ies'} and ` +
+               `${t.journal_entries} journal entr${t.journal_entries === 1 ? 'y' : 'ies'} against it. ` +
+               `Deleting it would leave money in your books pointing at nothing. Mark it paid off instead.`,
+        ties: t,
+      });
+    }
+    run('DELETE FROM pml_loans WHERE id=?', pml.id);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
 app.post('/api/admin/pml/:id/payments', adminOnly, (req, res) => {
   const pml = get('SELECT * FROM pml_loans WHERE id=? AND company_id=?', req.params.id, req.companyId);
   if (!pml) return res.status(404).json({ error: 'Not found' });

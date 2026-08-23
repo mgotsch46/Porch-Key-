@@ -2911,8 +2911,14 @@ async function loadEmail(){
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
           ${r.identity==='legal'?'⚖️':'✉️'} ${esc(r.subject||'(no subject)')}
           <span class="note">→ ${esc(r.to_address)}</span></span>
-        <span class="note" style="white-space:nowrap">${r.status==='sent'?'sent':'<b style="color:var(--bad,#b00)">failed</b>'}</span>
+        <span class="note" style="white-space:nowrap">${
+          r.status!=='sent' ? '<b style="color:var(--bad,#b00)">failed</b>'
+          : r.bounced_at ? `<b style="color:var(--bad,#b00)" title="${esc(r.bounce_reason||'')}">bounced</b>`
+          : r.delivered_at ? '<b style="color:var(--good,#0a7)">delivered</b>'
+          : 'sent'}</span>
       </div>`).join('') || '<p class="note">Nothing sent yet.</p>';
+    const d=t.delivery||{};
+    const bounced=Number(d.bounced||0);
     el.innerHTML=`
       <p class="okmsg">Connected — statements, receipts and notices go out by email as well as in the app.</p>
       <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
@@ -2922,7 +2928,17 @@ async function loadEmail(){
       ${t.reply_to?`<div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
         <span class="note">Replies to notices go to</span><b>${esc(t.reply_to)}</b></div>`:''}
       <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
-        <span class="note">Mail server</span><b>${t.source==='env'?'set on the server':esc(t.host||'')}</b></div>
+        <span class="note">Sent via</span><b>${t.provider==='resend'
+          ? 'Resend over HTTPS' : (t.source==='env'?'mail server set on the server':esc(t.host||'')+' (SMTP)')}</b></div>
+      ${t.provider==='resend' ? `
+      <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+        <span class="note">Delivery reporting</span>
+        <b>${t.webhook_secret_set ? `on — ${d.delivered||0} of ${d.sent||0} confirmed delivered`
+                                  : '<span style="color:var(--warn,#b60)">not set up</span>'}</b></div>
+      ${bounced ? `<p class="err" style="margin:12px 0">${bounced} message(s) bounced. A bounced notice never
+        reached the buyer — check the address before relying on it as having been served.</p>` : ''}
+      ${!t.webhook_secret_set ? `<p class="note" style="margin:12px 0">Add the webhook in Resend and paste its
+        signing secret here to get delivery confirmation. Worth doing before you rely on an emailed notice.</p>` : ''}` : ''}
       ${t.from_legal && t.from_legal!==t.from_servicing && !t.legal_has_own_login ? `
       <p class="note" style="margin:12px 0"><b>One thing to check in Gmail.</b> Because both addresses share one login,
         ${esc(t.from_legal)} has to be added under Settings → Accounts → <i>Send mail as</i> and verified, or Google
@@ -2937,7 +2953,40 @@ async function loadEmail(){
   } else {
     el.innerHTML=`
       <p class="note" style="margin-bottom:14px">Email is <b>not connected</b>, so statements and late notices only appear
-        inside the app. Connect a mailbox and they go out by email too — from your own domain, under two addresses.</p>
+        inside the app. Connect it and they go out by email too — from your own domain, under two addresses.</p>
+
+      <div class="field"><label>How mail gets sent</label>
+        <select id="em-provider" onchange="emProviderChanged()">
+          <option value="resend">Email service over HTTPS — Resend (recommended)</option>
+          <option value="smtp">Mail server over SMTP — Gmail and similar</option>
+        </select>
+        <p class="note" style="margin-top:4px">Many hosts, <b>Railway included</b>, block outbound SMTP ports on
+          their cheaper plans, which makes the mail server option time out no matter how right the password is.
+          HTTPS is never blocked, and the service tells you whether each message actually arrived.</p></div>
+
+      <div id="em-api">
+        <details style="margin-bottom:16px">
+          <summary class="note" style="cursor:pointer;font-weight:700">Setting this up (about ten minutes)</summary>
+          <ol class="note" style="margin:10px 0 0 18px;line-height:1.9">
+            <li>Make a free account at <b>resend.com</b>. The free tier covers 3,000 messages a month.</li>
+            <li>Add your domain — <b>saapm.com</b> — under <i>Domains</i>, and put the DNS records it gives you
+                into your domain host. Wait for them to go green.</li>
+            <li>Under <i>API Keys</i>, create a key with <b>Sending access</b> and paste it below.</li>
+            <li>Optional but worth it: under <i>Webhooks</i>, add
+                <code id="em-hook-url">${esc(t.webhook_url||'')}</code> and subscribe it to
+                <code>email.delivered</code>, <code>email.bounced</code> and <code>email.complained</code>.
+                Paste its signing secret below and every notice gets a delivery record.</li>
+          </ol>
+        </details>
+        <div class="field"><label>API key</label>
+          <input id="em-key" type="password" placeholder="re_..." autocomplete="off"></div>
+        <div class="field"><label>Webhook signing secret <span class="note">(optional)</span></label>
+          <input id="em-hook" type="password" placeholder="whsec_..." autocomplete="off">
+          <p class="note" style="margin-top:4px">Without this, delivery and bounce reports are ignored rather than
+            trusted — anyone could otherwise post a fake "delivered" for a notice.</p></div>
+      </div>
+
+      <div id="em-smtp" class="hidden">
       <details style="margin-bottom:16px">
         <summary class="note" style="cursor:pointer;font-weight:700">How to get these values (Google Workspace)</summary>
         <ol class="note" style="margin:10px 0 0 18px;line-height:1.9">
@@ -2959,6 +3008,7 @@ async function loadEmail(){
         <input id="em-user" placeholder="servicing@yourdomain.com" autocomplete="off"></div>
       <div class="field"><label>App password</label>
         <input id="em-pass" type="password" placeholder="16-character app password" autocomplete="off"></div>
+      </div>
       <div class="field"><label>Everyday mail comes from</label>
         <input id="em-serv" placeholder="servicing@yourdomain.com" autocomplete="off"></div>
       <div class="field"><label>Late notices come from</label>
@@ -2969,7 +3019,7 @@ async function loadEmail(){
         <input id="em-reply" placeholder="servicing@yourdomain.com" autocomplete="off">
         <p class="note" style="margin-top:4px">Someone who replies to a late notice is trying to sort it out. Point
           them at an inbox that is actually watched.</p></div>
-      <details style="margin-bottom:16px">
+      <details id="em-smtp2" class="hidden" style="margin-bottom:16px">
         <summary class="note" style="cursor:pointer;font-weight:700">The legal address has its own separate login</summary>
         <div class="field" style="margin-top:10px"><label>Its username</label>
           <input id="em-luser" placeholder="legal@yourdomain.com" autocomplete="off"></div>
@@ -2981,15 +3031,27 @@ async function loadEmail(){
       <button class="primary" onclick="saveEmail()">Connect email</button>`;
   }
 }
+function emProviderChanged(){
+  const smtp=$('em-provider').value==='smtp';
+  $('em-smtp').classList.toggle('hidden',!smtp);
+  $('em-smtp2').classList.toggle('hidden',!smtp);
+  $('em-api').classList.toggle('hidden',smtp);
+}
 async function saveEmail(){
-  const btn=event&&event.target; if(btn){ btn.disabled=true; btn.textContent='Checking with the mail server…'; }
+  const btn=event&&event.target;
+  const resend=$('em-provider') && $('em-provider').value==='resend';
+  if(btn){ btn.disabled=true; btn.textContent=resend?'Checking with the email service…':'Checking with the mail server…'; }
   try{
-    const r=await api('/api/admin/email',{method:'PUT',body:JSON.stringify({
-      host:$('em-host').value.trim(), port:$('em-port').value.trim(),
-      user:$('em-user').value.trim(), pass:$('em-pass').value.trim(),
-      from_servicing:$('em-serv').value.trim(), from_legal:$('em-legal').value.trim(),
-      reply_to:$('em-reply').value.trim(),
-      legal_user:($('em-luser')||{}).value, legal_pass:($('em-lpass')||{}).value })});
+    const body=resend
+      ? { provider:'resend', api_key:$('em-key').value.trim(), webhook_secret:$('em-hook').value.trim(),
+          from_servicing:$('em-serv').value.trim(), from_legal:$('em-legal').value.trim(),
+          reply_to:$('em-reply').value.trim() }
+      : { host:$('em-host').value.trim(), port:$('em-port').value.trim(),
+          user:$('em-user').value.trim(), pass:$('em-pass').value.trim(),
+          from_servicing:$('em-serv').value.trim(), from_legal:$('em-legal').value.trim(),
+          reply_to:$('em-reply').value.trim(),
+          legal_user:($('em-luser')||{}).value, legal_pass:($('em-lpass')||{}).value };
+    const r=await api('/api/admin/email',{method:'PUT',body:JSON.stringify(body)});
     $('em-ok').textContent=`Connected. Everyday mail from ${r.from_servicing}, notices from ${r.from_legal}.`;
     $('em-ok').classList.remove('hidden'); $('em-err').classList.add('hidden');
     setTimeout(loadEmail, 1200);
@@ -4036,37 +4098,81 @@ function renderPML(){
     ? `<tr><td colspan="10" class="note">Nothing matches. <a href="#" onclick="$('pml-search').value='';$('pml-status').value='';renderPML();return false">Clear the search</a></td></tr>`
     : '<tr><td colspan="10" class="note">No PML loans yet.</td></tr>');
 }
-function pmlModal(presetProp){
-  modal(`<h2>Add PML loan</h2>
+// Private money notes are usually short — five years is the common shape, so that is
+// what the box starts at rather than empty. Type over it whenever the deal says otherwise.
+const PML_DEFAULT_TERM_MONTHS=60;
+function pmlModal(presetProp, e){
+  const edit=!!e; const v=e||{};
+  const dollars=c=>(c===undefined||c===null)?'':(c/100).toFixed(2);
+  modal(`<h2>${edit?'Edit lender loan':'Add PML loan'}</h2>
     <div class="grid2">
-      <div class="field"><label>Lender name</label><input id="pm-lender"></div>
-      <div class="field"><label>Lender contact (email/phone)</label><input id="pm-contact"></div>
-      <div class="field"><label>Property</label><select id="pm-prop">${PROPS.map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('')}</select></div>
+      <div class="field"><label>Lender name</label><input id="pm-lender" value="${edit?esc(v.lender_name||''):''}"></div>
+      <div class="field"><label>Lender contact (email/phone)</label><input id="pm-contact" value="${edit?esc(v.lender_contact||''):''}"></div>
+      <div class="field"><label>Property</label><select id="pm-prop" ${edit?'disabled':''}>${PROPS.map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('')}</select>
+        ${edit?'<p class="note" style="margin-top:4px">A loan cannot be moved to another house — its ledger belongs here.</p>':''}</div>
       <div class="field"><label>Lien position</label><select id="pm-lien"><option value="1">1st</option><option value="2">2nd</option><option value="3">3rd</option></select></div>
-      <div class="field"><label>Principal ($)</label><input id="pm-principal" type="number" step="0.01"></div>
-      <div class="field"><label>Interest rate (% APR)</label><input id="pm-rate" type="number" step="0.01"></div>
-      <div class="field"><label>Term (months)</label><input id="pm-term" type="number"></div>
+      <div class="field"><label>Principal ($)</label><input id="pm-principal" type="number" step="0.01" value="${dollars(v.principal_cents)}"></div>
+      <div class="field"><label>Interest rate (% APR)</label><input id="pm-rate" type="number" step="0.01" value="${edit?(v.interest_rate_bps/100).toFixed(2):''}"></div>
+      <div class="field"><label>Term (months)</label><input id="pm-term" type="number" value="${edit?v.term_months:PML_DEFAULT_TERM_MONTHS}">
+        ${edit?'':'<p class="note" style="margin-top:4px">60 months is the usual private money term. Change it if this deal differs.</p>'}</div>
       <div class="field"><label>Payment type</label><select id="pm-type">
         <option value="amortized">Amortized</option><option value="interest_only">Interest only</option><option value="balloon">Balloon</option></select></div>
-      <div class="field"><label>Monthly payment ($ — blank = auto)</label><input id="pm-pmt" type="number" step="0.01"></div>
-      <div class="field"><label>First payment date</label><input id="pm-first" type="date"></div>
-      <div class="field"><label>Balloon due date (if any)</label><input id="pm-balloon" type="date"></div>
-      <div class="field"><label>Notes</label><input id="pm-notes"></div>
+      <div class="field"><label>Monthly payment ($${edit?'':' — blank = auto'})</label><input id="pm-pmt" type="number" step="0.01" value="${dollars(v.payment_cents)}"></div>
+      <div class="field"><label>First payment date</label><input id="pm-first" type="date" value="${edit?esc(v.first_payment_date||''):''}"></div>
+      <div class="field"><label>Balloon due date (if any)</label><input id="pm-balloon" type="date" value="${edit?esc(v.balloon_date||''):''}"></div>
+      <div class="field"><label>Notes</label><input id="pm-notes" value="${edit?esc(v.notes||''):''}"></div>
+      ${edit?`<div class="field"><label>Status</label><select id="pm-status">
+        <option value="active">Active</option><option value="paid_off">Paid off</option><option value="default">In default</option></select></div>`:''}
     </div>
+    ${edit?`<label class="note" style="display:block;margin:6px 0 12px">
+      <input type="checkbox" id="pm-recalc"> Recalculate the monthly payment from the principal, rate and term
+      <span style="display:block;margin-left:22px">Leave unticked to keep the payment exactly as agreed with the lender.</span></label>`:''}
     <div id="pm-err" class="err hidden"></div>
-    <button class="primary" onclick="createPML()">Add PML loan</button>`);
+    <button class="primary" onclick="${edit?`savePML(${v.id})`:'createPML()'}">${edit?'Save changes':'Add PML loan'}</button>`);
   if(presetProp) $('pm-prop').value = presetProp;
+  if(edit){
+    $('pm-prop').value=v.property_id; $('pm-lien').value=v.lien_position||1;
+    $('pm-type').value=v.payment_type; $('pm-status').value=v.status||'active';
+  }
+}
+function pmlBody(){
+  return { lender_name:$('pm-lender').value, lender_contact:$('pm-contact').value,
+    lien_position:Number($('pm-lien').value), principal_cents:Math.round(parseFloat($('pm-principal').value)*100),
+    interest_rate_bps:Math.round(parseFloat($('pm-rate').value)*100), term_months:parseInt($('pm-term').value),
+    payment_type:$('pm-type').value, payment_cents:$('pm-pmt').value?Math.round(parseFloat($('pm-pmt').value)*100):null,
+    first_payment_date:$('pm-first').value, balloon_date:$('pm-balloon').value||null, notes:$('pm-notes').value };
 }
 async function createPML(){
   try{
     await api('/api/admin/pml',{method:'POST',body:JSON.stringify({
-      property_id:Number($('pm-prop').value), lender_name:$('pm-lender').value, lender_contact:$('pm-contact').value,
-      lien_position:Number($('pm-lien').value), principal_cents:Math.round(parseFloat($('pm-principal').value)*100),
-      interest_rate_bps:Math.round(parseFloat($('pm-rate').value)*100), term_months:parseInt($('pm-term').value),
-      payment_type:$('pm-type').value, payment_cents:$('pm-pmt').value?Math.round(parseFloat($('pm-pmt').value)*100):null,
-      first_payment_date:$('pm-first').value, balloon_date:$('pm-balloon').value||null, notes:$('pm-notes').value })});
+      property_id:Number($('pm-prop').value), ...pmlBody() })});
     closeModal(); loadPML();
   }catch(e){ $('pm-err').textContent=e.message; $('pm-err').classList.remove('hidden'); }
+}
+async function savePML(id){
+  try{
+    const r=await api('/api/admin/pml/'+id,{method:'PUT',body:JSON.stringify({
+      ...pmlBody(), status:$('pm-status').value, recalc_payment:$('pm-recalc').checked?1:0 })});
+    closeModal();
+    if(r.balance_locked) alert('Saved. The outstanding balance was left as it is — this loan has ledger entries, so its balance comes from those rather than from the principal.');
+    openPML(id);
+  }catch(e){ $('pm-err').textContent=e.message; $('pm-err').classList.remove('hidden'); }
+}
+function deletePMLModal(p){
+  modal(`<h2>Delete this lender loan?</h2>
+    <p class="note" style="margin-bottom:12px">${esc(p.lender_name)} — ${fmt(p.principal_cents)} at
+      ${(p.interest_rate_bps/100).toFixed(2)}%. This cannot be undone.</p>
+    <p class="note" style="margin-bottom:12px">Only a loan with no ledger entries can be deleted. If money has
+      moved on it, mark it <b>paid off</b> instead — that keeps the history and takes it off your active list.</p>
+    <div class="field"><label>Type DELETE to confirm</label><input id="pd-confirm" placeholder="DELETE"></div>
+    <div id="pd-err" class="err hidden"></div>
+    <button class="warn" onclick="deletePML(${p.id})">Delete for good</button>`);
+}
+async function deletePML(id){
+  try{
+    await api('/api/admin/pml/'+id,{method:'DELETE',body:JSON.stringify({confirm:$('pd-confirm').value.trim()})});
+    closeModal(); nav('pml'); loadPML();
+  }catch(e){ $('pd-err').textContent=e.message; $('pd-err').classList.remove('hidden'); }
 }
 let PML_CACHE=null;
 async function openPML(id){
@@ -4088,7 +4194,9 @@ async function openPML(id){
     <p class="note">Next payment due: ${fdate(f.next_due_date)} · Original principal ${fmt(p.principal_cents)}${p.notes?' · '+esc(p.notes):''}</p>
     <div class="actions"><button class="primary" onclick="pmlPayModal()">💵 Record payment to lender</button>
       <button class="small" onclick="pmlDrawModal()">Record additional draw</button>
-      <button class="small" onclick="pmlScheduleModal(${p.id})">⏱️ Payment schedule</button></div>
+      <button class="small" onclick="pmlScheduleModal(${p.id})">⏱️ Payment schedule</button>
+      <button class="small" onclick="pmlModal(null, PML_CACHE)">✏️ Edit loan</button>
+      <button class="small warn" onclick="deletePMLModal(PML_CACHE)">🗑️ Delete</button></div>
     <p class="note" style="margin-top:10px">${p.autopay_enabled
       ? `<b style="color:var(--brand)">Scheduled</b> — ${fmt(p.payment_cents)} on day ${p.payment_day||'—'} each month by ${esc((p.autopay_method||'bank_transfer').replace('_',' '))}, recorded automatically.${p.autopay_note?' '+esc(p.autopay_note):''}`
       : 'No schedule set — payments are recorded manually.'}</p>
@@ -4363,6 +4471,7 @@ async function openLoan(id){
       <button class="small" onclick="lateFee()">⏰ Late fee ${fmt(L.late_fee_cents)}</button>
       <button class="small" onclick="chargeModal()">➕ Add charge</button>
       <button class="small" onclick="docModal()">📎 Upload doc</button>
+      <button class="small warn" onclick="deleteLoanModal()">🗑️ Delete loan</button>
       <button class="small" onclick="msgLoanId=${L.id};nav('msgs');openThread(${L.id},'${esc(f.property?f.property.address:'')}')">💬 Message buyer</button>
       <button class="small" onclick="remindModal(${L.id})">🔔 Send reminder</button>
     </div>
@@ -4661,6 +4770,25 @@ function renderSched(){
 }
 
 // ---------- edit the note ----------
+function deleteLoanModal(){
+  const L=LOAN_F&&LOAN_F.loan; if(!L) return;
+  const who=(LOAN_F.tenant&&LOAN_F.tenant.name)||'no buyer assigned';
+  modal(`<h2>Delete this loan?</h2>
+    <p class="note" style="margin-bottom:12px">${esc((LOAN_F.property&&LOAN_F.property.address)||'')} — ${esc(who)}.
+      This cannot be undone.</p>
+    <p class="note" style="margin-bottom:12px">Only a loan with no payments, journal entries or notices can be
+      deleted — that is, one entered by mistake. If this loan is real but finished, set its status to
+      <b>cancelled</b> or <b>paid off</b> under Edit loan terms instead. That keeps the record.</p>
+    <div class="field"><label>Type DELETE to confirm</label><input id="ld-confirm" placeholder="DELETE"></div>
+    <div id="ld-err" class="err hidden"></div>
+    <button class="warn" onclick="deleteLoan(${L.id})">Delete for good</button>`);
+}
+async function deleteLoan(id){
+  try{
+    await api('/api/admin/loans/'+id,{method:'DELETE',body:JSON.stringify({confirm:$('ld-confirm').value.trim()})});
+    closeModal(); nav('loans'); loadLoans();
+  }catch(e){ $('ld-err').textContent=e.message; $('ld-err').classList.remove('hidden'); }
+}
 function editLoanModal(){
   const L=LOAN_F&&LOAN_F.loan; if(!L) return;
   const d=c=>((c||0)/100).toFixed(2);

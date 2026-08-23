@@ -273,6 +273,46 @@ async function main() {
   r = await req(`/api/admin/pml/${pmlId}/draw`, { method: 'POST', body: JSON.stringify({ amount_cents: 500000, memo: 'rehab draw' }) });
   ok(r.json.balance_cents === 7490000, 'PML draw increases balance');
 
+  console.log('— editing and deleting a PML loan');
+  r = await req('/api/admin/pml/' + pmlId, { method: 'PUT', body: JSON.stringify({ lender_name: 'Smith Capital II LLC', interest_rate_bps: 1000 }) });
+  ok(r.status === 200 && r.json.lender_name === 'Smith Capital II LLC' && r.json.interest_rate_bps === 1000, 'PML terms edited');
+  ok(r.json.payment_cents === 70000, 'payment left alone unless a recalc is asked for');
+  ok(r.json.balance_cents === undefined && r.json.principal_balance_cents === 7490000,
+    'balance untouched by an edit — the ledger owns it once money has moved');
+  r = await req('/api/admin/pml/' + pmlId, { method: 'PUT', body: JSON.stringify({ recalc_payment: 1 }) });
+  ok(r.json.payment_cents === Math.round(7000000 * 0.10 / 12), 'recalc when asked follows the new rate');
+  r = await req('/api/admin/pml/' + pmlId, { method: 'PUT', body: JSON.stringify({ term_months: 0 }) });
+  ok(r.status === 400, 'a zero-month term is refused');
+  r = await req('/api/admin/pml/' + pmlId, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+  ok(r.status === 400 && /ledger|journal/i.test(r.json.error), 'PML with ledger history cannot be deleted');
+  // One with nothing behind it is just a typo, and deletes cleanly.
+  r = await req('/api/admin/pml', { method: 'POST', body: JSON.stringify({
+    property_id: propId, lender_name: 'Typo Capital', principal_cents: 100000,
+    interest_rate_bps: 1000, term_months: 60, first_payment_date: '2026-06-01' }) });
+  const junkPml = r.json.id;
+  ok(r.json.term_months === 60, 'PML accepts a 60-month term');
+  r = await req('/api/admin/pml/' + junkPml, { method: 'DELETE', body: JSON.stringify({ confirm: 'nope' }) });
+  ok(r.status === 400, 'delete needs the typed confirmation');
+  r = await req('/api/admin/pml/' + junkPml, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+  ok(r.status === 200, 'a PML with no history deletes');
+  r = await req('/api/admin/pml/' + junkPml);
+  ok(r.status === 404, 'deleted PML is gone');
+
+  console.log('— deleting a TB loan');
+  r = await req('/api/admin/loans/' + loanId, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+  ok(r.status === 400 && /payment|journal|notice/i.test(r.json.error), 'loan with payments and notices cannot be deleted');
+  r = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+    property_id: propId, loan_type: 'land_contract', sale_price_cents: 5000000,
+    down_payment_cents: 500000, principal_cents: 4500000, interest_rate_bps: 900,
+    term_months: 360, first_payment_date: '2026-06-01' }) });
+  const junkLoan = r.json.loan.id;
+  r = await req('/api/admin/loans/' + junkLoan, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+  ok(r.status === 200, 'a loan entered by mistake deletes');
+  r = await req('/api/admin/loans/' + junkLoan);
+  ok(r.status === 404, 'deleted loan is gone');
+  r = await req('/api/admin/loans/' + loanId);
+  ok(r.status === 200 && r.json.ledger.length > 0, 'the real loan and its ledger are untouched');
+
   console.log('— location (opt-in)');
   r = await req('/api/tenant/location', { method: 'POST', body: JSON.stringify({ lat: 40.1, lng: -83.0 }) }, tbCookie);
   ok(r.status === 403, 'location rejected without consent');

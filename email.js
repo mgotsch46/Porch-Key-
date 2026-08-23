@@ -24,7 +24,39 @@ const { get, run } = require('./db');
 // identity is 'servicing' or 'legal'. The legal address may carry its own username and
 // password (two separate mailboxes), or share the main account (one mailbox with a
 // "send as" alias configured). Both setups are common; both work here.
+// Which way out. An explicit provider setting wins; otherwise an API key on its own is
+// taken as intent to use it, because nobody pastes one by accident.
+function providerOf(company) {
+  const co = company || {};
+  const explicit = String(co.email_provider || process.env.EMAIL_PROVIDER || '').toLowerCase();
+  if (explicit === 'resend' || explicit === 'smtp') return explicit;
+  if (co.email_api_key || process.env.RESEND_API_KEY) return 'resend';
+  return 'smtp';
+}
+
 function creds(company, identity = 'servicing') {
+  if (providerOf(company) === 'resend') return apiCreds(company, identity);
+  return smtpCreds(company, identity);
+}
+
+// The HTTPS path. There is no per-identity login here — one API key sends as any address
+// on a domain the account has verified, so the legal address needs no separate secret.
+function apiCreds(company, identity = 'servicing') {
+  const co = company || {};
+  const key = co.email_api_key || process.env.RESEND_API_KEY;
+  if (!key) return null;
+  const servicingFrom = co.email_from_servicing || process.env.EMAIL_FROM_SERVICING;
+  if (!servicingFrom) return null;
+  const legalFrom = co.email_from_legal || process.env.EMAIL_FROM_LEGAL || servicingFrom;
+  const source = co.email_api_key ? 'company' : 'env';
+  if (identity === 'legal') {
+    return { mode: 'resend', key, from: legalFrom, source,
+             replyTo: co.email_reply_to || process.env.EMAIL_REPLY_TO || servicingFrom };
+  }
+  return { mode: 'resend', key, from: servicingFrom, replyTo: null, source };
+}
+
+function smtpCreds(company, identity = 'servicing') {
   const co = company || {};
   const host = co.smtp_host || process.env.SMTP_HOST;
   const port = Number(co.smtp_port || process.env.SMTP_PORT || 465);
@@ -37,7 +69,7 @@ function creds(company, identity = 'servicing') {
 
   if (identity === 'legal') {
     return {
-      host, port,
+      mode: 'smtp', host, port,
       user: co.email_legal_user || process.env.EMAIL_LEGAL_USER || user,
       pass: co.email_legal_pass || process.env.EMAIL_LEGAL_PASS || pass,
       from: legalFrom,
@@ -46,7 +78,7 @@ function creds(company, identity = 'servicing') {
     };
   }
   return {
-    host, port, user, pass,
+    mode: 'smtp', host, port, user, pass,
     from: servicingFrom,
     replyTo: null,
     source: co.smtp_host ? 'company' : 'env',
@@ -298,6 +330,60 @@ function smtpError(text, code, errCode) {
     'This most often means the outbound mail port is blocked where the app is hosted.';
 }
 
+// ---------- the HTTPS transport ----------
+// One POST, no ports, no handshake to get wrong. Returns the provider's message id so a
+// later delivery or bounce webhook can be matched back to the notice it belongs to.
+async function resendSend({ key, from, fromName, to, replyTo, subject, text, html, timeoutMs = 20000 }) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  let r, body;
+  try {
+    r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      signal: ac.signal,
+      body: JSON.stringify({
+        from: formatFrom(from, fromName),
+        to: [to],
+        subject: subject || '',
+        ...(text ? { text } : {}),
+        ...(html ? { html } : {}),
+        ...(replyTo ? { reply_to: replyTo } : {}),
+      }),
+    });
+    body = await r.text();
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === 'AbortError') throw new Error('The email service did not respond in time. Try again in a moment.');
+    throw new Error(`Could not reach the email service: ${e.message}`);
+  }
+  clearTimeout(timer);
+
+  let json = null;
+  try { json = JSON.parse(body); } catch {}
+
+  if (!r.ok) throw new Error(resendError(r.status, json, from));
+  if (!json || !json.id) throw new Error('The email service accepted the message but returned no id, which should not happen.');
+  return { id: json.id };
+}
+
+// The three failures that actually happen, said in terms of what to go and do.
+function resendError(status, json, from) {
+  const msg = (json && (json.message || json.error)) || '';
+  const domain = String(from || '').split('@')[1] || 'your domain';
+  if (status === 401 || status === 403) {
+    if (/domain|verif/i.test(msg)) {
+      return `The email service has not verified ${domain} yet. Add the DNS records it shows you ` +
+             `for that domain, wait for them to go green, then try again. (${msg})`;
+    }
+    return 'That API key was rejected. Check it was copied whole and has not been revoked.';
+  }
+  if (status === 422) return `The email service rejected the message: ${msg || 'it failed validation'}`;
+  if (status === 429) return 'The email service is rate limiting us. Wait a minute and try again.';
+  if (status >= 500) return 'The email service is having problems at their end. Try again shortly.';
+  return `The email service refused this (HTTP ${status})${msg ? ': ' + msg : ''}`;
+}
+
 // ---------- public API ----------
 // kind and daysPastDue pick the identity. Everything is logged either way, because for a
 // late notice the record that it was sent is part of the file.
@@ -322,26 +408,30 @@ async function sendEmail(to, { subject, text, html, kind, daysPastDue, identity:
   }
 
   const fromName = (company && (company.mgmt_company_name || company.name)) || process.env.COMPANY_NAME || 'Porch Pay';
-  const data = buildMessage({
-    from: c.from, fromName, to: address, replyTo: c.replyTo, subject, text, html,
-  });
 
+  let messageId = null;
   try {
-    await smtpConverse({ host: c.host, port: c.port, user: c.user, pass: c.pass,
-                         from: c.from, to: address, data });
+    if (c.mode === 'resend') {
+      const sent = await resendSend({ key: c.key, from: c.from, fromName, to: address,
+                                      replyTo: c.replyTo, subject, text, html });
+      messageId = sent.id;
+    } else {
+      await smtpConverse({ host: c.host, port: c.port, user: c.user, pass: c.pass, from: c.from, to: address,
+        data: buildMessage({ from: c.from, fromName, to: address, replyTo: c.replyTo, subject, text, html }) });
+    }
   } catch (e) {
     logFailure(e.message);
     throw e;
   }
 
   try {
-    run(`INSERT INTO email_log (company_id, loan_id, identity, to_address, from_address, subject, kind, status)
-         VALUES (?,?,?,?,?,?,?, 'sent')`,
+    run(`INSERT INTO email_log (company_id, loan_id, identity, to_address, from_address, subject, kind, status, provider_message_id)
+         VALUES (?,?,?,?,?,?,?, 'sent', ?)`,
       companyId || (company && company.id) || null, loanId || null, identity,
-      address, c.from, subject || '', kind || null);
+      address, c.from, subject || '', kind || null, messageId);
   } catch {}
 
-  return { ok: true, to: address, from: c.from, identity };
+  return { ok: true, to: address, from: c.from, identity, message_id: messageId };
 }
 
 // Credential check that proves the whole path without mailing a stranger: it opens the
@@ -359,7 +449,44 @@ async function verifyCreds({ host, port, user, pass, from }) {
   return { host, from: address };
 }
 
+// The HTTPS equivalent: prove the key works and the from-domain is verified. Resend has
+// no dry-run, so this sends one real message to the address itself — same as the SMTP
+// check, which also ends up mailing you rather than a stranger.
+async function verifyApiKey({ key, from, fromName }) {
+  if (!key) throw new Error('An API key is needed');
+  const address = validAddress(from);
+  if (!address) throw new Error('The "from" address does not look valid');
+  await resendSend({
+    key, from: address, fromName: fromName || 'Porch Pay', to: address,
+    subject: 'Porch Pay connection test',
+    text: 'This message confirms Porch Pay can send email from this address.',
+  });
+  return { from: address };
+}
+
+// Resend signs webhooks the Svix way: the signed content is id.timestamp.body, the secret
+// is base64 after the whsec_ prefix, and the header can carry several space-separated
+// signatures during a key rotation, so any one matching is a pass.
+function verifyWebhook({ secret, id, timestamp, signature, body }) {
+  if (!secret || !id || !timestamp || !signature || body == null) return false;
+  const ts = Number(timestamp);
+  // Reject anything older than five minutes so a captured call cannot be replayed later.
+  if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > 300) return false;
+
+  const raw = Buffer.from(String(secret).replace(/^whsec_/, ''), 'base64');
+  const expected = crypto.createHmac('sha256', raw)
+    .update(`${id}.${timestamp}.${body}`).digest('base64');
+  const expBuf = Buffer.from(expected);
+
+  return String(signature).split(' ').some(part => {
+    const sig = part.includes(',') ? part.split(',')[1] : part;
+    const got = Buffer.from(String(sig || ''));
+    return got.length === expBuf.length && crypto.timingSafeEqual(got, expBuf);
+  });
+}
+
 module.exports = {
-  emailEnabled, sendEmail, verifyCreds, creds, identityFor,
+  emailEnabled, sendEmail, verifyCreds, verifyApiKey, verifyWebhook,
+  creds, providerOf, identityFor,
   validAddress, buildMessage, quotedPrintable,
 };
