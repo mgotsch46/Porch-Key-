@@ -726,7 +726,7 @@ function backfillCompany() {
     db.exec('PRAGMA foreign_keys = OFF');
     db.exec(t.sql
       .replace(new RegExp('^CREATE TABLE .?' + table + '.?'), `CREATE TABLE ${table}_new`)
-      .replace(/CHECK \(category IN \([^)]*\)\)/,
+      .replace(/CHECK \(category IN\s*\([^)]*\)\)/,
         "CHECK (category IN ('purchase','closing','filing','rehab','bog','lawncare'," +
         "'insurance','taxes','utilities','marketing','legal','other'))"));
     const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name).join(',');
