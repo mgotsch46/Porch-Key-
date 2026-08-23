@@ -1001,15 +1001,16 @@ async function markRead(id){
 }
 
 // ---------- docs ----------
-const DICO={loan_docs:'📄',insurance:'🛡️',taxes:'🏛️',utilities:'💡',correspondence:'✉️'};
+const DICO={loan_docs:'📄',trust_docs:'📜',closing_receipts:'🧾',insurance:'🛡️',taxes:'🏛️',utilities:'💡',correspondence:'✉️'};
 async function loadDocs(){
   let folders=[]; try{ folders=await api('/api/tenant/documents'); }catch{}
   $('docs-folders').innerHTML=folders.map(f=>`
     <div class="card"><h2>${DICO[f.category]||'📁'} ${esc(f.label)}</h2>
     ${f.documents.length?f.documents.map(d=>`<div class="row">
-      <span class="k">📎 <a href="/api/documents/${d.id}/download" style="color:var(--brand);font-weight:600">${esc(d.title||d.filename)}</a>
+      <span class="k">📎 <a href="/api/documents/${d.id}/view" target="_blank" rel="noopener" style="color:var(--brand);font-weight:600">${esc(d.title||d.filename)}</a>
       ${d.title?`<small>${esc(d.filename)}</small>`:''}</span>
-      <span class="note">${fdate((d.effective_date||d.created_at||'').slice(0,10))}</span></div>`).join('')
+      <span class="note">${fdate((d.effective_date||d.created_at||'').slice(0,10))}
+        <a href="/api/documents/${d.id}/download" title="Download" style="text-decoration:none">⬇</a></span></div>`).join('')
       :'<p class="note">Nothing here yet. New documents your servicer shares will show up in this folder.</p>'}
     </div>`).join('');
 }

@@ -2862,14 +2862,16 @@ app.delete('/api/admin/charges/:id', adminOnly, (req, res) => {
 // ---------- admin: documents & AI ----------
 // Shared folders both the admin and the tenant buyer can see, plus the admin-only vault.
 // Folders the buyer can see once the house is theirs.
-const SHARED_CATEGORIES = ['loan_docs', 'insurance', 'taxes', 'utilities', 'correspondence'];
+const SHARED_CATEGORIES = ['loan_docs', 'trust_docs', 'closing_receipts', 'insurance', 'taxes', 'utilities', 'correspondence'];
 // Folders only you see — the paperwork from your side of the deal.
 const ADMIN_CATEGORIES = ['acquisition', 'pml_docs', 'sale_closing', 'private'];
 const CATEGORY_LABELS = {
   acquisition: 'Acquisition closing docs', pml_docs: 'Private money loan docs',
-  sale_closing: 'Sale closing docs', loan_docs: 'Loan Documents', insurance: 'Insurance',
+  sale_closing: 'Sale closing docs', loan_docs: 'Loan Documents',
+  trust_docs: 'Trust documents', closing_receipts: 'Closing receipts', insurance: 'Insurance',
   taxes: 'Taxes', utilities: 'Utilities', correspondence: 'Correspondence',
-  private: 'Private (admin only)', statement: 'Statements', other: 'Other',
+  private: 'Private (admin only)', statement: 'Statements',
+  unsorted: 'Unsorted — just uploaded', other: 'Other',
 };
 
 // Property lifecycle. Selling to a buyer moves it to 'sold' automatically.
@@ -2889,8 +2891,10 @@ app.post('/api/admin/documents', adminOnly, (req, res) => {
   if (loan_id && !ownedLoan(req, loan_id)) return res.status(404).json({ error: 'Loan not found' });
   if (property_id && !ownedProperty(req, property_id)) return res.status(404).json({ error: 'Property not found' });
   const cat = category || 'other';
-  // Anything filed as "private" is admin-only regardless of the flag sent.
-  const shared = cat !== 'private' && cat !== 'statement' && visible_to_tenant ? 1 : 0;
+  // Anything filed as "private" is admin-only regardless of the flag sent, and nothing
+  // in the unsorted tray is shown to a buyer — sharing is a decision made per document
+  // when it is filed, not a side effect of a batch upload.
+  const shared = cat !== 'private' && cat !== 'statement' && cat !== 'unsorted' && visible_to_tenant ? 1 : 0;
   const stored = crypto.randomUUID() + path.extname(filename);
   fs.writeFileSync(path.join(UPLOAD_DIR, stored), Buffer.from(data_base64, 'base64'));
   const r = run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, effective_date,
@@ -2917,11 +2921,33 @@ app.get('/api/admin/loans/:id/documents', adminOnly, (req, res) => {
     FROM documents WHERE loan_id=? OR (property_id IS NOT NULL AND property_id=?)
     ORDER BY COALESCE(effective_date, created_at) DESC, id DESC`, loan.id, loan.property_id);
   const folders = {};
-  for (const c of [...SHARED_CATEGORIES, 'private']) folders[c] = { label: CATEGORY_LABELS[c], shared: c !== 'private', documents: [] };
+  // The unsorted tray comes first so a batch upload is the first thing on the screen,
+  // asking to be filed. It only appears when something is actually in it.
+  for (const c of ['unsorted', ...SHARED_CATEGORIES, 'private']) folders[c] = { label: CATEGORY_LABELS[c], shared: SHARED_CATEGORIES.includes(c), documents: [] };
   for (const d of docs) {
-    const key = d.visible_to_tenant ? (SHARED_CATEGORIES.includes(d.category) ? d.category : 'loan_docs') : 'private';
+    const key = d.category === 'unsorted' ? 'unsorted'
+      : d.visible_to_tenant ? (SHARED_CATEGORIES.includes(d.category) ? d.category : 'loan_docs')
+      : 'private';
     folders[key].documents.push(d);
   }
+  if (!folders.unsorted.documents.length) delete folders.unsorted;
+  res.json(folders);
+});
+
+// Same shape for a property, so the documents page can stand on its own instead of
+// being carved out of the property payload.
+app.get('/api/admin/properties/:id/documents', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  const docs = all(`SELECT id, filename, kind, category, title, effective_date, mime, visible_to_tenant, created_at
+    FROM documents WHERE property_id=? OR loan_id IN (SELECT id FROM loans WHERE property_id=?)
+    ORDER BY COALESCE(effective_date, created_at) DESC, id DESC`, p.id, p.id);
+  const folders = {};
+  for (const c of ['unsorted', ...ADMIN_CATEGORIES, ...SHARED_CATEGORIES]) {
+    folders[c] = { label: CATEGORY_LABELS[c], shared: SHARED_CATEGORIES.includes(c), documents: [] };
+  }
+  for (const d of docs) (folders[d.category] || folders.private).documents.push(d);
+  if (!folders.unsorted.documents.length) delete folders.unsorted;
   res.json(folders);
 });
 
@@ -2930,7 +2956,7 @@ app.put('/api/admin/documents/:id', adminOnly, (req, res) => {
   if (!doc) return res.status(404).json({ error: 'Not found' });
   const category = req.body.category !== undefined ? req.body.category : doc.category;
   const vis = req.body.visible_to_tenant !== undefined ? (req.body.visible_to_tenant ? 1 : 0) : doc.visible_to_tenant;
-  const shared = category === 'private' ? 0 : vis;
+  const shared = (category === 'private' || category === 'unsorted') ? 0 : vis;
   run('UPDATE documents SET category=?, visible_to_tenant=?, title=?, effective_date=? WHERE id=?',
     category, shared, req.body.title !== undefined ? req.body.title : doc.title,
     req.body.effective_date !== undefined ? req.body.effective_date : doc.effective_date, doc.id);
@@ -2959,16 +2985,35 @@ app.get('/api/tenant/documents', tenantReady, (req, res) => {
   }
   res.json(folders);
 });
-app.get('/api/documents/:id/download', anyUser, (req, res) => {
+// One authorization for both ways of getting at a file. An admin sees everything in
+// their company; a buyer sees only documents on their own loan that were shared.
+function authorizedDoc(req, res) {
   const doc = get('SELECT * FROM documents WHERE id=?', req.params.id);
-  if (!doc) return res.status(404).json({ error: 'Not found' });
-  if (doc.company_id !== req.user.company_id) return res.status(403).json({ error: 'Forbidden' });
+  if (!doc) { res.status(404).json({ error: 'Not found' }); return null; }
+  if (doc.company_id !== req.user.company_id) { res.status(403).json({ error: 'Forbidden' }); return null; }
   if (req.user.role === 'tenant') {
     const loan = get('SELECT * FROM loans WHERE id=? AND tenant_user_id=?', doc.loan_id, req.user.id);
-    if (!loan || !doc.visible_to_tenant) return res.status(403).json({ error: 'Forbidden' });
+    if (!loan || !doc.visible_to_tenant) { res.status(403).json({ error: 'Forbidden' }); return null; }
   }
+  return doc;
+}
+app.get('/api/documents/:id/download', anyUser, (req, res) => {
+  const doc = authorizedDoc(req, res);
+  if (!doc) return;
   res.setHeader('Content-Disposition', `attachment; filename="${doc.filename.replace(/"/g, '')}"`);
   if (doc.mime) res.setHeader('Content-Type', doc.mime);
+  res.send(fs.readFileSync(path.join(UPLOAD_DIR, doc.stored_name)));
+});
+// The same file, shown rather than saved. `inline` lets the browser render PDFs and
+// images in place; nosniff stops it guessing its way into treating an upload as HTML,
+// which is what would turn a hostile upload into script running on this origin.
+app.get('/api/documents/:id/view', anyUser, (req, res) => {
+  const doc = authorizedDoc(req, res);
+  if (!doc) return;
+  res.setHeader('Content-Disposition', `inline; filename="${doc.filename.replace(/"/g, '')}"`);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  const safe = /^(application\/pdf|image\/|text\/plain)/.test(doc.mime || '');
+  res.setHeader('Content-Type', safe ? doc.mime : 'application/octet-stream');
   res.send(fs.readFileSync(path.join(UPLOAD_DIR, doc.stored_name)));
 });
 // AI: extract loan terms from one or more closing docs

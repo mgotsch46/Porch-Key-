@@ -178,8 +178,8 @@ CREATE TABLE IF NOT EXISTS documents (
   property_id INTEGER REFERENCES properties(id),
   kind TEXT NOT NULL DEFAULT 'closing' CHECK (kind IN ('closing','statement','other')),
   category TEXT NOT NULL DEFAULT 'other'
-    CHECK (category IN ('loan_docs','acquisition','pml_docs','sale_closing','insurance','taxes',
-      'utilities','correspondence','statement','private','other')),
+    CHECK (category IN ('loan_docs','acquisition','pml_docs','sale_closing','trust_docs','closing_receipts',
+      'insurance','taxes','utilities','correspondence','statement','private','unsorted','other')),
   title TEXT,                 -- optional friendly label, e.g. "2026 Homeowners Policy"
   effective_date TEXT,        -- e.g. policy/tax year date, for sorting updates
   filename TEXT NOT NULL,
@@ -595,6 +595,25 @@ function backfillCompany() {
            DROP TABLE documents; ALTER TABLE documents_new RENAME TO documents;`);
   db.exec('PRAGMA foreign_keys = ON');
   console.log('Widened document categories for acquisition, PML and sale closing sets');
+})();
+
+// Trust documents, closing receipts, and the unsorted tray for batch uploads. The
+// replace is a regex because the CHECK's whitespace differs between a fresh install
+// and one that went through the earlier widening.
+(function migrateDocCategories2() {
+  const t = get("SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'");
+  if (!t || t.sql.includes("'trust_docs'")) return;
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(t.sql
+    .replace(/^CREATE TABLE .?documents.?/, 'CREATE TABLE documents_new')
+    .replace(/CHECK \(category IN \([^)]*\)\)/,
+      "CHECK (category IN ('loan_docs','acquisition','pml_docs','sale_closing','trust_docs','closing_receipts'," +
+      "'insurance','taxes','utilities','correspondence','statement','private','unsorted','other'))"));
+  const cols = db.prepare('PRAGMA table_info(documents)').all().map(c => c.name).join(',');
+  db.exec(`INSERT INTO documents_new (${cols}) SELECT ${cols} FROM documents;
+           DROP TABLE documents; ALTER TABLE documents_new RENAME TO documents;`);
+  db.exec('PRAGMA foreign_keys = ON');
+  console.log('Widened document categories for trust docs, closing receipts and the unsorted tray');
 })();
 
 (function migrateCostCategories() {

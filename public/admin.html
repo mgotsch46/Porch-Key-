@@ -600,6 +600,22 @@ a{color:var(--brand);font-weight:600}
       <div id="loan-detail" style="margin-top:12px"></div>
     </section>
 
+    <!-- DOCUMENTS (full page, reached from a loan or a property) -->
+    <section id="pg-docs" class="hidden">
+      <button class="small" id="docs-back" onclick="docsBack()">← Back</button>
+      <h1 style="margin-top:12px">📁 Documents <span id="docs-title" class="note" style="font-weight:400;font-size:15px"></span></h1>
+      <div class="card" id="docs-dropzone"
+           style="border:2px dashed var(--line);text-align:center;padding:26px;cursor:pointer;transition:background .15s">
+        <p style="font-weight:700;margin-bottom:4px">Drop files here — as many as you like</p>
+        <p class="note">or <a href="#" onclick="$('docs-file').click();return false">choose files</a>.
+          They land in an <b>Unsorted</b> tray first; you file each one after.</p>
+        <input id="docs-file" type="file" multiple accept=".pdf,image/*,.doc,.docx,.xls,.xlsx,.txt" class="hidden"
+               onchange="uploadDocFiles(this.files)">
+        <div id="docs-upl-progress" class="note" style="margin-top:8px"></div>
+      </div>
+      <div id="docs-folders"><p class="note">Loading…</p></div>
+    </section>
+
     <!-- PML LOANS -->
     <section id="pg-pml" class="hidden">
       <h1>PML Loans</h1>
@@ -1312,7 +1328,7 @@ async function doLogin(){
 async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
 
 function nav(pg){
-  for(const p of ['dash','loans','loan','pml','pmld','tbs','props','propd','calc','tasks','cal','contacts','reports','templates','reminders','invites','exp','msgs','slips','settings']){
+  for(const p of ['dash','loans','loan','docs','pml','pmld','tbs','props','propd','calc','tasks','cal','contacts','reports','templates','reminders','invites','exp','msgs','slips','settings']){
     const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
   }
@@ -1489,7 +1505,7 @@ async function openProp(id){
            <span class="note" style="margin-left:10px">Sold to ${esc(f.tenant?f.tenant.name:'a buyer')}</span>`
         : `<button class="primary" onclick="sellModal(${p.id})">💰 Sell to a tenant buyer</button>`}
       <button class="small" onclick="costModal(${p.id})">+ Add cost</button>
-      <button class="small" onclick="propDocModal(${p.id})">+ Upload document</button>
+      <button class="small" onclick="openDocsPage({property_id:${p.id}})">📁 Documents</button>
       <button class="small" onclick="pmlModal(${p.id})">+ Add PML loan</button>
       <button class="small" onclick="propTermsModal(${p.id})">Owner &amp; payment terms</button>
       <button class="small" onclick="editPropModal(${p.id})">✏️ Edit</button>
@@ -1552,20 +1568,9 @@ async function openProp(id){
       <td class="right">${fmt(c.amount_cents)}</td>
       <td class="right"><button class="small warn" onclick="delCost(${c.id})">✕</button></td></tr>`).join('')
       ||'<tr><td colspan="6" class="note">No costs logged yet.</td></tr>'}</tbody></table></div></div>
-  <div class="card"><h2>Documents <button class="small" onclick="propDocModal(${p.id})">+ Upload</button></h2>
-    <p class="note" style="margin-bottom:12px">Three sets of paperwork: what you signed when you bought it, the private money loan, and what you signed when you sold it. Buyer folders are visible in their app.</p>
-    ${Object.entries(f.doc_folders||{}).map(([cat,fo])=>`
-      <div style="border:1px solid ${fo.shared?'var(--line)':'#f0e2d5'};border-radius:10px;padding:12px;margin-bottom:9px;background:${fo.shared?'#fff':'#fffcf8'}">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <b style="font-size:13.5px">${DOCSET_ICONS[cat]||'📁'} ${esc(fo.label)}</b>
-          <span>${fo.shared?'<span class="pill ok">buyer sees this</span>':'<span class="pill amber">yours only</span>'}
-            <button class="small" onclick="propDocModal(${p.id},'${cat}')">+</button></span>
-        </div>
-        ${fo.documents.length?fo.documents.map(d=>`<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13.5px">
-          <span>📎 <a href="/api/documents/${d.id}/download">${esc(d.title||d.filename)}</a></span>
-          <span class="note">${fdate((d.effective_date||d.created_at||'').slice(0,10))}</span></div>`).join('')
-          :'<p class="note" style="margin-top:5px">Empty.</p>'}
-      </div>`).join('')}
+  <div class="card"><h2>📁 Documents</h2>
+    <p class="note" style="margin-bottom:12px">Everything filed on this house — acquisition, private money, trust and sale paperwork, plus the folders the buyer sees.</p>
+    <button class="primary" onclick="openDocsPage({property_id:${p.id}})">Open documents</button>
   </div>
   <div class="grid2">
     <div class="card"><h2>📇 Who works on this house</h2>
@@ -2202,39 +2207,7 @@ async function delCost(id){
   if(!confirm('Remove this cost?'))return;
   await api('/api/admin/costs/'+id,{method:'DELETE'}); openProp(currentPropId);
 }
-function propDocModal(pid,preset){
-  modal(`<h2>Upload document</h2>
-    <div class="field"><label>File</label><input id="pd-file" type="file" accept=".pdf,image/*,.doc,.docx"></div>
-    <div class="grid2">
-      <div class="field"><label>Folder</label><select id="pd-cat">
-        <optgroup label="Yours only">
-          <option value="acquisition">🏷️ Acquisition closing docs</option>
-          <option value="pml_docs">🏦 Private money loan docs</option>
-          <option value="sale_closing">🤝 Sale closing docs</option>
-          <option value="private">🔒 Private (other)</option>
-        </optgroup>
-        <optgroup label="Buyer can see">
-          <option value="loan_docs">📄 Loan Documents</option><option value="insurance">🛡️ Insurance</option>
-          <option value="taxes">🏛️ Taxes</option><option value="utilities">💡 Utilities</option>
-          <option value="correspondence">✉️ Correspondence</option>
-        </optgroup></select></div>
-      <div class="field"><label>Title (optional)</label><input id="pd-title"></div>
-    </div>
-    <div id="pd-err" class="err hidden"></div>
-    <button class="primary" onclick="uploadPropDoc(${pid})">Upload</button>`);
-  if(preset) $('pd-cat').value=preset;
-}
-async function uploadPropDoc(pid){
-  try{
-    const f=$('pd-file').files[0]; if(!f)throw new Error('Choose a file');
-    const cat=$('pd-cat').value;
-    await api('/api/admin/documents',{method:'POST',body:JSON.stringify({
-      filename:f.name, mime:f.type, data_base64:await fileToB64(f), property_id:pid,
-      category:cat, title:$('pd-title').value||null,
-      visible_to_tenant: !['private','acquisition','pml_docs','sale_closing'].includes(cat) })});
-    closeModal(); openProp(pid);
-  }catch(e){ $('pd-err').textContent=e.message; $('pd-err').classList.remove('hidden'); }
-}
+// Property uploads now go through the documents page — openDocsPage({property_id}).
 async function prefillBuyer(prefix){
   try{
     const d=await api('/api/admin/defaults');
@@ -4470,7 +4443,7 @@ async function openLoan(id){
       <button class="small" onclick="editTenantModal(${f.tenant?f.tenant.id:0})"${f.tenant?'':' disabled'}>👤 Edit buyer</button>
       <button class="small" onclick="lateFee()">⏰ Late fee ${fmt(L.late_fee_cents)}</button>
       <button class="small" onclick="chargeModal()">➕ Add charge</button>
-      <button class="small" onclick="docModal()">📎 Upload doc</button>
+      <button class="small" onclick="openDocsPage({loan_id:${L.id}})">📁 Documents</button>
       <button class="small warn" onclick="deleteLoanModal()">🗑️ Delete loan</button>
       <button class="small" onclick="msgLoanId=${L.id};nav('msgs');openThread(${L.id},'${esc(f.property?f.property.address:'')}')">💬 Message buyer</button>
       <button class="small" onclick="remindModal(${L.id})">🔔 Send reminder</button>
@@ -4494,9 +4467,9 @@ async function openLoan(id){
     <p class="note" style="margin-bottom:8px">Late and legal notices go out automatically when a payment is past grace and nothing has been confirmed received. ✓✓ = buyer opened it (read receipt).</p>
     <div id="notices-admin"></div>
   </div>
-  <div class="card"><h2>Document Center <button class="small" onclick="docModal()">+ Upload document</button></h2>
-    <p class="note" style="margin-bottom:10px">Shared folders are visible to the tenant buyer in their app. The private vault is admin-only.</p>
-    <div id="doc-center"></div>
+  <div class="card"><h2>📁 Documents</h2>
+    <p class="note" style="margin-bottom:10px">Everything filed on this loan and its house — shared folders the buyer sees, and the private vault only you do.</p>
+    <button class="primary" onclick="openDocsPage({loan_id:${L.id}})">Open documents</button>
   </div>
   <div class="card"><h2>Ledger</h2><div style="overflow-x:auto;max-height:420px"><table>
     <thead><tr><th>Date</th><th>Type</th><th>Method</th><th class="right">Amount</th><th class="right">Interest</th><th class="right">Principal</th><th class="right">Escrow</th><th class="right">Fees</th><th class="right">Balance after</th><th>Memo</th></tr></thead>
@@ -4530,7 +4503,6 @@ async function openLoan(id){
   loadEscrow(L.id);
   loadPayoff(L.id);
   loadNoticesAdmin();
-  loadDocCenter();
   if (f.tenant) loadTBLocation(f.tenant.id);
 }
 const ago = (iso) => {
@@ -4624,7 +4596,10 @@ async function sendCustomNotice(){
     closeModal(); loadNoticesAdmin();
   }catch(e){ $('cn-err').textContent=e.message; $('cn-err').classList.remove('hidden'); }
 }
-function modal(html){
+function modal(html,{wide}={}){
+  // The document viewer wants most of the screen; everything else keeps the compact
+  // default. Reset each call so one wide modal doesn't stretch the next.
+  $('modal-content').style.maxWidth=wide?'min(1000px,96vw)':'';
   $('modal-content').innerHTML=html; $('modal').classList.remove('hidden');
   setTimeout(()=>{ wireInputs(); wireAddressFields(); },0);
 }
@@ -4975,82 +4950,137 @@ async function addCharge(){
   }catch(e){ $('ch-err').textContent=e.message; $('ch-err').classList.remove('hidden'); }
 }
 async function delCharge(id){ if(!confirm('Remove this charge (stops future billing)?'))return; await api('/api/admin/charges/'+id,{method:'DELETE'}); openLoan(currentLoanId); }
-const DOC_ICONS={loan_docs:'📄',insurance:'🛡️',taxes:'🏛️',utilities:'💡',correspondence:'✉️',private:'🔒'};
-async function loadDocCenter(){
-  const folders=await api(`/api/admin/loans/${currentLoanId}/documents`);
-  $('doc-center').innerHTML=Object.entries(folders).map(([cat,f])=>`
-    <div style="border:1px solid ${cat==='private'?'#f0d9d5':'#e6e9ee'};border-radius:10px;padding:12px;margin-bottom:10px;background:${cat==='private'?'#fffaf9':'#fff'}">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <b style="font-size:14px">${DOC_ICONS[cat]||'📁'} ${esc(f.label)}</b>
-        <span>${f.shared?'<span class="pill ok">shared with buyer</span>':'<span class="pill due">admin only</span>'}
-          <button class="small" onclick="docModal('${cat}')">+ Add</button></span>
-      </div>
-      ${f.documents.length?f.documents.map(d=>`
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f2f4f7;font-size:13.5px">
-          <span>📎 <a href="/api/documents/${d.id}/download">${esc(d.title||d.filename)}</a>
-            ${d.title?`<span class="note"> — ${esc(d.filename)}</span>`:''}</span>
-          <span class="note" style="white-space:nowrap">${fdate((d.effective_date||d.created_at||'').slice(0,10))}
-            <button class="small" onclick="moveDoc(${d.id})">Move</button>
-            <button class="small warn" onclick="deleteDoc(${d.id})">✕</button></span>
-        </div>`).join('')
-        :'<p class="note" style="margin-top:6px">No documents yet — upload the latest policy, bill, or notice here.</p>'}
-    </div>`).join('');
+// ---------- the documents page ----------
+const DOC_ICONS={loan_docs:'📄',trust_docs:'📜',closing_receipts:'🧾',insurance:'🛡️',taxes:'🏛️',
+  utilities:'💡',correspondence:'✉️',private:'🔒',unsorted:'📥',
+  acquisition:'🏷️',pml_docs:'🏦',sale_closing:'🤝'};
+// Every bucket a document can be filed into, in the order the selects show them.
+const DOC_BUCKETS=[
+  ['loan_docs','📄 Loan Documents',1],['trust_docs','📜 Trust documents',1],
+  ['closing_receipts','🧾 Closing receipts',1],['insurance','🛡️ Insurance',1],
+  ['taxes','🏛️ Taxes',1],['utilities','💡 Utilities',1],['correspondence','✉️ Correspondence',1],
+  ['acquisition','🏷️ Acquisition closing docs',0],['pml_docs','🏦 Private money loan docs',0],
+  ['sale_closing','🤝 Sale closing docs',0],['private','🔒 Private (admin only)',0],
+];
+const bucketOptions=(sel)=>`
+  <optgroup label="Buyer can see">${DOC_BUCKETS.filter(b=>b[2]).map(b=>`<option value="${b[0]}"${b[0]===sel?' selected':''}>${b[1]}</option>`).join('')}</optgroup>
+  <optgroup label="Yours only">${DOC_BUCKETS.filter(b=>!b[2]).map(b=>`<option value="${b[0]}"${b[0]===sel?' selected':''}>${b[1]}</option>`).join('')}</optgroup>`;
+
+let DOCS_CTX=null, DOCS_PRESET=null;
+function openDocsPage(ctx){
+  DOCS_CTX=ctx; DOCS_PRESET=null;
+  nav('docs');
+  const dz=$('docs-dropzone');
+  // Property assignment rather than addEventListener, so reopening the page never
+  // stacks a second copy of each handler.
+  dz.ondragover=e=>{ e.preventDefault(); dz.style.background='#f0f7ff'; };
+  dz.ondragleave=()=>{ dz.style.background=''; };
+  dz.ondrop=e=>{ e.preventDefault(); dz.style.background=''; uploadDocFiles(e.dataTransfer.files); };
+  dz.onclick=e=>{ if(e.target.tagName!=='A') $('docs-file').click(); };
+  loadDocsPage();
 }
-function docModal(preset){
-  modal(`<h2>Upload document</h2>
-    <div class="field"><label>File</label><input id="dm-file" type="file" accept=".pdf,image/*,.doc,.docx"></div>
-    <div class="grid2">
-      <div class="field"><label>Folder</label><select id="dm-cat" onchange="dmCatChange()">
-        <option value="loan_docs">📄 Loan Documents</option>
-        <option value="insurance">🛡️ Insurance</option>
-        <option value="taxes">🏛️ Taxes</option>
-        <option value="utilities">💡 Utilities</option>
-        <option value="correspondence">✉️ Correspondence</option>
-        <option value="private">🔒 Private (admin only)</option></select></div>
-      <div class="field"><label>Effective date (optional)</label><input id="dm-date" type="date"></div>
+function docsBack(){ DOCS_CTX && DOCS_CTX.loan_id ? openLoan(DOCS_CTX.loan_id) : openProp(DOCS_CTX.property_id); }
+async function loadDocsPage(){
+  const url=DOCS_CTX.loan_id
+    ? `/api/admin/loans/${DOCS_CTX.loan_id}/documents`
+    : `/api/admin/properties/${DOCS_CTX.property_id}/documents`;
+  let folders;
+  try{ folders=await api(url); }
+  catch(e){ $('docs-folders').innerHTML=`<p class="note">Could not load: ${esc(e.message)}</p>`; return; }
+  $('docs-title').textContent=DOCS_CTX.loan_id?'— this loan':'— this house';
+  $('docs-folders').innerHTML=Object.entries(folders).map(([cat,f])=>
+    cat==='unsorted' ? renderUnsorted(f) : renderDocFolder(cat,f)).join('');
+}
+function renderDocFolder(cat,f){
+  const priv=!f.shared;
+  return `<div style="border:1px solid ${priv?'#f0d9d5':'#e6e9ee'};border-radius:10px;padding:12px;margin-bottom:10px;background:${priv?'#fffaf9':'#fff'}">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <b style="font-size:14px">${DOC_ICONS[cat]||'📁'} ${esc(f.label)}</b>
+      <span>${f.shared?'<span class="pill ok">shared with buyer</span>':'<span class="pill due">admin only</span>'}
+        <button class="small" onclick="docsAddTo('${cat}')">+ Add</button></span>
     </div>
-    <div class="field"><label>Title (optional)</label><input id="dm-title" placeholder="e.g. 2026 Homeowners Policy"></div>
-    <div class="field" id="dm-vis-wrap"><label><input id="dm-vis" type="checkbox" checked style="width:auto;margin-right:6px">Visible to buyer in their app</label></div>
-    <div id="dm-err" class="err hidden"></div>
-    <button class="primary" onclick="uploadLoanDoc()">Upload</button>`);
-  if(preset) $('dm-cat').value=preset;
-  dmCatChange();
+    ${f.documents.length?f.documents.map(d=>docRow(d)).join('')
+      :'<p class="note" style="margin-top:6px">Empty.</p>'}
+  </div>`;
 }
-function dmCatChange(){
-  const priv=$('dm-cat').value==='private';
-  $('dm-vis-wrap').style.display=priv?'none':'';
-  if(priv) $('dm-vis').checked=false; else $('dm-vis').checked=true;
+function docRow(d){
+  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f2f4f7;font-size:13.5px">
+    <span style="min-width:0;overflow:hidden;text-overflow:ellipsis">📎 <a href="#" onclick="viewDoc(${d.id},'${esc(d.mime||'')}');return false">${esc(d.title||d.filename)}</a>
+      ${d.title?`<span class="note"> — ${esc(d.filename)}</span>`:''}</span>
+    <span class="note" style="white-space:nowrap">${fdate((d.effective_date||d.created_at||'').slice(0,10))}
+      <a class="small" style="text-decoration:none" title="Download" href="/api/documents/${d.id}/download">⬇</a>
+      <button class="small" onclick="moveDoc(${d.id})">Move</button>
+      <button class="small warn" onclick="deleteDoc(${d.id})">✕</button></span>
+  </div>`;
+}
+// The unsorted tray: everything a batch upload just dropped, each row asking one
+// question — where does this live, and does the buyer see it?
+function renderUnsorted(f){
+  return `<div style="border:2px solid #f5c344;border-radius:10px;padding:12px;margin-bottom:10px;background:#fffdf4">
+    <b style="font-size:14px">📥 ${f.documents.length} document${f.documents.length===1?'':'s'} waiting to be filed</b>
+    <p class="note" style="margin:4px 0 8px">Pick a folder for each. Nothing here is visible to the buyer until it is filed somewhere shared.</p>
+    ${f.documents.map(d=>`
+      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #f0e8cf;font-size:13.5px">
+        <span style="min-width:0;overflow:hidden;text-overflow:ellipsis">📎 <a href="#" onclick="viewDoc(${d.id},'${esc(d.mime||'')}');return false">${esc(d.filename)}</a></span>
+        <span style="display:flex;align-items:center;gap:8px;white-space:nowrap">
+          <select id="us-cat-${d.id}" style="max-width:230px">${bucketOptions('loan_docs')}</select>
+          <label class="note" style="white-space:nowrap"><input id="us-vis-${d.id}" type="checkbox" checked style="width:auto;margin-right:4px">buyer sees it</label>
+          <button class="small primary" onclick="fileDoc(${d.id})">File it</button>
+          <button class="small warn" onclick="deleteDoc(${d.id})">✕</button></span>
+      </div>`).join('')}
+  </div>`;
+}
+async function fileDoc(id){
+  await api('/api/admin/documents/'+id,{method:'PUT',body:JSON.stringify({
+    category:$('us-cat-'+id).value, visible_to_tenant:$('us-vis-'+id).checked })});
+  loadDocsPage();
+}
+function docsAddTo(cat){ DOCS_PRESET=cat; $('docs-file').click(); }
+async function uploadDocFiles(files){
+  const list=[...files]; if(!list.length) return;
+  const preset=DOCS_PRESET; DOCS_PRESET=null; $('docs-file').value='';
+  const prog=$('docs-upl-progress');
+  const failed=[];
+  for(let i=0;i<list.length;i++){
+    prog.textContent=`Uploading ${i+1} of ${list.length} — ${list[i].name}`;
+    try{
+      await api('/api/admin/documents',{method:'POST',body:JSON.stringify({
+        filename:list[i].name, mime:list[i].type, data_base64:await fileToB64(list[i]),
+        kind:'closing', loan_id:DOCS_CTX.loan_id||null, property_id:DOCS_CTX.property_id||null,
+        category:preset||'unsorted',
+        visible_to_tenant:preset?DOC_BUCKETS.some(b=>b[0]===preset&&b[2]):false })});
+    }catch(e){ failed.push(`${list[i].name}: ${e.message}`); }
+  }
+  prog.textContent=failed.length?`Could not upload — ${failed.join('; ')}`:'';
+  loadDocsPage();
 }
 function moveDoc(id){
   modal(`<h2>Move document</h2>
-    <div class="field"><label>Folder</label><select id="mv-cat">
-      <option value="loan_docs">📄 Loan Documents</option><option value="insurance">🛡️ Insurance</option>
-      <option value="taxes">🏛️ Taxes</option><option value="utilities">💡 Utilities</option>
-      <option value="correspondence">✉️ Correspondence</option><option value="private">🔒 Private (admin only)</option></select></div>
-    <div class="field"><label><input id="mv-vis" type="checkbox" checked style="width:auto;margin-right:6px">Visible to buyer (ignored for private)</label></div>
+    <div class="field"><label>Folder</label><select id="mv-cat">${bucketOptions('loan_docs')}</select></div>
+    <div class="field"><label><input id="mv-vis" type="checkbox" checked style="width:auto;margin-right:6px">Visible to buyer (ignored for admin-only folders)</label></div>
     <button class="primary" onclick="saveMoveDoc(${id})">Move</button>`);
 }
 async function saveMoveDoc(id){
   await api('/api/admin/documents/'+id,{method:'PUT',body:JSON.stringify({category:$('mv-cat').value,visible_to_tenant:$('mv-vis').checked})});
-  closeModal(); loadDocCenter();
+  closeModal(); loadDocsPage();
 }
 async function deleteDoc(id){
   if(!confirm('Delete this document permanently?'))return;
   await api('/api/admin/documents/'+id,{method:'DELETE'});
-  loadDocCenter();
+  loadDocsPage();
+}
+// In-app viewer. PDFs and images render in place; anything else (Word, Excel) is
+// offered as a download, because the browser cannot show those natively.
+function viewDoc(id,mime){
+  const viewable=/^application\/pdf|^image\/|^text\/plain/.test(mime||'');
+  if(!viewable){ location.href=`/api/documents/${id}/download`; return; }
+  modal(`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <h2 style="margin:0">Document</h2>
+      <span><a class="small" style="text-decoration:none" href="/api/documents/${id}/download">⬇ Download</a>
+        <button class="small" onclick="closeModal()">Close</button></span></div>
+    <iframe src="/api/documents/${id}/view" style="width:100%;height:72vh;border:1px solid var(--line);border-radius:8px;background:#525659"></iframe>`,{wide:true});
 }
 function fileToB64(file){ return new Promise((ok,err)=>{ const r=new FileReader(); r.onload=()=>ok(r.result.split(',')[1]); r.onerror=err; r.readAsDataURL(file); }); }
-async function uploadLoanDoc(){
-  try{
-    const f=$('dm-file').files[0]; if(!f)throw new Error('Choose a file');
-    const data=await fileToB64(f);
-    await api('/api/admin/documents',{method:'POST',body:JSON.stringify({
-      filename:f.name, mime:f.type, data_base64:data, kind:'closing', loan_id:currentLoanId,
-      category:$('dm-cat').value, title:$('dm-title').value||null, effective_date:$('dm-date').value||null,
-      visible_to_tenant:$('dm-vis').checked })});
-    closeModal(); loadDocCenter();
-  }catch(e){ $('dm-err').textContent=e.message; $('dm-err').classList.remove('hidden'); }
-}
 
 // ---------- new deal ----------
 // The old "New Deal" page was replaced by the properties-first workflow. Its helper
