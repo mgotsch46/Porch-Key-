@@ -469,6 +469,30 @@ async function main() {
     ok(r.status === 404, 'discarding a missing file 404s');
   }
 
+  console.log('— editing a cost, and the lawncare category');
+  {
+    const ep = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '8 Edit Ave', city: 'Flint', state: 'MI', zip: '48503' }) });
+    r = await req(`/api/admin/properties/${ep.json.id}/costs`, { method: 'POST', body: JSON.stringify({
+      category: 'lawncare', description: 'Mow', amount_cents: 4500 }) });
+    ok(r.status === 200 && r.json.category === 'lawncare', 'lawncare is a real cost category');
+    const costId = r.json.id;
+    r = await req('/api/admin/costs/' + costId, { method: 'PUT', body: JSON.stringify({
+      amount_cents: 5500, description: 'Mow + edge', category: 'lawncare' }) });
+    ok(r.status === 200 && r.json.amount_cents === 5500 && r.json.description === 'Mow + edge', 'cost edited in place');
+    r = await req('/api/admin/costs/' + costId, { method: 'PUT', body: JSON.stringify({ amount_cents: 0 }) });
+    ok(r.status === 400, 'zero amount refused');
+    // Editing a purchase line keeps the headline purchase price in step.
+    r = await req(`/api/admin/properties/${ep.json.id}/costs`, { method: 'POST', body: JSON.stringify({
+      category: 'purchase', description: 'Bought it', amount_cents: 4000000 }) });
+    r = await req('/api/admin/costs/' + r.json.id, { method: 'PUT', body: JSON.stringify({ amount_cents: 4200000, category: 'purchase' }) });
+    const pv = await req('/api/admin/properties/' + ep.json.id);
+    ok(pv.json.property.purchase_price_cents === 4200000, 'purchase price follows the edited cost line');
+    // Recurring rules take lawncare too.
+    r = await req(`/api/admin/properties/${ep.json.id}/costs`, { method: 'POST', body: JSON.stringify({
+      category: 'lawncare', description: 'Weekly mow', amount_cents: 4500, cadence: 'weekly' }) });
+    ok(r.status === 200 && r.json.recurring, 'weekly lawncare rule accepted');
+  }
+
   console.log('— recurring costs');
   {
     const rp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '5 Repeat Rd', city: 'Flint', state: 'MI', zip: '48503' }) });

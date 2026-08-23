@@ -1393,7 +1393,7 @@ async function setPhase(pid,phase){
   await api(`/api/admin/properties/${pid}/phase`,{method:'POST',body:JSON.stringify({phase})});
   await loadProps(); openProp(pid);
 }
-const COST_ICONS={purchase:'🏷️',closing:'📑',rehab:'🔨',bog:'👷',insurance:'🛡️',taxes:'🏛️',utilities:'💡',marketing:'📣',legal:'⚖️',other:'•'};
+const COST_ICONS={purchase:'🏷️',closing:'📑',rehab:'🔨',bog:'👷',lawncare:'🌿',insurance:'🛡️',taxes:'🏛️',utilities:'💡',marketing:'📣',legal:'⚖️',other:'•'};
 async function prefillOwner(){
   try{ const d=await api('/api/admin/defaults');
     if($('np-owner') && !$('np-owner').value && d.owner_name) $('np-owner').value=d.owner_name;
@@ -1621,7 +1621,8 @@ async function openProp(id){
       <td>${COST_ICONS[c.category]||'•'} ${esc(L[c.category]||c.category)}</td>
       <td>${esc(c.description)}</td><td class="note">${esc(c.vendor||'')}</td>
       <td class="right">${fmt(c.amount_cents)}</td>
-      <td class="right"><button class="small warn" onclick="delCost(${c.id})">✕</button></td></tr>`).join('')
+      <td class="right" style="white-space:nowrap"><button class="small" onclick='editCostModal(${JSON.stringify(c).replace(/'/g,"&#39;")})'>✏️</button>
+        <button class="small warn" onclick="delCost(${c.id})">✕</button></td></tr>`).join('')
       ||'<tr><td colspan="6" class="note">No costs logged yet.</td></tr>'}</tbody></table></div></div>
   <div class="card"><h2>📁 Documents</h2>
     <p class="note" style="margin-bottom:12px">Everything filed on this house — acquisition, private money, trust and sale paperwork, plus the folders the buyer sees.</p>
@@ -2239,6 +2240,7 @@ function costModal(pid){
         <option value="purchase">🏷️ Purchase price</option><option value="closing">📑 Closing costs</option>
         <option value="filing">🗂️ Filing &amp; recording fees</option>
         <option value="rehab">🔨 Rehab / repairs</option><option value="bog">👷 Boots on the ground</option>
+        <option value="lawncare">🌿 Lawn care</option>
         <option value="insurance">🛡️ Insurance</option><option value="taxes">🏛️ Property taxes</option>
         <option value="utilities">💡 Utilities</option><option value="marketing">📣 Marketing</option>
         <option value="legal">⚖️ Legal / title</option><option value="other">Other</option></select></div>
@@ -2270,6 +2272,37 @@ async function addCost(pid){
 async function delCost(id){
   if(!confirm('Remove this cost?'))return;
   await api('/api/admin/costs/'+id,{method:'DELETE'}); openProp(currentPropId);
+}
+// Fix what was typed wrong — amount, date, bucket, wording. Same fields as adding,
+// minus the repeat options, which belong to rules rather than posted rows.
+function editCostModal(c){
+  modal(`<h2>Edit cost</h2>
+    <div class="grid2">
+      <div class="field"><label>Category</label><select id="ec-cat">
+        <option value="purchase">🏷️ Purchase price</option><option value="closing">📑 Closing costs</option>
+        <option value="filing">🗂️ Filing &amp; recording fees</option>
+        <option value="rehab">🔨 Rehab / repairs</option><option value="bog">👷 Boots on the ground</option>
+        <option value="lawncare">🌿 Lawn care</option>
+        <option value="insurance">🛡️ Insurance</option><option value="taxes">🏛️ Property taxes</option>
+        <option value="utilities">💡 Utilities</option><option value="marketing">📣 Marketing</option>
+        <option value="legal">⚖️ Legal / title</option><option value="other">Other</option></select></div>
+      <div class="field"><label>Amount ($)</label><input id="ec-amt" type="number" step="0.01" value="${(c.amount_cents/100).toFixed(2)}"></div>
+      <div class="field"><label>Date</label><input id="ec-date" type="date" value="${esc(c.cost_date||'')}"></div>
+      <div class="field"><label>Vendor / paid to</label><input id="ec-vendor" value="${esc(c.vendor||'')}"></div>
+    </div>
+    <div class="field"><label>Description</label><input id="ec-desc" value="${esc(c.description||'')}"></div>
+    <div id="ec-err" class="err hidden"></div>
+    <button class="primary" onclick="saveCost(${c.id})">Save</button>`);
+  $('ec-cat').value=c.category||'other';
+}
+async function saveCost(id){
+  try{
+    await api('/api/admin/costs/'+id,{method:'PUT',body:JSON.stringify({
+      category:$('ec-cat').value, amount_cents:Math.round(parseFloat($('ec-amt').value)*100),
+      cost_date:$('ec-date').value||undefined, vendor:$('ec-vendor').value,
+      description:$('ec-desc').value })});
+    closeModal(); openProp(currentPropId);
+  }catch(e){ $('ec-err').textContent=e.message; $('ec-err').classList.remove('hidden'); }
 }
 async function stopRecurringCost(id){
   if(!confirm('Stop this repeating cost? Costs it already posted stay on the books.'))return;

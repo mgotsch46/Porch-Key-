@@ -235,7 +235,7 @@ CREATE TABLE IF NOT EXISTS property_costs (
   company_id INTEGER NOT NULL REFERENCES companies(id),
   property_id INTEGER NOT NULL REFERENCES properties(id),
   category TEXT NOT NULL DEFAULT 'other' CHECK (category IN
-    ('purchase','closing','filing','rehab','bog','insurance','taxes','utilities','marketing','legal','other')),
+    ('purchase','closing','filing','rehab','bog','lawncare','insurance','taxes','utilities','marketing','legal','other')),
   description TEXT NOT NULL,
   vendor TEXT,
   amount_cents INTEGER NOT NULL,
@@ -539,7 +539,7 @@ CREATE TABLE IF NOT EXISTS recurring_costs (
   company_id INTEGER NOT NULL REFERENCES companies(id),
   property_id INTEGER NOT NULL REFERENCES properties(id),
   category TEXT NOT NULL DEFAULT 'other' CHECK (category IN
-    ('purchase','closing','filing','rehab','bog','insurance','taxes','utilities','marketing','legal','other')),
+    ('purchase','closing','filing','rehab','bog','lawncare','insurance','taxes','utilities','marketing','legal','other')),
   description TEXT NOT NULL,
   vendor TEXT,
   amount_cents INTEGER NOT NULL,
@@ -715,6 +715,26 @@ function backfillCompany() {
     DROP TABLE property_costs_old;
   `);
   console.log('Migrated property_costs to include filing fees');
+})();
+
+// Lawn care earns its own line — it is the most repeated cost a held house has.
+// Same rebuild for both tables that carry the category list.
+(function migrateCostCategories2() {
+  for (const table of ['property_costs', 'recurring_costs']) {
+    const t = get(`SELECT sql FROM sqlite_master WHERE type='table' AND name='${table}'`);
+    if (!t || t.sql.includes("'lawncare'")) continue;
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec(t.sql
+      .replace(new RegExp('^CREATE TABLE .?' + table + '.?'), `CREATE TABLE ${table}_new`)
+      .replace(/CHECK \(category IN \([^)]*\)\)/,
+        "CHECK (category IN ('purchase','closing','filing','rehab','bog','lawncare'," +
+        "'insurance','taxes','utilities','marketing','legal','other'))"));
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name).join(',');
+    db.exec(`INSERT INTO ${table}_new (${cols}) SELECT ${cols} FROM ${table};
+             DROP TABLE ${table}; ALTER TABLE ${table}_new RENAME TO ${table};`);
+    db.exec('PRAGMA foreign_keys = ON');
+    console.log(`Widened ${table} categories for lawn care`);
+  }
 })();
 
 // Older databases only allowed two agreement types. SQLite cannot alter a CHECK,

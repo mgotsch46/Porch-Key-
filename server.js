@@ -1803,7 +1803,7 @@ app.get('/api/admin/calc-payment', adminOnly, (req, res) => {
 // ---------- property profile: costs, basis, and the sale ----------
 const COST_LABELS = {
   purchase: 'Purchase price', closing: 'Closing costs', filing: 'Filing & recording fees',
-  rehab: 'Rehab / repairs', bog: 'Boots on the ground', insurance: 'Insurance',
+  rehab: 'Rehab / repairs', bog: 'Boots on the ground', lawncare: 'Lawn care', insurance: 'Insurance',
   taxes: 'Property taxes', utilities: 'Utilities', marketing: 'Marketing',
   legal: 'Legal / title', other: 'Other',
 };
@@ -1954,6 +1954,25 @@ app.delete('/api/admin/recurring-costs/:id', adminOnly, (req, res) => {
   if (!rule) return res.status(404).json({ error: 'Not found' });
   run('DELETE FROM recurring_costs WHERE id=?', rule.id);
   res.json({ ok: true });
+});
+
+// Fix a typo'd amount, wrong date, wrong bucket — a cost row is data entry, not a
+// posted journal line, so editing it in place is the honest correction.
+app.put('/api/admin/costs/:id', adminOnly, (req, res) => {
+  const c = get('SELECT * FROM property_costs WHERE id=? AND company_id=?', req.params.id, req.companyId);
+  if (!c) return res.status(404).json({ error: 'Not found' });
+  const b = req.body || {};
+  const amount = b.amount_cents !== undefined ? Math.round(Number(b.amount_cents)) : c.amount_cents;
+  if (!(amount > 0)) return res.status(400).json({ error: 'Amount must be more than zero' });
+  const category = b.category || c.category;
+  run(`UPDATE property_costs SET category=?, description=?, vendor=?, amount_cents=?, cost_date=? WHERE id=?`,
+    category,
+    b.description !== undefined ? String(b.description) : c.description,
+    b.vendor !== undefined ? (b.vendor || null) : c.vendor,
+    amount, b.cost_date || c.cost_date, c.id);
+  // The headline purchase price follows its cost line, same as on create.
+  if (category === 'purchase') run('UPDATE properties SET purchase_price_cents=? WHERE id=?', amount, c.property_id);
+  res.json(get('SELECT * FROM property_costs WHERE id=?', c.id));
 });
 
 app.delete('/api/admin/costs/:id', adminOnly, (req, res) => {
