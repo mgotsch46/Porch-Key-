@@ -179,7 +179,8 @@ CREATE TABLE IF NOT EXISTS documents (
   kind TEXT NOT NULL DEFAULT 'closing' CHECK (kind IN ('closing','statement','other')),
   category TEXT NOT NULL DEFAULT 'other'
     CHECK (category IN ('loan_docs','acquisition','pml_docs','sale_closing','trust_docs','closing_receipts',
-      'insurance','taxes','utilities','correspondence','statement','private','unsorted','other')),
+      'insurance','taxes','utilities','correspondence','statement','private','unsorted',
+      'misc_shared','misc_admin','other')),
   title TEXT,                 -- optional friendly label, e.g. "2026 Homeowners Policy"
   effective_date TEXT,        -- e.g. policy/tax year date, for sorting updates
   filename TEXT NOT NULL,
@@ -529,6 +530,9 @@ addColumnIfMissing('notices', 'lob_tracking', 'TEXT');
 addColumnIfMissing('notices', 'lob_status', 'TEXT');
 addColumnIfMissing('notices', 'lob_expected', 'TEXT');
 addColumnIfMissing('notices', 'lob_cost_cents', 'INTEGER');
+// Trust documents were briefly a buyer-visible bucket. They are the ownership
+// structure, not the buyer's file — pull back anything already shared. Idempotent.
+try { run("UPDATE documents SET visible_to_tenant=0 WHERE category='trust_docs' AND visible_to_tenant=1"); } catch {}
 // The notice pause is a per-loan exception, not a company policy. NULL means no rule:
 // notices run on normal timing. A loan with no rule inherits nothing from anywhere.
 addColumnIfMissing('loans', 'notice_pause_days', 'INTEGER');
@@ -646,6 +650,24 @@ function backfillCompany() {
            DROP TABLE documents; ALTER TABLE documents_new RENAME TO documents;`);
   db.exec('PRAGMA foreign_keys = ON');
   console.log('Widened document categories for trust docs, closing receipts and the unsorted tray');
+})();
+
+// Two Misc buckets — one the buyer sees, one only you do. Same rebuild dance.
+(function migrateDocCategories3() {
+  const t = get("SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'");
+  if (!t || t.sql.includes("'misc_shared'")) return;
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(t.sql
+    .replace(/^CREATE TABLE .?documents.?/, 'CREATE TABLE documents_new')
+    .replace(/CHECK \(category IN \([^)]*\)\)/,
+      "CHECK (category IN ('loan_docs','acquisition','pml_docs','sale_closing','trust_docs','closing_receipts'," +
+      "'insurance','taxes','utilities','correspondence','statement','private','unsorted'," +
+      "'misc_shared','misc_admin','other'))"));
+  const cols = db.prepare('PRAGMA table_info(documents)').all().map(c => c.name).join(',');
+  db.exec(`INSERT INTO documents_new (${cols}) SELECT ${cols} FROM documents;
+           DROP TABLE documents; ALTER TABLE documents_new RENAME TO documents;`);
+  db.exec('PRAGMA foreign_keys = ON');
+  console.log('Widened document categories for the two Misc buckets');
 })();
 
 (function migrateCostCategories() {

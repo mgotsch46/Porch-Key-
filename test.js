@@ -302,8 +302,11 @@ async function main() {
   ok(r.json.private.documents.length === 1 && !r.json.private.shared, 'admin sees private vault');
   ok(['loan_docs','trust_docs','closing_receipts','insurance','taxes','utilities','correspondence','private'].every(c => r.json[c]),
     'all folders present as placeholders, incl trust docs and closing receipts');
+  ok(!r.json.trust_docs.shared, 'trust documents folder is admin-only');
   r = await req('/api/tenant/documents', {}, tbCookie);
   ok(r.json.length === 7, 'TB sees 7 shared folders (placeholders included)');
+  ok(!r.json.some(f => f.category === 'trust_docs'), 'TB has no trust documents folder at all');
+  ok(r.json.some(f => f.category === 'misc_shared'), 'TB has the shared Misc folder');
   ok(r.json.find(f => f.category === 'insurance').documents.length === 1, 'TB sees shared insurance doc');
   ok(!r.json.some(f => f.documents.some(d => d.id === privDocId)), 'TB never sees private docs');
   r = await req(`/api/documents/${privDocId}/download`, {}, tbCookie);
@@ -327,14 +330,29 @@ async function main() {
   ok(r.json.unsorted && r.json.unsorted.documents.length === 1, 'unsorted tray appears when something is in it');
   r = await req('/api/tenant/documents', {}, tbCookie);
   ok(!r.json.some(f => f.documents.some(d => d.id === unsortedId)), 'TB never sees the unsorted tray');
-  // Filing it into a shared bucket makes it a trust document the buyer can see.
+  // Trust documents are the ownership structure — filing there forces admin-only,
+  // even when the request claims the buyer should see it.
   r = await req(`/api/admin/documents/${unsortedId}`, { method: 'PUT', body: JSON.stringify({ category: 'trust_docs', visible_to_tenant: true }) });
-  ok(r.status === 200 && r.json.category === 'trust_docs' && r.json.visible_to_tenant === 1, 'filed into trust documents');
+  ok(r.status === 200 && r.json.category === 'trust_docs' && r.json.visible_to_tenant === 0, 'filed into trust documents — forced admin-only');
   r = await req(`/api/admin/loans/${loanId}/documents`);
   ok(!r.json.unsorted, 'tray disappears once emptied');
-  ok(r.json.trust_docs.documents.length === 1, 'doc now lives in trust documents');
+  ok(r.json.trust_docs.documents.length === 1 && !r.json.trust_docs.shared, 'doc lives in the admin-only trust folder');
   r = await req('/api/tenant/documents', {}, tbCookie);
-  ok(r.json.find(f => f.category === 'trust_docs').documents.length === 1, 'TB sees the filed trust doc');
+  ok(!r.json.some(f => f.documents.some(d => d.id === unsortedId)), 'TB cannot see the trust doc anywhere');
+
+  // The two Misc buckets: one crosses the fence, one never does.
+  r = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+    filename: 'misc-s.pdf', mime: 'application/pdf', data_base64: b64, loan_id: loanId,
+    category: 'misc_shared', visible_to_tenant: true }) });
+  ok(r.status === 200 && r.json.visible_to_tenant === 1, 'shared Misc accepts and shares');
+  const miscSharedId = r.json.id;
+  r = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+    filename: 'misc-a.pdf', mime: 'application/pdf', data_base64: b64, loan_id: loanId,
+    category: 'misc_admin', visible_to_tenant: true }) });
+  ok(r.status === 200 && r.json.visible_to_tenant === 0, 'admin Misc forces admin-only even if the flag is set');
+  r = await req('/api/tenant/documents', {}, tbCookie);
+  ok(r.json.find(f => f.category === 'misc_shared').documents.some(d => d.id === miscSharedId), 'TB sees the shared Misc doc');
+  ok(!r.json.some(f => f.documents.some(d => d.filename === 'misc-a.pdf')), 'TB never sees the admin Misc doc');
   // Closing receipts is a real bucket too.
   r = await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
     filename: 'closing-receipt.pdf', mime: 'application/pdf', data_base64: b64, loan_id: loanId,
@@ -343,7 +361,7 @@ async function main() {
   const receiptId = r.json.id;
 
   console.log('— in-app viewer');
-  r = await req(`/api/documents/${unsortedId}/view`, {}, tbCookie);
+  r = await req(`/api/documents/${miscSharedId}/view`, {}, tbCookie);
   ok(r.status === 200, 'TB can view a shared doc inline');
   r = await req(`/api/documents/${receiptId}/view`);
   ok(r.status === 200, 'admin can view inline');

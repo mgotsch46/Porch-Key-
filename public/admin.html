@@ -5131,15 +5131,18 @@ async function addCharge(){
 async function delCharge(id){ if(!confirm('Remove this charge (stops future billing)?'))return; await api('/api/admin/charges/'+id,{method:'DELETE'}); openLoan(currentLoanId); }
 // ---------- the documents page ----------
 const DOC_ICONS={loan_docs:'📄',trust_docs:'📜',closing_receipts:'🧾',insurance:'🛡️',taxes:'🏛️',
-  utilities:'💡',correspondence:'✉️',private:'🔒',unsorted:'📥',
+  utilities:'💡',correspondence:'✉️',misc_shared:'🗂️',misc_admin:'🗄️',private:'🔒',unsorted:'📥',
   acquisition:'🏷️',pml_docs:'🏦',sale_closing:'🤝'};
 // Every bucket a document can be filed into, in the order the selects show them.
 const DOC_BUCKETS=[
-  ['loan_docs','📄 Loan Documents',1],['trust_docs','📜 Trust documents',1],
+  ['loan_docs','📄 Loan Documents',1],
   ['closing_receipts','🧾 Closing receipts',1],['insurance','🛡️ Insurance',1],
   ['taxes','🏛️ Taxes',1],['utilities','💡 Utilities',1],['correspondence','✉️ Correspondence',1],
+  ['misc_shared','🗂️ Misc — shared with buyer',1],
+  ['trust_docs','📜 Trust documents',0],
   ['acquisition','🏷️ Acquisition closing docs',0],['pml_docs','🏦 Private money loan docs',0],
-  ['sale_closing','🤝 Sale closing docs',0],['private','🔒 Private (admin only)',0],
+  ['sale_closing','🤝 Sale closing docs',0],['misc_admin','🗄️ Misc — admin only',0],
+  ['private','🔒 Private (admin only)',0],
 ];
 const bucketOptions=(sel)=>`
   <optgroup label="Buyer can see">${DOC_BUCKETS.filter(b=>b[2]).map(b=>`<option value="${b[0]}"${b[0]===sel?' selected':''}>${b[1]}</option>`).join('')}</optgroup>

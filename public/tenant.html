@@ -1007,7 +1007,7 @@ async function markRead(id){
 }
 
 // ---------- docs ----------
-const DICO={loan_docs:'📄',trust_docs:'📜',closing_receipts:'🧾',insurance:'🛡️',taxes:'🏛️',utilities:'💡',correspondence:'✉️'};
+const DICO={loan_docs:'📄',closing_receipts:'🧾',insurance:'🛡️',taxes:'🏛️',utilities:'💡',correspondence:'✉️',misc_shared:'🗂️'};
 async function loadDocs(){
   let folders=[]; try{ folders=await api('/api/tenant/documents'); }catch{}
   $('docs-folders').innerHTML=folders.map(f=>`

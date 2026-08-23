@@ -3034,14 +3034,16 @@ app.delete('/api/admin/charges/:id', adminOnly, (req, res) => {
 // ---------- admin: documents & AI ----------
 // Shared folders both the admin and the tenant buyer can see, plus the admin-only vault.
 // Folders the buyer can see once the house is theirs.
-const SHARED_CATEGORIES = ['loan_docs', 'trust_docs', 'closing_receipts', 'insurance', 'taxes', 'utilities', 'correspondence'];
-// Folders only you see — the paperwork from your side of the deal.
-const ADMIN_CATEGORIES = ['acquisition', 'pml_docs', 'sale_closing', 'private'];
+const SHARED_CATEGORIES = ['loan_docs', 'closing_receipts', 'insurance', 'taxes', 'utilities', 'correspondence', 'misc_shared'];
+// Folders only you see — the paperwork from your side of the deal. Trust documents
+// live here: the trust agreement is the ownership structure, not the buyer's file.
+const ADMIN_CATEGORIES = ['trust_docs', 'acquisition', 'pml_docs', 'sale_closing', 'misc_admin', 'private'];
 const CATEGORY_LABELS = {
   acquisition: 'Acquisition closing docs', pml_docs: 'Private money loan docs',
   sale_closing: 'Sale closing docs', loan_docs: 'Loan Documents',
   trust_docs: 'Trust documents', closing_receipts: 'Closing receipts', insurance: 'Insurance',
   taxes: 'Taxes', utilities: 'Utilities', correspondence: 'Correspondence',
+  misc_shared: 'Misc — shared with buyer', misc_admin: 'Misc — admin only',
   private: 'Private (admin only)', statement: 'Statements',
   unsorted: 'Unsorted — just uploaded', other: 'Other',
 };
@@ -3066,7 +3068,7 @@ app.post('/api/admin/documents', adminOnly, (req, res) => {
   // Anything filed as "private" is admin-only regardless of the flag sent, and nothing
   // in the unsorted tray is shown to a buyer — sharing is a decision made per document
   // when it is filed, not a side effect of a batch upload.
-  const shared = cat !== 'private' && cat !== 'statement' && cat !== 'unsorted' && visible_to_tenant ? 1 : 0;
+  const shared = !ADMIN_CATEGORIES.includes(cat) && cat !== 'statement' && cat !== 'unsorted' && visible_to_tenant ? 1 : 0;
   const stored = crypto.randomUUID() + path.extname(filename);
   fs.writeFileSync(path.join(UPLOAD_DIR, stored), Buffer.from(data_base64, 'base64'));
   const r = run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, effective_date,
@@ -3095,9 +3097,10 @@ app.get('/api/admin/loans/:id/documents', adminOnly, (req, res) => {
   const folders = {};
   // The unsorted tray comes first so a batch upload is the first thing on the screen,
   // asking to be filed. It only appears when something is actually in it.
-  for (const c of ['unsorted', ...SHARED_CATEGORIES, 'private']) folders[c] = { label: CATEGORY_LABELS[c], shared: SHARED_CATEGORIES.includes(c), documents: [] };
+  for (const c of ['unsorted', ...SHARED_CATEGORIES, 'trust_docs', 'misc_admin', 'private']) folders[c] = { label: CATEGORY_LABELS[c], shared: SHARED_CATEGORIES.includes(c), documents: [] };
   for (const d of docs) {
     const key = d.category === 'unsorted' ? 'unsorted'
+      : (d.category === 'trust_docs' || d.category === 'misc_admin') ? d.category
       : d.visible_to_tenant ? (SHARED_CATEGORIES.includes(d.category) ? d.category : 'loan_docs')
       : 'private';
     folders[key].documents.push(d);
@@ -3128,7 +3131,7 @@ app.put('/api/admin/documents/:id', adminOnly, (req, res) => {
   if (!doc) return res.status(404).json({ error: 'Not found' });
   const category = req.body.category !== undefined ? req.body.category : doc.category;
   const vis = req.body.visible_to_tenant !== undefined ? (req.body.visible_to_tenant ? 1 : 0) : doc.visible_to_tenant;
-  const shared = (category === 'private' || category === 'unsorted') ? 0 : vis;
+  const shared = (ADMIN_CATEGORIES.includes(category) || category === 'unsorted') ? 0 : vis;
   run('UPDATE documents SET category=?, visible_to_tenant=?, title=?, effective_date=? WHERE id=?',
     category, shared, req.body.title !== undefined ? req.body.title : doc.title,
     req.body.effective_date !== undefined ? req.body.effective_date : doc.effective_date, doc.id);
