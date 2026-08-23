@@ -1760,12 +1760,17 @@ async function deletePropModal(pid){
                 t.pml_loans?`${t.pml_loans} lender loan${t.pml_loans===1?'':'s'}`:null,
                 t.journal_entries?`${t.journal_entries} ledger entr${t.journal_entries===1?'y':'ies'}`:null]
                .filter(Boolean).join(', ');
-    modal(`<h2>This one cannot be deleted</h2>
+    modal(`<h2>This house has money against it</h2>
       <p class="note" style="margin-bottom:12px">There ${t.loans+t.pml_loans+t.journal_entries===1?'is':'are'}
-        <b>${bits}</b> against this house. Deleting it would leave money in your books pointing at nothing.</p>
-      <p class="note" style="margin-bottom:12px">Archive it instead — it disappears from your lists and every
-        record stays intact.</p>
+        <b>${bits}</b> against this house. For a real property, <b>archive it</b> — it disappears from your
+        lists and every record stays intact.</p>
+      <div class="err" style="margin-bottom:12px"><b>Was this a test property?</b> The owner can purge the whole
+        file — loans, ledger, books, notices, documents, costs, all of it — after everything is saved to a
+        backup file. This cannot be undone from the app.</div>
+      <div class="field"><label>To purge, type <b>DELETE EVERYTHING</b></label><input id="dp-confirm" placeholder="DELETE EVERYTHING"></div>
+      <div id="dp-err" class="err hidden"></div>
       <button class="primary" onclick="closeModal();archivePropModal(${pid})">Archive it instead</button>
+      <button class="warn" style="margin-left:8px" onclick="purgeProp(${pid})">Back it up, then purge it all</button>
       <button class="small" style="margin-left:8px" onclick="closeModal()">Cancel</button>`);
     return;
   }
@@ -1785,7 +1790,15 @@ async function deletePropModal(pid){
 async function deleteProp(pid){
   try{
     await api('/api/admin/properties/'+pid,{method:'DELETE',body:JSON.stringify({confirm:$('dp-confirm').value.trim()})});
-    closeModal(); await loadProps(); nav('properties');
+    closeModal(); await loadProps(); nav('props');
+  }catch(e){ $('dp-err').textContent=e.message; $('dp-err').classList.remove('hidden'); }
+}
+async function purgeProp(pid){
+  try{
+    const r=await api('/api/admin/properties/'+pid,{method:'DELETE',body:JSON.stringify({
+      purge:true, confirm:$('dp-confirm').value.trim()})});
+    closeModal(); await loadProps(); nav('props');
+    if(r.purged) toast('Property purged. The backup file is in your company documents.');
   }catch(e){ $('dp-err').textContent=e.message; $('dp-err').classList.remove('hidden'); }
 }
 
@@ -2786,7 +2799,31 @@ async function loadTexting(){
       <div class="actions">
         <button class="small" onclick="testTextModal()">Send a test text</button>
         ${t.source==='company'?`<button class="small warn" onclick="disconnectTexting()">Disconnect</button>`:''}
-      </div>`;
+      </div>
+
+      <h3 style="margin:18px 0 6px;font-size:14px">📞 Calling from inside the app</h3>
+      ${t.voice_configured
+        ? `<p class="okmsg">The softphone is on — Call buttons dial right here in the app, from ${esc(t.from||'your number')},
+             using this device's microphone.</p>`
+        : `<p class="note" style="margin-bottom:10px">Right now, Call buttons ring <b>your</b> phone first and then connect
+             you. Set up the softphone and calls happen entirely in the app instead — microphone and speaker,
+             no handset needed. Ten minutes in the Twilio console:</p>
+      <details style="margin-bottom:12px">
+        <summary class="note" style="cursor:pointer;font-weight:700">Softphone setup — three values</summary>
+        <ol class="note" style="margin:10px 0 0 18px;line-height:1.9">
+          <li>Twilio Console → <b>Account → API keys &amp; tokens → Create API key</b>. Copy the
+              <b>SID</b> (starts SK) and the <b>Secret</b> — the secret shows once.</li>
+          <li>Console → <b>Voice → TwiML Apps → Create new</b>. Name it PorchPay. Set its
+              <b>Voice Request URL</b> to<br>
+              <code style="font-size:12px;background:#EDF2F0;padding:3px 6px;border-radius:5px;display:inline-block;margin-top:4px">POST ${esc(t.voice_url)}</code></li>
+          <li>Copy the TwiML App's <b>SID</b> (starts AP) and paste all three below.</li>
+        </ol>
+      </details>
+      <div class="field"><label>API key SID</label><input id="vc-key" placeholder="SKxxxxxxxx…" autocomplete="off"></div>
+      <div class="field"><label>API key Secret</label><input id="vc-secret" type="password" autocomplete="off"></div>
+      <div class="field"><label>TwiML App SID</label><input id="vc-app" placeholder="APxxxxxxxx…" autocomplete="off"></div>
+      <div id="vc-err" class="err hidden"></div><div id="vc-ok" class="okmsg hidden"></div>
+      <button class="primary" onclick="saveVoice()">Turn on the softphone</button>`}`;
   } else {
     el.innerHTML=`
       <p class="note" style="margin-bottom:14px">Texting is <b>not connected</b>, which is why buyer invitations come back
@@ -3002,6 +3039,127 @@ async function restoreOrphan(stored){
     toast('Re-filed. It is in the documents (private folder).');
     loadOrphans();
   }catch(e){ alert(e.message); }
+}
+// The dialer, two tiers. Tier one is the browser softphone: mic and speaker, the call
+// lives entirely in this window, and goes out from the business number. Tier two — when
+// the softphone is not set up or the mic is refused — is the call bridge: your own
+// phone rings, you answer, you are connected. Either way the buyer sees the business
+// number and never a personal cell.
+let VOICE_DEVICE=null, VOICE_CALL=null, VOICE_TIMER=null;
+function loadTwilioSdk(){
+  return new Promise((ok,err)=>{
+    if(window.Twilio&&window.Twilio.Device) return ok();
+    const s=document.createElement('script');
+    s.src='https://sdk.twilio.com/js/voice/releases/2.12.1/twilio.min.js';
+    s.onload=()=>ok(); s.onerror=()=>err(new Error('Could not load the calling software — check the connection.'));
+    document.head.appendChild(s);
+  });
+}
+async function callNow(phone,name,myPhone){
+  const bridgeOnly = myPhone==='use-bridge';
+  if(bridgeOnly) myPhone=undefined;
+  // Prefer the softphone when it is configured.
+  if(!myPhone && !bridgeOnly){
+    try{
+      const t=await api('/api/admin/voice-token');
+      return softphoneCall(phone,name,t.token);
+    }catch(e){ /* not configured — fall through to the bridge */ }
+  }
+  try{
+    const r=await api('/api/admin/call',{method:'POST',body:JSON.stringify({
+      to:phone, name:name||undefined, my_phone:myPhone||undefined })});
+    modal(`<h2>📞 Calling ${esc(name||phone)}</h2>
+      <p style="margin-bottom:10px"><b>Your phone (${esc(r.my_phone)}) is ringing now.</b> Answer it and you'll be
+        connected${name?' to '+esc(name):''}.</p>
+      <p class="note" style="margin-bottom:12px">They see your business number — never your personal one.</p>
+      <button class="primary" onclick="closeModal()">Got it</button>`);
+  }catch(e){
+    if(/need_phone/.test(e.message)){
+      modal(`<h2>One thing first — your phone number</h2>
+        <p class="note" style="margin-bottom:12px">Calls work by ringing <b>your</b> phone, then connecting you.
+          Which number should ring? Asked once; remembered after.</p>
+        <div class="field"><label>Your mobile</label><input id="cn-my" placeholder="(555) 555-5555" inputmode="tel"></div>
+        <button class="primary" onclick="callNow('${esc(phone)}','${esc(name||'')}',$('cn-my').value)">Save &amp; call</button>`);
+      return;
+    }
+    alert(e.message);
+  }
+}
+async function softphoneCall(phone,name,token){
+  modal(`<h2>📞 ${esc(name||phone)}</h2>
+    <p id="sp-status" class="note" style="margin-bottom:12px">Starting the call…</p>
+    <div class="actions">
+      <button class="small" id="sp-mute" onclick="softphoneMute()" disabled>🎙️ Mute</button>
+      <button class="warn" id="sp-hang" onclick="softphoneHangup()">Hang up</button>
+    </div>
+    <p class="note" style="margin-top:12px">This call runs from your business number, right here in the app.
+      Keep this window open while you talk.</p>`);
+  const status=m=>{ const el=$('sp-status'); if(el) el.textContent=m; };
+  try{
+    await loadTwilioSdk();
+    if(!VOICE_DEVICE){
+      VOICE_DEVICE=new Twilio.Device(token,{ logLevel:'silent' });
+    } else {
+      VOICE_DEVICE.updateToken(token);
+    }
+    status('Dialing…');
+    VOICE_CALL=await VOICE_DEVICE.connect({ params:{ To: phone } });
+    $('sp-mute').disabled=false;
+    const started=Date.now();
+    VOICE_CALL.on('accept',()=>{
+      clearInterval(VOICE_TIMER);
+      VOICE_TIMER=setInterval(()=>{
+        const s=Math.floor((Date.now()-started)/1000);
+        status(`In call — ${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`);
+      },1000);
+    });
+    VOICE_CALL.on('disconnect',()=>{ clearInterval(VOICE_TIMER); status('Call ended.'); $('sp-hang').textContent='Close'; $('sp-hang').onclick=closeModal; VOICE_CALL=null; });
+    VOICE_CALL.on('error',(e)=>{ clearInterval(VOICE_TIMER); status('Call problem: '+(e.message||e.code)); });
+  }catch(e){
+    // Mic refused, SDK blocked, token trouble — offer the bridge rather than a dead end.
+    modal(`<h2>Softphone couldn't start</h2>
+      <p class="note" style="margin-bottom:12px">${esc(e.message||'The browser blocked the call.')}
+        The microphone permission is the usual cause.</p>
+      <button class="primary" onclick="closeModal();callNow('${esc(phone)}','${esc(name||'')}','use-bridge')">Ring my phone instead</button>
+      <button class="small" onclick="closeModal()">Cancel</button>`);
+  }
+}
+function softphoneMute(){
+  if(!VOICE_CALL) return;
+  const m=!VOICE_CALL.isMuted();
+  VOICE_CALL.mute(m);
+  $('sp-mute').textContent=m?'🔇 Unmute':'🎙️ Mute';
+}
+function softphoneHangup(){
+  if(VOICE_CALL){ VOICE_CALL.disconnect(); VOICE_CALL=null; }
+  clearInterval(VOICE_TIMER);
+  closeModal();
+}
+// Quick text to the buyer, sent from the business number through the app — the reply
+// lands back in the message thread.
+function quickTextModal(loanId,name,phone){
+  modal(`<h2>📲 Text ${esc(name||'')}</h2>
+    <p class="note" style="margin-bottom:10px">Goes out as a real text from your business number.
+      Their reply comes back into Messages.</p>
+    <div class="field"><textarea id="qt-body" rows="4" placeholder="Type the text…"></textarea></div>
+    <div id="qt-err" class="err hidden"></div>
+    <button class="primary" onclick="sendQuickText(${loanId})">Send text</button>`);
+}
+async function sendQuickText(loanId){
+  try{
+    const body=$('qt-body').value.trim(); if(!body) throw new Error('Type something first');
+    await api(`/api/admin/loans/${loanId}/messages`,{method:'POST',body:JSON.stringify({ body, channels:['sms'] })});
+    closeModal(); toast('Text sent from your business number.');
+  }catch(e){ $('qt-err').textContent=e.message; $('qt-err').classList.remove('hidden'); }
+}
+async function saveVoice(){
+  $('vc-err').classList.add('hidden'); $('vc-ok').classList.add('hidden');
+  try{
+    await api('/api/admin/voice',{method:'PUT',body:JSON.stringify({
+      api_key_sid:$('vc-key').value, api_key_secret:$('vc-secret').value, twiml_app_sid:$('vc-app').value })});
+    $('vc-ok').textContent='Softphone on. Try a Call button.'; $('vc-ok').classList.remove('hidden');
+    setTimeout(loadTexting,900);
+  }catch(e){ $('vc-err').textContent=e.message; $('vc-err').classList.remove('hidden'); }
 }
 async function discardOrphan(stored){
   if(!confirm('Delete this stranded file for good? Only do this if you have the original elsewhere.'))return;
@@ -3290,7 +3448,7 @@ async function loadContacts(){
       </div>
       <div class="actions" style="margin:0;flex:0 0 auto">
         ${c.phone?`<button class="small" onclick="contactThread(${c.id})">💬 Text</button>
-        <button class="small" onclick="location.href='tel:'+String('${esc(String(c.phone))}').replace(/[^+\d]/g,'')">📞 Call</button>`:''}
+        <button class="small" onclick="callNow('${esc(String(c.phone))}','${esc(c.name)}')">📞 Call</button>`:''}
         <button class="small" onclick="contactModal(${c.id})">✏️ Edit</button>
         <button class="small" onclick="archiveContact(${c.id},${ctArchived?1:0})">${ctArchived?'Restore':'Archive'}</button>
       </div>
@@ -3413,7 +3571,7 @@ async function loadPropContacts(pid){
       </div>
       <div class="actions" style="margin:0;flex:0 0 auto">
         ${c.phone?`<button class="small" onclick="contactThread(${c.id},${pid})">💬 Text</button>
-        <button class="small" onclick="location.href='tel:'+String('${esc(String(c.phone))}').replace(/[^+\d]/g,'')">📞 Call</button>`:''}
+        <button class="small" onclick="callNow('${esc(String(c.phone))}','${esc(c.name)}')">📞 Call</button>`:''}
         <button class="small warn" onclick="unlinkContact(${pid},${c.id})">✕</button>
       </div>
     </div>`).join('')
@@ -4663,8 +4821,8 @@ async function openLoan(id){
       ${L.beneficial_interest_pct?' · BI '+L.beneficial_interest_pct+'%':''}</p>
     <p class="note" style="margin-top:4px">${f.tenant?('📧 <a href="mailto:'+esc(f.tenant.email)+'">'+esc(f.tenant.email)+'</a>'
       +(f.tenant.phone?' · 📱 <a href="tel:'+esc(String(f.tenant.phone).replace(/[^+\d]/g,''))+'">'+esc(f.tenant.phone)+'</a>'
-        +' <button class="small" onclick="location.href=\'tel:'+esc(String(f.tenant.phone).replace(/[^+\d]/g,''))+'\'">📞 Call</button>'
-        +' <button class="small" onclick="location.href=\'sms:'+esc(String(f.tenant.phone).replace(/[^+\d]/g,''))+'\'">📲 Text</button>'
+        +' <button class="small" onclick="callNow(\''+esc(String(f.tenant.phone))+'\',\''+esc(f.tenant.name||'the buyer')+'\')">📞 Call</button>'
+        +' <button class="small" onclick="quickTextModal('+L.id+',\''+esc(f.tenant.name||'the buyer')+'\')">📲 Text</button>'
         +' <button class="small" onclick="openMsgsFor('+L.id+')">💬 Message</button>':'')):''} <span id="tb-loc"></span></p>
     <div class="actions">
       <button class="primary" onclick="recordPaymentModal()">💵 Record payment</button>

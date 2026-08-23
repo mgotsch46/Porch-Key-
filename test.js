@@ -469,6 +469,61 @@ async function main() {
     ok(r.status === 404, 'discarding a missing file 404s');
   }
 
+  console.log('— softphone token and TwiML');
+  r = await req('/api/admin/voice-token');
+  ok(r.status === 400 && r.json.not_configured, 'no token before the softphone is configured');
+  r = await req('/api/admin/voice', { method: 'PUT', body: JSON.stringify({ api_key_sid: 'nope', api_key_secret: 'x', twiml_app_sid: 'AP' + 'a'.repeat(32) }) });
+  ok(r.status === 400, 'malformed API key SID refused');
+  r = await req('/api/admin/voice', { method: 'PUT', body: JSON.stringify({
+    api_key_sid: 'SK' + 'a'.repeat(32), api_key_secret: 'shhh-secret', twiml_app_sid: 'AP' + 'b'.repeat(32) }) });
+  ok(r.status === 200, 'softphone credentials saved');
+  // No Twilio account is connected in tests, so the endpoint still says not-configured —
+  // exercise the token builder directly, exactly as the endpoint calls it.
+  r = await req('/api/admin/voice-token');
+  ok(r.status === 400 && r.json.not_configured, 'token still refused without a Twilio account connected');
+  {
+    const smsMod = require('./sms.js');
+    const token = smsMod.voiceToken({ accountSid: 'AC' + '1'.repeat(32), keySid: 'SK' + 'a'.repeat(32),
+      keySecret: 'shhh-secret', appSid: 'AP' + 'b'.repeat(32), identity: 'admin-1' });
+    ok(token.split('.').length === 3, 'access token issued as a three-part JWT');
+    const [h, p] = token.split('.');
+    const dec = (x) => JSON.parse(Buffer.from(x.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString());
+    ok(dec(h).cty === 'twilio-fpa;v=1', 'token carries the Twilio content type');
+    const pl = dec(p);
+    ok(pl.sub === 'AC' + '1'.repeat(32) && pl.grants.voice.outgoing.application_sid === 'AP' + 'b'.repeat(32),
+      'voice grant names the account and TwiML app');
+    ok(pl.exp - pl.iat === 3600, 'token lives one hour');
+    const expect = require('crypto').createHmac('sha256', 'shhh-secret').update(`${h}.${p}`).digest('base64')
+      .replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+    ok(token.endsWith('.' + expect), 'signature verifies with the API secret');
+  }
+  // The TwiML answer for an outgoing browser call.
+  {
+    const resp = await fetch(`${BASE}/api/voice/outgoing`, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ ApplicationSid: 'AP' + 'b'.repeat(32), To: '555-555-0142' }).toString() });
+    const xml = await resp.text();
+    ok(/<Dial callerId=/.test(xml) && /<Number>\+15555550142<\/Number>/.test(xml), 'TwiML dials the target from the business number');
+    const bad = await fetch(`${BASE}/api/voice/outgoing`, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ ApplicationSid: 'AP' + 'z'.repeat(32), To: '555-555-0142' }).toString() });
+    ok(/cannot be completed/.test(await bad.text()), 'unknown TwiML app gets refused, not connected');
+  }
+
+  console.log('— in-app dialer guards');
+  r = await req('/api/admin/call', { method: 'POST', body: JSON.stringify({ to: 'not-a-number' }) });
+  ok(r.status === 400, 'refuses a nonsense number');
+  r = await req('/api/admin/call', { method: 'POST', body: JSON.stringify({ to: '555-555-0142' }) });
+  ok(r.status === 400 && r.json.need_phone === true, 'asks for the admin phone when unknown');
+  r = await req('/api/admin/call', { method: 'POST', body: JSON.stringify({ to: '555-555-0142', my_phone: 'garbage' }) });
+  ok(r.status === 400 && /your own phone/i.test(r.json.error), 'rejects a bad admin number');
+  // With a phone saved but Twilio unconfigured, the failure names the real problem —
+  // and the phone was remembered along the way.
+  r = await req('/api/admin/call', { method: 'POST', body: JSON.stringify({ to: '555-555-0142', my_phone: '810-555-0100' }) });
+  ok(r.status === 500 && /Calling is not connected/i.test(r.json.error), 'without Twilio the error says so');
+  r = await req('/api/admin/call', { method: 'POST', body: JSON.stringify({ to: '555-555-0142' }) });
+  ok(r.status === 500 && /Calling is not connected/i.test(r.json.error), 'admin phone was remembered — no re-ask');
+
   console.log('— editing a cost, and the lawncare category');
   {
     const ep = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '8 Edit Ave', city: 'Flint', state: 'MI', zip: '48503' }) });
@@ -491,6 +546,51 @@ async function main() {
     r = await req(`/api/admin/properties/${ep.json.id}/costs`, { method: 'POST', body: JSON.stringify({
       category: 'lawncare', description: 'Weekly mow', amount_cents: 4500, cadence: 'weekly' }) });
     ok(r.status === 200 && r.json.recurring, 'weekly lawncare rule accepted');
+  }
+
+  console.log('— purging a whole property (the test-property reset)');
+  {
+    // A property with the full mess: TB loan with payments and notices, a PML with a
+    // payment, costs, documents. Plain delete refuses; owner purge takes it all, backed
+    // up, and the books still balance afterwards.
+    const fp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '2217 Test Francis', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const fpid = fp.json.id;
+    const ft = await req('/api/admin/tenants', { method: 'POST', body: JSON.stringify({ name: 'Ghost Buyer', email: 'ghost@test.com' }) });
+    const fl = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+      property_id: fpid, tenant_user_id: ft.json.id, loan_type: 'land_contract',
+      sale_price_cents: 8000000, down_payment_cents: 500000, principal_cents: 7500000,
+      interest_rate_bps: 950, term_months: 240, grace_days: 5, first_payment_date: '2026-06-01' }) });
+    const flid = fl.json.loan.id;
+    await req(`/api/admin/loans/${flid}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 80000, method: 'cash' }) });
+    await req(`/api/admin/loans/${flid}/notices`, { method: 'POST', body: JSON.stringify({ subject: 'T', body: 'B' }) });
+    const fpml = await req('/api/admin/pml', { method: 'POST', body: JSON.stringify({
+      property_id: fpid, lender_name: 'Ghost Capital', principal_cents: 3000000,
+      interest_rate_bps: 1100, term_months: 60, first_payment_date: '2026-06-01' }) });
+    await req(`/api/admin/pml/${fpml.json.id}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: 50000 }) });
+    await req(`/api/admin/properties/${fpid}/costs`, { method: 'POST', body: JSON.stringify({ category: 'rehab', description: 'Paint', amount_cents: 120000 }) });
+    const fb64 = Buffer.from('%PDF-1.4 ghost doc').toString('base64');
+    await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+      filename: 'ghost.pdf', mime: 'application/pdf', data_base64: fb64, loan_id: flid, category: 'loan_docs' }) });
+
+    r = await req('/api/admin/properties/' + fpid, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+    ok(r.status === 400 && r.json.purgeable === true, 'plain delete refuses but names the purge');
+    r = await req('/api/admin/properties/' + fpid, { method: 'DELETE', body: JSON.stringify({ purge: true, confirm: 'DELETE' }) });
+    ok(r.status === 400, 'purge demands the stronger confirmation');
+    r = await req('/api/admin/properties/' + fpid, { method: 'DELETE', body: JSON.stringify({ purge: true, confirm: 'DELETE EVERYTHING' }) });
+    ok(r.status === 200 && r.json.purged, 'owner purge takes the whole file');
+    r = await req('/api/admin/properties/' + fpid);
+    ok(r.status === 404, 'property is gone');
+    r = await req('/api/admin/loans/' + flid);
+    ok(r.status === 404, 'its TB loan is gone');
+    r = await req('/api/admin/pml/' + fpml.json.id);
+    ok(r.status === 404, 'its lender loan is gone');
+    r = await req('/api/admin/books');
+    ok(r.json.trial_balance.balanced, 'the books still balance — every entry left with both sides');
+    ok(!(r.json.loans || []).some(l => l.id === flid) && !(r.json.pmls || []).some(l => l.id === fpml.json.id),
+      'nothing about the purged loans lingers in reconciliation');
+    // The buyer's login is untouched — deleting a house never deletes a person.
+    r = await req('/api/admin/tenants');
+    ok(r.json.some(u => u.email === 'ghost@test.com'), 'the buyer account survives, to be archived separately if fake');
   }
 
   console.log('— recurring costs');

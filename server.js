@@ -1018,20 +1018,91 @@ app.delete('/api/admin/properties/:id', adminOnly, (req, res, next) => {
   try {
     const p = ownedProperty(req, req.params.id);
     if (!p) return res.status(404).json({ error: 'Not found' });
-    if (!req.body || req.body.confirm !== 'DELETE') {
+    // Two confirmations exist: DELETE for a clean house, DELETE EVERYTHING for a purge.
+    // Either gets past this gate; the purge branch checks for its own stronger phrase.
+    if (!req.body || (req.body.confirm !== 'DELETE' && req.body.confirm !== 'DELETE EVERYTHING')) {
       return res.status(400).json({ error: 'Type DELETE to confirm' });
     }
     const t = propertyTies(p.id);
     if (t.loans || t.pml_loans || t.journal_entries) {
-      const why = [
-        t.loans ? `${t.loans} loan${t.loans === 1 ? '' : 's'}` : null,
-        t.pml_loans ? `${t.pml_loans} lender loan${t.pml_loans === 1 ? '' : 's'}` : null,
-        t.journal_entries ? `${t.journal_entries} ledger entr${t.journal_entries === 1 ? 'y' : 'ies'}` : null,
-      ].filter(Boolean).join(', ');
-      return res.status(400).json({
-        error: `This house has ${why} against it. Deleting it would leave money in your books pointing at nothing. Archive it instead.`,
-        ties: t,
-      });
+      // The financial file exists. Without the purge flag: the same refusal as always.
+      // With it: the owner is tearing up the whole file — a test property being reset —
+      // so back up everything, then remove loan by loan, entry by entry, until the
+      // property row itself can go. Both sides of every journal entry leave together,
+      // so what remains still balances.
+      if (!req.body || !req.body.purge) {
+        const why = [
+          t.loans ? `${t.loans} loan${t.loans === 1 ? '' : 's'}` : null,
+          t.pml_loans ? `${t.pml_loans} lender loan${t.pml_loans === 1 ? '' : 's'}` : null,
+          t.journal_entries ? `${t.journal_entries} ledger entr${t.journal_entries === 1 ? 'y' : 'ies'}` : null,
+        ].filter(Boolean).join(', ');
+        return res.status(400).json({
+          error: `This house has ${why} against it. Deleting it would leave money in your books pointing at nothing. ` +
+                 `Archive it instead — or, if this was a test property, the owner can purge the whole file, ` +
+                 `backed up first.`,
+          ties: t, purgeable: true,
+        });
+      }
+      if (req.user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can purge a property with money against it' });
+      if (req.body.confirm !== 'DELETE EVERYTHING') return res.status(400).json({ error: 'Type DELETE EVERYTHING to confirm' });
+
+      const loans = all('SELECT * FROM loans WHERE property_id=?', p.id);
+      const pmls = all('SELECT * FROM pml_loans WHERE property_id=?', p.id);
+      const loanIds = loans.map(l => l.id);
+      const inLoans = loanIds.length ? `(${loanIds.join(',')})` : '(NULL)';
+      const pmlIds = pmls.map(l => l.id);
+      const inPmls = pmlIds.length ? `(${pmlIds.join(',')})` : '(NULL)';
+
+      // Everything first, into one backup filed as a company document.
+      const backup = {
+        purged_at: new Date().toISOString(), purged_by: req.user.email,
+        property: p, loans, pml_loans: pmls,
+        pml_ledger: all(`SELECT * FROM pml_ledger WHERE pml_loan_id IN ${inPmls}`),
+        journal_entries: all(`SELECT * FROM journal_entries WHERE property_id=? OR loan_id IN ${inLoans} OR pml_loan_id IN ${inPmls}`, p.id),
+        costs: all('SELECT * FROM property_costs WHERE property_id=?', p.id),
+        recurring_costs: all('SELECT * FROM recurring_costs WHERE property_id=?', p.id),
+        contacts: all('SELECT * FROM property_contacts WHERE property_id=?', p.id),
+        tasks: all('SELECT * FROM tasks WHERE property_id=? OR loan_id IN ' + inLoans, p.id),
+        notes: all('SELECT * FROM notes WHERE property_id=? OR loan_id IN ' + inLoans, p.id),
+        documents: all('SELECT * FROM documents WHERE property_id=? OR loan_id IN ' + inLoans, p.id),
+      };
+      for (const tbl of ['ledger', 'notices', 'charges', 'messages', 'escrow_items', 'escrow_analyses',
+                         'escrow_disbursements', 'payoff_quotes', 'cash_slips', 'invitations', 'autopay', 'email_log']) {
+        backup[tbl] = all(`SELECT * FROM ${tbl} WHERE loan_id IN ${inLoans}`);
+      }
+      const stored = crypto.randomUUID() + '.json';
+      fs.writeFileSync(path.join(UPLOAD_DIR, stored), JSON.stringify(backup, null, 2));
+      run(`INSERT INTO documents (company_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+           VALUES (?,?,?,?,?,?,?,0)`,
+        req.companyId, 'other', 'private',
+        `Backup — purged property ${p.address || ('#' + p.id)} (${new Date().toISOString().slice(0, 10)})`,
+        `purged-property-${p.id}.json`, stored, 'application/json');
+
+      // The removal: journal first (lines with their entries), then every loan child,
+      // then the loans, the lender loans, the property attachments, the property.
+      run(`DELETE FROM journal_lines WHERE entry_id IN
+             (SELECT id FROM journal_entries WHERE property_id=? OR loan_id IN ${inLoans} OR pml_loan_id IN ${inPmls})`, p.id);
+      run(`DELETE FROM journal_entries WHERE property_id=? OR loan_id IN ${inLoans} OR pml_loan_id IN ${inPmls}`, p.id);
+      for (const tbl of ['ledger', 'notices', 'charges', 'messages', 'escrow_items', 'escrow_analyses',
+                         'escrow_disbursements', 'payoff_quotes', 'cash_slips', 'invitations', 'autopay', 'email_log',
+                         'tasks', 'notes']) {
+        run(`DELETE FROM ${tbl} WHERE loan_id IN ${inLoans}`);
+      }
+      for (const d of all(`SELECT * FROM documents WHERE property_id=? OR loan_id IN ${inLoans}`, p.id)) {
+        try { fs.unlinkSync(path.join(UPLOAD_DIR, d.stored_name)); } catch {}
+        run('DELETE FROM documents WHERE id=?', d.id);
+      }
+      run(`DELETE FROM pml_ledger WHERE pml_loan_id IN ${inPmls}`);
+      run(`DELETE FROM pml_loans WHERE property_id=?`, p.id);
+      run(`DELETE FROM loans WHERE property_id=?`, p.id);
+      run('DELETE FROM property_costs WHERE property_id=?', p.id);
+      run('DELETE FROM recurring_costs WHERE property_id=?', p.id);
+      run('UPDATE expenses SET property_id=NULL, status=\'unassigned\' WHERE property_id=?', p.id);
+      run('DELETE FROM property_contacts WHERE property_id=?', p.id);
+      run('DELETE FROM tasks WHERE property_id=?', p.id);
+      run('DELETE FROM notes WHERE property_id=?', p.id);
+      run('DELETE FROM properties WHERE id=?', p.id);
+      return res.json({ ok: true, purged: true });
     }
     // Safe to remove financially — but "safe" is not the same as "worthless". Costs,
     // documents and notes took time to enter, and a delete typed on autopilot should
@@ -2090,7 +2161,24 @@ app.get('/api/admin/texting', adminOnly, (req, res) => {
     from: c ? c.from : null,
     sid_tail: co.twilio_sid ? '…' + co.twilio_sid.slice(-4) : null,
     webhook_url: baseUrlOf(req) + '/sms/incoming',
+    voice_configured: !!(co.voice_api_key_sid && co.voice_api_key_secret && co.voice_twiml_app_sid),
+    voice_url: baseUrlOf(req) + '/api/voice/outgoing',
   });
+});
+
+// The three values the browser softphone needs, saved separately from the main Twilio
+// credentials so texting keeps working while calling is still being set up.
+app.put('/api/admin/voice', ownerOnly, (req, res) => {
+  const b = req.body || {};
+  const key = String(b.api_key_sid || '').trim();
+  const secret = String(b.api_key_secret || '').trim();
+  const appSid = String(b.twiml_app_sid || '').trim();
+  if (!key || !secret || !appSid) return res.status(400).json({ error: 'All three values are needed' });
+  if (!/^SK[0-9a-f]{32}$/i.test(key)) return res.status(400).json({ error: 'The API key SID starts with SK and is 34 characters' });
+  if (!/^AP[0-9a-f]{32}$/i.test(appSid)) return res.status(400).json({ error: 'The TwiML App SID starts with AP and is 34 characters' });
+  run('UPDATE companies SET voice_api_key_sid=?, voice_api_key_secret=?, voice_twiml_app_sid=? WHERE id=?',
+    key, secret, appSid, req.companyId);
+  res.json({ ok: true });
 });
 
 app.put('/api/admin/texting', ownerOnly, async (req, res, next) => {
@@ -2111,8 +2199,42 @@ app.put('/api/admin/texting', ownerOnly, async (req, res, next) => {
 });
 
 app.delete('/api/admin/texting', ownerOnly, (req, res) => {
-  run('UPDATE companies SET twilio_sid=NULL, twilio_token=NULL, twilio_from=NULL WHERE id=?', req.companyId);
+  run(`UPDATE companies SET twilio_sid=NULL, twilio_token=NULL, twilio_from=NULL,
+       voice_api_key_sid=NULL, voice_api_key_secret=NULL, voice_twiml_app_sid=NULL WHERE id=?`, req.companyId);
   res.json({ ok: true });
+});
+
+// ---------- browser softphone ----------
+// Calls placed and answered entirely inside the app, going out from the business
+// number. Twilio's browser SDK needs a short-lived access token, which is just a JWT
+// signed with the API key secret — three base64url parts and an HMAC, no SDK required
+// on our side.
+app.get('/api/admin/voice-token', adminOnly, (req, res) => {
+  const co = myCompany(req);
+  const accountSid = co.twilio_sid || (sms.creds(co) || {}).sid;
+  if (!accountSid || !co.voice_api_key_sid || !co.voice_api_key_secret || !co.voice_twiml_app_sid) {
+    return res.status(400).json({ error: 'not_configured', not_configured: true });
+  }
+  const token = sms.voiceToken({
+    accountSid, keySid: co.voice_api_key_sid, keySecret: co.voice_api_key_secret,
+    appSid: co.voice_twiml_app_sid, identity: 'admin-' + req.user.id,
+  });
+  res.json({ token, from: co.twilio_from || (sms.creds(co) || {}).from });
+});
+
+// The TwiML app points its Voice URL here. Twilio asks "the browser wants to call To —
+// what do I do?", and the answer is: dial it, presenting the business number.
+app.post('/api/voice/outgoing', (req, res) => {
+  const appSid = req.body && req.body.ApplicationSid;
+  const co = appSid ? get('SELECT * FROM companies WHERE voice_twiml_app_sid=?', appSid) : null;
+  const to = sms.normalizePhone(req.body && req.body.To);
+  res.type('text/xml');
+  if (!co || !to) {
+    return res.send('<Response><Say>This call cannot be completed.</Say></Response>');
+  }
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  res.send(`<Response><Dial callerId="${esc(co.twilio_from)}" answerOnBridge="true">` +
+           `<Number>${esc(to)}</Number></Dial></Response>`);
 });
 
 // ---------- downloads ----------
@@ -2811,6 +2933,28 @@ app.post('/api/admin/email/test', adminOnly, async (req, res, next) => {
       companyId: req.companyId,
     }, co);
     res.json({ ok: true, to: r.to, from: r.from, identity: r.identity });
+  } catch (e) { next(e); }
+});
+
+// The in-app dialer. The app rings the admin's own phone, then bridges to the target;
+// the target sees the business number. my_phone, when sent, is remembered on the user
+// so the question is only ever asked once.
+app.post('/api/admin/call', adminOnly, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const to = sms.normalizePhone(b.to);
+    if (!to) return res.status(400).json({ error: 'No valid number to call' });
+    if (b.my_phone) {
+      const mine = sms.normalizePhone(b.my_phone);
+      if (!mine) return res.status(400).json({ error: 'Your own phone number does not look valid' });
+      run('UPDATE users SET phone=? WHERE id=?', mine, req.user.id);
+      req.user.phone = mine;
+    }
+    if (!req.user.phone) {
+      return res.status(400).json({ error: 'need_phone', need_phone: true });
+    }
+    const r = await sms.placeCall(to, req.user.phone, myCompany(req), { announce: b.name });
+    res.json({ ok: true, my_phone: r.my_phone });
   } catch (e) { next(e); }
 });
 

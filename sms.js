@@ -53,6 +53,53 @@ async function sendSms(to, body, company) {
   return json;
 }
 
+// The in-app dialer, done as a call bridge: Twilio rings the admin's own phone first,
+// and when they answer it dials the other party and joins the legs. No app picker, no
+// browser microphone, no SDK — and the person called sees the business number, never
+// the admin's cell. The phone in your hand is just the handset; the program placed
+// the call.
+async function placeCall(to, adminPhone, company, { announce } = {}) {
+  const number = normalizePhone(to);
+  const mine = normalizePhone(adminPhone);
+  if (!number) throw new Error('That phone number does not look valid');
+  if (!mine) throw new Error('Your own phone number does not look valid');
+  const c = creds(company);
+  if (!c) throw new Error('Calling is not connected yet — add your Twilio details under Settings → Texting');
+  const who = String(announce || 'your contact').replace(/[<>&"]/g, ' ').slice(0, 60);
+  const twiml = `<Response><Say voice="alice">Connecting you to ${who}. One moment.</Say>` +
+    `<Dial callerId="${c.from}" timeout="25">${number}</Dial></Response>`;
+  const params = new URLSearchParams({ To: mine, From: c.from, Twiml: twiml });
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/Calls.json`, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64'),
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(twilioError(json, res.status));
+  return { sid: json.sid, my_phone: mine, to: number };
+}
+
+// The softphone's access token: a JWT with a voice grant, signed with the API key
+// secret. Three base64url parts and an HMAC — Twilio's SDK on the other end does the
+// same arithmetic, so no library is needed on this end.
+const crypto = require('node:crypto');
+const b64url = (input) => Buffer.from(input).toString('base64')
+  .replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+function voiceToken({ accountSid, keySid, keySecret, appSid, identity }) {
+  if (!accountSid || !keySid || !keySecret || !appSid) throw new Error('Softphone is not fully configured');
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64url(JSON.stringify({ typ: 'JWT', alg: 'HS256', cty: 'twilio-fpa;v=1' }));
+  const payload = b64url(JSON.stringify({
+    jti: `${keySid}-${now}`, iss: keySid, sub: accountSid, iat: now, exp: now + 3600,
+    grants: { identity, voice: { outgoing: { application_sid: appSid } } },
+  }));
+  const sig = b64url(crypto.createHmac('sha256', keySecret).update(`${header}.${payload}`).digest());
+  return `${header}.${payload}.${sig}`;
+}
+
 // Twilio's error codes are famously opaque. Translate the ones that actually happen.
 function twilioError(json, status) {
   const code = json && json.code;
@@ -110,4 +157,4 @@ function autoReplyTwiml(companyName) {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${esc(body)}</Message></Response>`;
 }
 
-module.exports = { smsEnabled, sendSms, normalizePhone, inviteMessage, autoReplyTwiml, creds, verifyCreds };
+module.exports = { smsEnabled, sendSms, placeCall, voiceToken, normalizePhone, inviteMessage, autoReplyTwiml, creds, verifyCreds };

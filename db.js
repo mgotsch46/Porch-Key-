@@ -439,6 +439,11 @@ addColumnIfMissing('companies', 'default_buyer_phone', 'TEXT');
 addColumnIfMissing('companies', 'twilio_sid', 'TEXT');
 addColumnIfMissing('companies', 'twilio_token', 'TEXT');
 addColumnIfMissing('companies', 'twilio_from', 'TEXT');
+// The browser softphone. An API key pair signs the access tokens the browser uses,
+// and the TwiML app tells Twilio to ask our server what to do with an outgoing call.
+addColumnIfMissing('companies', 'voice_api_key_sid', 'TEXT');
+addColumnIfMissing('companies', 'voice_api_key_secret', 'TEXT');
+addColumnIfMissing('companies', 'voice_twiml_app_sid', 'TEXT');
 
 // Outbound email, same idea as texting: each servicer uses their own mailbox and the
 // environment is only a fallback. Two from-addresses so routine correspondence and a
