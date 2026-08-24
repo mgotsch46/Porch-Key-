@@ -3134,6 +3134,18 @@ app.post('/api/admin/notices/:id/mail', adminOnly, async (req, res, next) => {
     });
     run(`UPDATE notices SET lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=? WHERE id=?`,
       sent.id, sent.tracking_number, sent.expected_delivery_date, sent.cost_cents || null, n.id);
+    // The same evidence trail the automatic send keeps: a PDF copy of what was
+    // mailed, filed on the loan, so nothing about mail ever requires Lob's website.
+    try {
+      const pdfBuf = pdfDoc.letter({ company: co, subject: n.subject, bodyText: n.body, sentAt: today() });
+      const stored = crypto.randomUUID() + '.pdf';
+      fs.writeFileSync(path.join(UPLOAD_DIR, stored), pdfBuf);
+      run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+           VALUES (?,?,?,?,?,?,?,?,?,0)`,
+        loan.company_id, loan.id, loan.property_id, 'other', 'private',
+        `${service === 'certified' ? 'Certified' : 'First-class'} mail — ${n.subject || 'notice'} (${sent.tracking_number || sent.id})`,
+        `mailed-notice-${n.id}.pdf`, stored, 'application/pdf');
+    } catch (e) { console.error('Mailed copy not filed:', e.message); }
     if (sent.cost_cents > 0 && !sent.test) {
       run(`INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo) VALUES (?,?, 'fee', ?, ?)`,
         loan.id, today(), -sent.cost_cents,
