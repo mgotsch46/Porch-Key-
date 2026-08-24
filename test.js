@@ -1697,8 +1697,15 @@ async function main() {
   const mi5 = r.json.find(n => n.stage === 'late_5');
   const miDraft = r.json.find(n => n.stage === 'mi_dc101');
   ok(!!mi5, 'MI: 5-day notice fired at day 12');
-  ok(mi5 && /does not waive/.test(mi5.body), 'MI: 5-day notice carries non-waiver language');
-  ok(mi5 && /has been charged/.test(mi5.body), 'MI: notice states the late fee as charged, not a maybe');
+  ok(mi5 && /RESERVATION OF RIGHTS AND NON-WAIVER/.test(mi5.body) && /shall not constitute/.test(mi5.body),
+    'MI: 5-day notice carries the full reservation-of-rights clause');
+  ok(mi5 && /this charge has been applied/.test(mi5.body), 'MI: notice states the late fee as charged, not a maybe');
+  ok(mi5 && /contractual courtesy notice only/.test(mi5.body) && /MCL 600.5728/.test(mi5.body),
+    'MI: notice says plainly it is not the statutory DC 101');
+  ok(mi5 && /TOTAL NOW DUE/.test(mi5.body), 'MI: notice itemizes the amount now due');
+  const miEvidence = JSON.stringify((await req(`/api/admin/loans/${miLoanId}/documents`)).json);
+  ok(/Notice as sent — 5-day late notice/.test(miEvidence), 'MI: the notice as sent files itself as a PDF');
+  ok(/Certificate of delivery — 5-day notice/.test(miEvidence), 'MI: certificate of delivery files itself');
   ok(!r.json.some(n => ['late_15', 'late_30'].includes(n.stage)), 'MI: generic ladder rungs suppressed');
   ok(!!miDraft && miDraft.prepared === 1 && !miDraft.served_at, 'MI: DC 101 drafted, not served');
   r = await req('/api/admin/loans/' + miLoanId);
@@ -1786,6 +1793,30 @@ async function main() {
   r = await req('/api/tenant/notices', {}, miCookie);
   ok(r.json.some(n => n.stage === 'mi_dc101' && /Served by certified mail/.test(n.body)),
     'MI: buyer sees the served notice in the app');
+
+  // A partial payment mid-default triggers the non-waiver receipt: filed as a PDF,
+  // and the reservation of rights delivered to the buyer in the thread.
+  r = await req(`/api/admin/loans/${miLoanId}/payments`, { method: 'POST',
+    body: JSON.stringify({ amount_cents: 10000, method: 'cash' }) });
+  ok(r.status === 200, 'MI: partial payment accepted');
+  r = await req(`/api/admin/loans/${miLoanId}/documents`);
+  ok(/Partial payment non-waiver receipt/.test(JSON.stringify(r.json)),
+    'MI: non-waiver receipt filed with the payment');
+  r = await req(`/api/admin/loans/${miLoanId}/messages`);
+  const nwMsg = r.json.find(m => /reservation of rights/i.test(m.subject || '') || /does not cure the existing default/.test(m.body || ''));
+  ok(!!nwMsg, 'MI: reservation of rights delivered to the buyer in the thread');
+  ok(nwMsg && /cure deadline/.test(nwMsg.body) && /unchanged/.test(nwMsg.body),
+    'MI: buyer told the pending DC 101 cure deadline is unchanged');
+  // A payment that clears the arrears entirely does NOT get a receipt.
+  r = await req('/api/admin/loans/' + miLoanId);
+  const owedNow = r.json.status.owed_now_cents;
+  const docsBefore = JSON.stringify((await req(`/api/admin/loans/${miLoanId}/documents`)).json)
+    .split('Partial payment non-waiver receipt').length;
+  await req(`/api/admin/loans/${miLoanId}/payments`, { method: 'POST',
+    body: JSON.stringify({ amount_cents: owedNow, method: 'cash' }) });
+  const docsAfter = JSON.stringify((await req(`/api/admin/loans/${miLoanId}/documents`)).json)
+    .split('Partial payment non-waiver receipt').length;
+  ok(docsAfter === docsBefore, 'MI: a payment in full generates no non-waiver receipt');
 
   console.log('— login throttling');
   let throttled = false;

@@ -313,6 +313,10 @@ function postPayment(loanId, amountCents, method, entryDate, externalId, memo, c
   if (externalId && get('SELECT id FROM ledger WHERE external_id=?', externalId)) {
     return { duplicate: true };
   }
+  // What was owed the moment before this payment — the fact a partial-payment
+  // receipt is built on, so it is measured here and not reconstructed later.
+  const rowsBefore = all('SELECT * FROM ledger WHERE loan_id=?', loanId);
+  const owedBefore = loanEngine.loanStatus(loan, rowsBefore, entryDate).owed_now_cents;
   const alloc = loanEngine.allocatePayment(loan, amountCents, entryDate);
   const newPrincipal = loan.principal_balance_cents - alloc.to_principal_cents;
   const newEscrow = loan.escrow_balance_cents + alloc.to_escrow_cents + alloc.unapplied_cents;
@@ -335,6 +339,14 @@ function postPayment(loanId, amountCents, method, entryDate, externalId, memo, c
   run(`UPDATE loans SET principal_balance_cents=?, escrow_balance_cents=?, fees_due_cents=?,
         interest_due_cents=?, status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
     newPrincipal, newEscrow, newFees, newInterestDue, newPrincipal, loanId);
+  // A payment that leaves a Michigan default standing gets its receipt written in the
+  // same breath the money lands — the reservation of rights only protects if it is
+  // contemporaneous. A receipt that fails to generate must never block a payment.
+  try {
+    if (owedBefore > 0 && amountCents < owedBefore) {
+      miPartialReceipt({ loan, alloc, amountCents, method, entryDate, owedBefore });
+    }
+  } catch (e) { console.error('Partial-payment receipt not filed:', e.message); }
   return { alloc, newPrincipal };
 }
 
@@ -355,10 +367,12 @@ function postStripePayment(session) {
 const LEGAL_NOTICE_DAYS = Number(process.env.LEGAL_NOTICE_DAYS || 30);
 
 async function sendLadderNotice({ rule, loan, property, tenant, co, status, dueDate, period, daysPast,
-                                  reserveRights, feeCharged }) {
+                                  reserveRights, feeCharged, wordingOverride }) {
+  // Precedence: a subject/body the company typed onto the rule wins; then a
+  // state-specific template (Michigan's own notice packet); then the default.
   const wording = (rule.subject && rule.body)
     ? { subject: rule.subject, body: rule.body }
-    : noticeRules.defaultWording(rule, {
+    : wordingOverride || noticeRules.defaultWording(rule, {
         loan, property, tenant, amountCents: status.owed_now_cents, dueDate, daysPast,
         reserveRights, feeCharged });
 
@@ -551,6 +565,190 @@ function prepareDc101(loan, { period, status, property, tenant, co }) {
   return get('SELECT * FROM notices WHERE id=?', noticeId);
 }
 
+// Two documents file themselves the moment the 5-day notice goes out, straight from
+// the delivery record. The first is the notice exactly as sent, on letterhead — the
+// top item on any evidence checklist. The second is the Certificate of Delivery from
+// the company's notice packet, its channel-by-channel entries filled from what
+// actually happened: which email address, which phone number, which app account, and
+// how each attempt ended. A year from now, this is what makes the delivery provable.
+function fileMiFiveDayEvidence({ co, loan, property, tenant, noticeId, period }) {
+  const n = get('SELECT * FROM notices WHERE id=?', noticeId);
+  if (!n) return;
+  const delivery = JSON.parse(n.delivery_json || '{}');
+  const logo = companyLogo(co);
+  const stamp = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  const fileDoc = (buf, title, filename) => {
+    const stored = crypto.randomUUID() + '.pdf';
+    fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf);
+    run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+         VALUES (?,?,?,?,?,?,?,?,?,0)`,
+      loan.company_id, loan.id, loan.property_id, 'other', 'private', title, filename, stored, 'application/pdf');
+  };
+
+  fileDoc(
+    pdfDoc.letter({ company: co, subject: n.subject, bodyText: n.body, sentAt: today(), logo }),
+    `Notice as sent — 5-day late notice (${period})`, `mi-5day-notice-${noticeId}.pdf`);
+
+  const line = (label, value) => `${label}: ${value}`;
+  const ch = [];
+  ch.push('CHANNEL — MOBILE APP MESSAGE\n' + [
+    line('Date and time sent', stamp),
+    line('Platform', 'PorchPay buyer portal'),
+    line('Purchaser account', tenant ? `${tenant.name} <${tenant.email || 'no email'}> (user #${tenant.id})` : 'not linked'),
+    line('Message thread', `Loan #${loan.id} message thread; notice #${noticeId}`),
+    line('Delivery status', 'Posted to the account. Read receipt is recorded on the notice when the purchaser opens it.'),
+  ].join('\n'));
+  const em = delivery.email;
+  ch.push('CHANNEL — EMAIL\n' + (em
+    ? (em.ok ? [
+        line('Date and time sent', stamp),
+        line('Sent to', em.to || (tenant && tenant.email) || ''),
+        line('Sent from', em.from || `${em.identity || 'servicing'} address`),
+        line('Subject line', n.subject),
+        line('Delivery confirmation', 'Accepted by the email provider'),
+      ].join('\n') : [
+        line('Attempted', stamp),
+        line('Result', `NOT DELIVERED — ${em.error}`),
+      ].join('\n'))
+    : 'Not attempted on this notice.'));
+  const sm = delivery.sms;
+  ch.push('CHANNEL — TEXT MESSAGE\n' + (sm
+    ? (sm.ok ? [
+        line('Date and time sent', stamp),
+        line('Sent to', sm.to || (tenant && tenant.phone) || ''),
+        line('Content', 'Short-form alert pointing to the full notice in the app'),
+      ].join('\n') : [
+        line('Attempted', stamp),
+        line('Result', `NOT DELIVERED — ${sm.error}`),
+      ].join('\n'))
+    : 'Not attempted on this notice.'));
+  ch.push('CHANNEL — FIRST-CLASS U.S. MAIL\n' +
+    'Not sent automatically with this notice. If mailed from the notice screen, the mailed copy and ' +
+    'its tracking are filed separately alongside this certificate.');
+
+  const certBody =
+`Retain in the seller's deal file. Not filed with the court.
+
+I delivered a true copy of the Notice of Late Payment and Default described above by each of the channels recorded below.
+
+${ch.join('\n\n')}
+
+ATTESTATION
+I am authorized to act on behalf of Seller. The deliveries recorded above were made through PorchPay, and the entries were generated from its live delivery records at the moment of sending. These records are kept in the ordinary course of Seller's business.
+
+Signature: _______________________________
+Printed name: ____________________________
+Title: ___________________________________
+Date: ____________________________________
+
+NOTE — Email and app delivery do not satisfy MCL 600.5730. This certificate covers the contractual courtesy notice only. The statutory Notice of Forfeiture (Form DC 101) must be served by a method permitted under MCL 600.5730; PorchPay serves it by first-class certified mail with USPS tracking.
+
+Generated by PorchPay on ${stamp}.`;
+
+  fileDoc(
+    pdfDoc.letter({
+      company: co, subject: 'CERTIFICATE OF DELIVERY — Notice of Late Payment and Default', logo,
+      sentAt: today(),
+      meta: [['Deal', `Loan #${loan.id}`], ['Property', `${property.address}, ${property.city}, MI ${property.zip}`],
+             ['Purchaser(s)', (tenant && tenant.name) || '—'], ['Notice date', today()], ['Arrears month', period]],
+      bodyText: certBody,
+    }),
+    `Certificate of delivery — 5-day notice (${period})`, `mi-5day-certificate-${noticeId}.pdf`);
+}
+
+// The partial-payment acknowledgment and non-waiver receipt, from the company's
+// notice packet. Issued the instant a payment smaller than the arrears lands on a
+// Michigan loan in default: the receipt PDF files itself on the loan, and the
+// reservation of rights is delivered to the purchaser in the message thread — a
+// written, timestamped record that accepting the money forgave nothing. If a DC 101
+// is pending, the receipt says plainly that its cure deadline is unchanged.
+function miPartialReceipt({ loan, alloc, amountCents, method, entryDate, owedBefore }) {
+  const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+  if (!noticeRules.isMichigan(property)) return;
+  const co = get('SELECT * FROM companies WHERE id=?', loan.company_id);
+  const tenant = loan.tenant_user_id ? get('SELECT * FROM users WHERE id=?', loan.tenant_user_id) : null;
+  const money = (c) => '$' + (c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const remaining = owedBefore - amountCents;
+  const seller = property.trust_name || (co && (co.mgmt_company_name || co.name)) || 'Seller';
+  const servicer = (co && (co.mgmt_company_name || co.name)) || 'Loan Servicing';
+  const methodLabel = ({ cash: 'Cash', check: 'Check', money_order: 'Money order',
+    stripe_card: 'Card (online)', stripe_ach: 'Bank transfer (online)', stripe_cashapp: 'Cash App Pay (online)',
+  })[method] || method || 'Payment';
+
+  const dc = get(`SELECT * FROM notices WHERE loan_id=? AND stage='mi_dc101' AND served_at IS NOT NULL
+                  ORDER BY id DESC LIMIT 1`, loan.id);
+  const dcSection = dc
+    ? `4. EFFECT ON THE PENDING DC 101 FORFEITURE NOTICE
+A DC 101 forfeiture notice is pending on this account, served ${dc.served_at} with a cure deadline of ${dc.cure_deadline}. This payment does NOT fully cure that notice — the notice remains in effect, and the existing cure deadline is unchanged. This receipt does not extend it.`
+    : `4. EFFECT ON ANY PENDING NOTICE
+No DC 101 forfeiture notice is currently pending on this account. If one is served, only payment of the full amount demanded within its cure period will cure it.`;
+
+  const body =
+`PARTIAL PAYMENT ACKNOWLEDGMENT AND NON-WAIVER RECEIPT
+Michigan Land Contract
+
+Property: ${property.address}, ${property.city}, Michigan ${property.zip}${loan.contract_date ? `\nLand contract dated: ${loan.contract_date}` : ''}
+Purchaser(s): ${(tenant && tenant.name) || '—'}
+
+1. PAYMENT RECEIVED
+Amount received: ${money(amountCents)}
+Date received: ${entryDate}
+Form of payment: ${methodLabel}
+Total amount that was due: ${money(owedBefore)}
+REMAINING BALANCE STILL DUE: ${money(remaining)}
+
+2. APPLICATION OF FUNDS
+Late charges and fees: ${money(alloc.to_fees_cents)}
+Accrued interest: ${money(alloc.to_interest_cents)}
+Escrow (taxes and insurance): ${money(alloc.to_escrow_cents + alloc.unapplied_cents)}
+Principal: ${money(alloc.to_principal_cents)}
+TOTAL APPLIED: ${money(amountCents)}
+
+3. EXPRESS CONDITIONS — NON-WAIVER
+${noticeRules.MI_PARTIAL_NON_WAIVER}
+
+${dcSection}
+
+Seller: ${servicer}, servicing agent for ${seller}
+
+Purchaser acknowledgment (signature useful but not required — Seller's written reservation of rights stands on its own):
+Signature: _______________________________   Date: ____________`;
+
+  const buf = pdfDoc.letter({
+    company: co, subject: 'Partial Payment Acknowledgment and Non-Waiver Receipt',
+    sentAt: entryDate, logo: companyLogo(co), bodyText: body,
+  });
+  const stored = crypto.randomUUID() + '.pdf';
+  fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf);
+  run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+       VALUES (?,?,?,?,?,?,?,?,?,0)`,
+    loan.company_id, loan.id, loan.property_id, 'other', 'private',
+    `Partial payment non-waiver receipt — ${money(amountCents)} (${entryDate})`,
+    `mi-partial-receipt-${loan.id}-${entryDate}.pdf`, stored, 'application/pdf');
+
+  // Delivery is what gives the reservation teeth: the purchaser is told, in the
+  // thread, the moment the money is accepted.
+  const adminId = get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL ORDER BY id LIMIT 1", loan.company_id);
+  if (adminId && tenant) {
+    const msg =
+`Payment received — with reservation of rights
+
+We received your payment of ${money(amountCents)} on ${entryDate}. It has been applied to your balance; ${money(remaining)} remains past due.
+
+This payment is accepted on the express condition that it does not cure the existing default, does not waive any of Seller's rights under the land contract or Michigan law, and does not modify your payment terms.${dc ? ` The pending forfeiture notice remains in effect and its cure deadline of ${dc.cure_deadline} is unchanged.` : ''} All rights are expressly reserved.
+
+To resolve the default, the full past-due balance of ${money(remaining)} must be received. If you want to discuss a written arrangement, message us here.`;
+    run(`INSERT INTO messages (loan_id, sender_user_id, body, subject, read_by_admin, channels)
+         VALUES (?,?,?,?,1,'app')`, loan.id, adminId.id, msg, 'Payment received — with reservation of rights');
+    notify.notify(tenant.id, {
+      kind: 'notice', title: 'Payment received — balance still due',
+      body: `${money(amountCents)} received; ${money(remaining)} remains past due.`,
+      url: '/', dedupeKey: `mi-partial-${loan.id}-${entryDate}-${amountCents}`,
+    }).catch(() => {});
+  }
+  console.log(`Non-waiver receipt filed for loan ${loan.id}: ${money(amountCents)} of ${money(owedBefore)}`);
+}
+
 // The morning after the cure deadline dies unpaid, the next move belongs on the task
 // list — with the right courthouse and that court's own quirks attached.
 function createDc102Task(notice, loan, property, status) {
@@ -565,7 +763,10 @@ function createDc102Task(notice, loan, property, status) {
       `The DC 101 cure deadline (${notice.cure_deadline}) has passed and ` +
       `$${(status.owed_now_cents / 100).toFixed(2)} is still owed.\n\n${filing}\n\n` +
       `The served DC 101 with its certificate of service and certified-mail tracking number is filed ` +
-      `under this loan's documents. Case No. and Judge are assigned at filing — leave them blank on your copies.`,
+      `under this loan's documents. Case No. and Judge are assigned at filing — leave them blank on your copies.\n\n` +
+      `After judgment: the court sets a hearing within 30 days of the summons (MCL 600.5735); the purchaser's ` +
+      `redemption period is 90 days if less than half the purchase price has been paid, 6 months if half or more ` +
+      `(MCL 600.5744(4)). Forfeiture returns the property but produces no money judgment for the balance.`,
       'legal', 'high', today(), `dc102-${notice.id}`);
     if (r.changes > 0) {
       notifyAdmins(loan.company_id, {
@@ -660,8 +861,16 @@ async function runNoticeSweep() {
           const freshStatus = loanEngine.loanStatus(loan, all('SELECT * FROM ledger WHERE loan_id=?', loan.id), today());
           const rule = get(`SELECT * FROM notice_rules WHERE company_id=? AND stage='late_5'`, loan.company_id);
           if (rule) {
-            await sendLadderNotice({ rule, loan, property, tenant, co, status: freshStatus,
-              dueDate, period, daysPast, reserveRights: true, feeCharged });
+            const wordingOverride = (rule.subject && rule.body) ? null
+              : noticeRules.miLateNoticeWording({
+                  company: co, loan, property, tenant, status: freshStatus, dueDate,
+                  missedDates: missedDueDatesFor(loan, freshStatus), feeCharged, todayIso: today() });
+            const noticeId = await sendLadderNotice({ rule, loan, property, tenant, co, status: freshStatus,
+              dueDate, period, daysPast, reserveRights: true, feeCharged, wordingOverride });
+            // Evidence, filed the moment it exists: the notice exactly as sent, on the
+            // company's paper, and a certificate of delivery recording every channel.
+            try { fileMiFiveDayEvidence({ co, loan, property, tenant, noticeId, period }); }
+            catch (e) { console.error('MI 5-day evidence not filed:', e.message); }
           }
         }
 

@@ -69,13 +69,90 @@ function miCourtFor(property) {
 
 const isMichigan = (property) => !!property && String(property.state || '').trim().toUpperCase() === 'MI';
 
-// Accepting a partial payment must never read as forgiving the default — Michigan
-// practice puts this in writing on the first late notice.
+// Accepting a partial payment must never read as forgiving the default. This is the
+// reservation-of-rights clause from the company's own notice packet, used verbatim on
+// the 5-day notice and echoed on every partial-payment receipt.
 const MI_NON_WAIVER =
-  'Please note: acceptance of any partial payment, late fee, or other amount does not waive the ' +
-  "seller's right to demand full and timely payment of all amounts due, to enforce the land contract " +
-  'according to its terms, or to pursue forfeiture or any other remedy available under the contract ' +
-  'or Michigan law. All such rights are expressly reserved.';
+  "Seller's acceptance of any late payment, partial payment, or payment tendered after its due date " +
+  'does not and shall not constitute any of the following: (a) a waiver of Seller\'s right to require ' +
+  'strict and timely performance of every term of the Land Contract; (b) a waiver of this default or ' +
+  'of any prior or subsequent default; (c) an election of remedies; (d) a modification or amendment ' +
+  'of the Land Contract, or a course of dealing altering its payment terms; or (e) a reinstatement of ' +
+  'the Land Contract, except as expressly stated in a writing signed by Seller.\n\n' +
+  'No delay or omission by Seller in exercising any right or remedy shall impair that right or remedy ' +
+  'or be construed as a waiver of it. Seller expressly reserves all rights and remedies available ' +
+  'under the Land Contract and under Michigan law, including MCL 600.5726 et seq.';
+
+// The receipt's version: acceptance of the money is expressly conditional.
+const MI_PARTIAL_NON_WAIVER =
+  'Seller accepts the payment described above ON THE EXPRESS CONDITION that it is applied to the ' +
+  'outstanding balance only, and that acceptance does NOT: cure the existing default, which remains ' +
+  'in effect as to the remaining balance; waive Seller\'s right to require strict and timely ' +
+  'performance of every term of the Land Contract; waive this default or any other default, past, ' +
+  'present, or future; reinstate, revive, or continue the Land Contract beyond its existing terms; ' +
+  'create a modification, amendment, novation, or course of dealing altering the payment terms; ' +
+  'extend, restart, toll, or otherwise affect any cure period under MCL 600.5728 or any notice ' +
+  'already served; or constitute an election of remedies.\n\n' +
+  'Seller expressly reserves every right and remedy available under the Land Contract and under ' +
+  'Michigan law, including MCL 600.5726 et seq., and including the right to proceed with or continue ' +
+  'forfeiture proceedings for the remaining unpaid balance.';
+
+// The 5-day notice, from the company's own template: a contractual courtesy notice
+// with a courtesy cure date three days out, a plain warning of what day 10 brings,
+// and the reservation of rights in full. It says explicitly what it is not — the
+// statutory DC 101 — because confusing the two is how cure periods get miscounted.
+function miLateNoticeWording({ company, loan, property, tenant, status, dueDate, missedDates,
+                               feeCharged, feesCents, todayIso }) {
+  const money = (c) => '$' + (c / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const us = (iso) => { const [y, m, d] = iso.split('-'); return `${Number(m)}/${Number(d)}/${y}`; };
+  const addDays = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+
+  const addr = property ? `${property.address}, ${property.city}, Michigan ${property.zip}` : 'the property';
+  const seller = (property && property.trust_name) || (company && (company.mgmt_company_name || company.name)) || 'Seller';
+  const servicer = (company && (company.mgmt_company_name || company.name)) || 'Loan Servicing';
+  const pi = Math.max(0, status.owed_now_cents - status.fees_due_cents);
+  const cureBy = addDays(dueDate, 8);          // due the 1st → cure requested by the 9th
+  const dc101On = addDays(dueDate, 9);         // due the 1st → DC 101 on or about the 10th
+  const feeLine = feeCharged
+    ? `Late charge (per your Land Contract): ${money(loan.late_fee_cents)} — this charge has been applied.\n`
+    : (status.fees_due_cents > pi ? '' : '');
+
+  const body =
+`NOTICE OF LATE PAYMENT AND DEFAULT
+Michigan Land Contract — Reservation of Rights
+
+Date of notice: ${us(todayIso)}
+To: ${(tenant && tenant.name) || 'Purchaser'}, Purchaser
+Property: ${addr}${loan.contract_date ? `\nLand contract dated: ${us(loan.contract_date)}` : ''}
+
+1. PAYMENT NOT RECEIVED
+Under your Land Contract, the installment due ${us(dueDate)} has not been received. The grace period has expired and you are in default.
+
+2. AMOUNT NOW PAST DUE
+Past-due principal and interest: ${money(pi)}
+${feeLine}${status.fees_due_cents > 0 && !feeCharged ? `Fees and charges due: ${money(status.fees_due_cents)}\n` : ''}TOTAL NOW DUE: ${money(status.owed_now_cents)}
+Payment due dates covered by this notice: ${(missedDates || []).map(us).join(', ') || us(dueDate)}.
+You can pay in the app by card, bank transfer, or Cash App Pay, or contact us for other arrangements. Seller may require certified funds.
+
+3. CURE REQUESTED BY ${us(cureBy).toUpperCase()}
+Deliver the TOTAL NOW DUE on or before ${us(cureBy)}. If the full amount is not received by that date, Seller intends to serve a statutory Notice of Forfeiture (SCAO Form DC 101) on or about ${us(dc101On)}. That notice begins a 15-day cure period under MCL 600.5728. If that cure period expires without payment, Seller may file a complaint for possession in the Michigan district court where the property is located, under MCL 600.5735.
+
+4. THIS IS NOT A NOTICE OF FORFEITURE
+This letter is a contractual courtesy notice only. It is not the statutory notice of forfeiture required by MCL 600.5728, and it does not begin the 15-day statutory cure period. No statutory period begins until you are served with Form DC 101 by a method permitted under MCL 600.5730.
+
+5. RESERVATION OF RIGHTS AND NON-WAIVER
+${MI_NON_WAIVER}
+
+6. QUESTIONS
+If you dispute the amount stated above, or want to discuss a written payment arrangement, message us in the app or contact ${servicer} before the cure date. Any arrangement is effective only if in writing and signed by Seller.
+
+${servicer}, servicing agent for ${seller}, Seller`;
+
+  return {
+    subject: `NOTICE OF LATE PAYMENT AND DEFAULT — ${property ? property.address : 'your account'}`,
+    body,
+  };
+}
 
 const DEFAULT_LADDER = [
   { stage: 'late_5',  trigger_day: 6,  label: '5-day late notice',  identity: 'servicing', type: 'late_notice' },
@@ -184,4 +261,4 @@ function dueRule(companyId, loanId, period, daysPast) {
 }
 
 module.exports = { initSchema, seedLadder, rulesFor, defaultWording, dueRule, DEFAULT_LADDER,
-  isMichigan, miCourtFor, MI_COURTS, MI_NON_WAIVER };
+  isMichigan, miCourtFor, MI_COURTS, MI_NON_WAIVER, MI_PARTIAL_NON_WAIVER, miLateNoticeWording };

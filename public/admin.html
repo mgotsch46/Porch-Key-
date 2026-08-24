@@ -5170,8 +5170,9 @@ async function dc101Modal(id){
   const sugg=d.court_suggestion;
   modal(`<h2>📄 DC 101 — Forfeiture Notice</h2>
     <p class="note" style="margin-bottom:10px">This is the official SCAO form, filled from the loan. Fix anything
-      that reads wrong — <b>the arrears figure especially</b> — then serve it. Case No. and Judge stay blank;
-      the court assigns them when the complaint is filed.</p>
+      that reads wrong — <b>the arrears figure especially</b> — then serve it. Demand only what is actually
+      past due, <b>never the accelerated balance</b>: over-demanding is the most common way a DC 101 gets
+      invalidated. Case No. and Judge stay blank; the court assigns them when the complaint is filed.</p>
     ${sugg?`<p class="note" style="margin-bottom:10px">🏛 Suggested court for ${esc(LOAN_F.property.city||'this property')}:
       <b>${esc(sugg.name)}</b>, ${esc(sugg.address)}${sugg.phone?' · '+esc(sugg.phone):''}
       <button class="small" onclick="dc101FillCourt('${esc(sugg.district)}','${esc(sugg.address)}','${esc(sugg.phone)}')">Use it</button></p>`:''}
