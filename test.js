@@ -1818,6 +1818,46 @@ async function main() {
     .split('Partial payment non-waiver receipt').length;
   ok(docsAfter === docsBefore, 'MI: a payment in full generates no non-waiver receipt');
 
+  console.log('— welcome guide, escrow update, payoff delivery');
+  // The loan defaults to PITI; flipping it to PIT changes the guide it produces.
+  r = await req('/api/admin/loans/' + miLoanId);
+  ok(r.json.loan.escrow_structure === 'piti', 'loan carries its PIT/PITI designation (default PITI)');
+  r = await req(`/api/admin/loans/${miLoanId}/homebuyer-guide`, { method: 'POST', body: '{}' });
+  ok(r.status === 200 && r.json.city === 'Flint' && r.json.structure === 'PITI', 'welcome guide sent for Flint, PITI');
+  r = await req('/api/admin/loans/' + miLoanId, { method: 'PUT', body: JSON.stringify({ escrow_structure: 'pit' }) });
+  ok(r.json.loan.escrow_structure === 'pit', 'designation switches to PIT');
+  r = await req(`/api/admin/loans/${miLoanId}/homebuyer-guide`, { method: 'POST', body: '{}' });
+  ok(r.json.structure === 'PIT', 'guide re-sends as PIT after the switch');
+  let miDocs2 = JSON.stringify((await req(`/api/admin/loans/${miLoanId}/documents`)).json);
+  ok(/Welcome guide — your new home \(Flint, PITI\)/.test(miDocs2) && /\(Flint, PIT\)/.test(miDocs2),
+    'both guide versions filed in shared documents');
+  r = await req(`/api/admin/loans/${miLoanId}/messages`);
+  ok(r.json.some(m => /welcome guide/i.test(m.subject || '') && /autopay/.test(m.body) && /\$50\.00 servicing fee/.test(m.body)),
+    'welcome message mentions app-only payments and the autopay fee waiver');
+
+  // Changing taxes or insurance produces the escrow update statement, delivered.
+  r = await req('/api/admin/loans/' + miLoanId, { method: 'PUT',
+    body: JSON.stringify({ monthly_taxes_cents: 15000, monthly_insurance_cents: 8000 }) });
+  ok(r.json.loan.escrow_cents === 23000, 'escrow recomputed from new tax + insurance figures');
+  miDocs2 = JSON.stringify((await req(`/api/admin/loans/${miLoanId}/documents`)).json);
+  ok(/Escrow update — new payment/.test(miDocs2), 'escrow update statement filed in documents');
+  r = await req(`/api/admin/loans/${miLoanId}/messages`);
+  ok(r.json.some(m => /escrow/i.test(m.subject || '') && /new total monthly payment/i.test(m.body)),
+    'buyer messaged with the new payment amount');
+  // No change, no statement: a PUT that touches nothing escrow-ish stays silent.
+  const escrowDocsCount = miDocs2.split('Escrow update').length;
+  await req('/api/admin/loans/' + miLoanId, { method: 'PUT', body: JSON.stringify({ grace_days: 5 }) });
+  miDocs2 = JSON.stringify((await req(`/api/admin/loans/${miLoanId}/documents`)).json);
+  ok(miDocs2.split('Escrow update').length === escrowDocsCount, 'no escrow statement when nothing escrow-ish changed');
+
+  // A buyer-requested payoff files the formal statement into their documents.
+  r = await req('/api/tenant/payoff/request', { method: 'POST', body: '{}' }, miCookie);
+  ok(r.status === 200 && r.json.quote && r.json.quote.quote_number, 'buyer requests a payoff');
+  miDocs2 = JSON.stringify((await req(`/api/admin/loans/${miLoanId}/documents`)).json);
+  ok(new RegExp(`Payoff statement ${r.json.quote.quote_number}`).test(miDocs2), 'formal payoff PDF filed in documents');
+  r = await req(`/api/admin/loans/${miLoanId}/messages`);
+  ok(r.json.some(m => /Payoff statement/.test(m.subject || '')), 'buyer messaged that the payoff is filed');
+
   console.log('— login throttling');
   let throttled = false;
   for (let i = 0; i < 8; i++) {

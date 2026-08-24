@@ -4923,7 +4923,8 @@ async function openLoan(id){
       ${S.is_past_due?'<span class="pill due">Past due</span>':'<span class="pill ok">Current</span>'}</h2>
     <p class="note">${AGREEMENT_LABELS[L.loan_type]||'Land contract'}${L.loan_type==='land_trust_beneficial_interest'&&f.property&&f.property.trust_name?' — '+esc(f.property.trust_name)+(f.property.trustee?', trustee: '+esc(f.property.trustee):''):''} ·
       ${rateStr(L.interest_rate_bps)}% · ${L.term_months} mo · started ${fdate(L.first_payment_date)}
-      ${L.beneficial_interest_pct?' · BI '+L.beneficial_interest_pct+'%':''}</p>
+      ${L.beneficial_interest_pct?' · BI '+L.beneficial_interest_pct+'%':''}
+      · <span class="pill ${(L.escrow_structure||'piti')==='pit'?'amber':'gray'}" title="${(L.escrow_structure||'piti')==='pit'?'Taxes escrowed; buyer pays insurance directly':'Taxes and insurance escrowed in the payment'}">${(L.escrow_structure||'piti').toUpperCase()}</span></p>
     <p class="note" style="margin-top:4px">${f.tenant?('📧 <a href="mailto:'+esc(f.tenant.email)+'">'+esc(f.tenant.email)+'</a>'
       +(f.tenant.phone?' · 📱 <a href="tel:'+esc(String(f.tenant.phone).replace(/[^+\d]/g,''))+'">'+esc(f.tenant.phone)+'</a>'
         +' <button class="small" onclick="callNow(\''+esc(String(f.tenant.phone))+'\',\''+esc(f.tenant.name||'the buyer')+'\')">📞 Call</button>'
@@ -4939,6 +4940,7 @@ async function openLoan(id){
       <button class="small warn" onclick="deleteLoanModal()">🗑️ Delete loan</button>
       <button class="small" onclick="msgLoanId=${L.id};nav('msgs');openThread(${L.id},'${esc(f.property?f.property.address:'')}')">💬 Message buyer</button>
       <button class="small" onclick="remindModal(${L.id})">🔔 Send reminder</button>
+      ${f.property&&String(f.property.state||'').trim().toUpperCase()==='MI'?`<button class="small" onclick="sendGuide(${L.id})">📖 Send welcome guide</button>`:''}
     </div>
   </div>
   <div class="grid2">
@@ -5112,6 +5114,17 @@ async function loadNoticesAdmin(){
       <details style="margin-top:4px"><summary class="note" style="cursor:pointer">View text</summary><div class="note" style="white-space:pre-wrap;margin-top:6px">${esc(n.body)}</div></details>
     </div>`).join('') : '<p class="note">No notices sent.</p>');
 }
+// The welcome guide, sent by hand — for buyers who joined before the guide existed,
+// or after the PIT/PITI designation changes.
+async function sendGuide(loanId){
+  try{
+    const r=await api(`/api/admin/loans/${loanId}/homebuyer-guide`,{method:'POST'});
+    modal(`<h2>📖 Guide sent</h2><p class="note">The ${esc(r.city||'')} ${esc(r.structure||'')} welcome guide is in the
+      buyer's shared documents, and they have a message and a notification pointing at it.</p>
+      <button class="primary" onclick="closeModal()">Done</button>`);
+  }catch(e){ modal(`<h2>Could not send</h2><p class="note">${esc(e.message)}</p>`); }
+}
+
 // ---------- Michigan DC 101 ----------
 // The forfeiture notice is a legal document with a statutory clock attached, so the
 // flow is deliberately review-first: the app fills the official form, a person reads
@@ -5493,6 +5506,11 @@ function editLoanModal(){
       </select></div>
     </div>
     <h3 style="font-size:14px;margin:16px 0 10px">Monthly amounts collected with the payment</h3>
+    <div class="field"><label>Payment structure</label><select id="el-struct">
+      <option value="piti"${(L.escrow_structure||'piti')!=='pit'?' selected':''}>PITI — taxes AND insurance escrowed in the payment</option>
+      <option value="pit"${(L.escrow_structure||'piti')==='pit'?' selected':''}>PIT — taxes escrowed; buyer pays insurance directly</option>
+    </select>
+    <p class="note" style="margin-top:4px">This drives the buyer's welcome guide and how the payment is explained to them.</p></div>
     <div class="grid3">
       <div class="field"><label>Taxes ($)</label><input id="el-tax" type="number" step="0.01" value="${d(L.monthly_taxes_cents)}"></div>
       <div class="field"><label>Insurance ($)</label><input id="el-ins" type="number" step="0.01" value="${d(L.monthly_insurance_cents)}"></div>
@@ -5535,6 +5553,7 @@ async function saveLoanEdits(){
       term_months:Number($('el-term').value)||1,
       first_payment_date:$('el-first').value||null, due_day:Number($('el-dueday').value)||1,
       loan_type:$('el-type').value, status:$('el-status').value,
+      escrow_structure:$('el-struct').value,
       monthly_taxes_cents:C('el-tax'), monthly_insurance_cents:C('el-ins'),
       monthly_utilities_cents:C('el-util'), monthly_servicing_cents:C('el-svc'),
       monthly_misc_cents:C('el-misc'), misc_label:$('el-misclbl').value||null,

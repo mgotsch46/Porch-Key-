@@ -909,6 +909,10 @@ addColumnIfMissing('properties', 'court_phone', 'TEXT');
 // The date on the land contract itself — the form asks for it, and it is not the
 // first payment date.
 addColumnIfMissing('loans', 'contract_date', 'TEXT');
+// How the payment is structured: PITI escrows taxes and insurance; PIT escrows taxes
+// only and the buyer pays insurance directly. The welcome guide, and eventually every
+// buyer-facing explanation of the payment, reads this rather than guessing.
+addColumnIfMissing('loans', 'escrow_structure', "TEXT NOT NULL DEFAULT 'piti' CHECK (escrow_structure IN ('pit','piti'))");
 // A DC 101 lives on the notices table like every other notice, but it has a life
 // cycle the others don't: prepared (drafted by the sweep, waiting for a human),
 // served (mailed certified; the statutory clock starts), and a cure deadline the

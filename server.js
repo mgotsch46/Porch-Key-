@@ -29,6 +29,7 @@ backfill.maybeRunOnBoot();
 const pdfDoc = require('./pdf');
 const lob = require('./lob');
 const dc101 = require('./dc101');
+const guide = require('./guide');
 const escrow = require('./escrow');
 escrow.initSchema();
 
@@ -3176,6 +3177,28 @@ app.post('/api/tenant/payoff/request', tenantReady, (req, res, next) => {
       notify.notify(a.id, { kind: 'general', title: 'A buyer requested a payoff statement',
         body: `${q.quote_number} — good through ${q.good_through_date}`, url: '/admin' }).catch(() => {});
     }
+    // The formal statement is delivered, not merely downloadable: the PDF lands in
+    // the buyer's documents and the thread says so. A payoff quote is the kind of
+    // paper a title company asks the buyer to produce — it should already be filed.
+    try {
+      const co = get('SELECT * FROM companies WHERE id=?', loan.company_id);
+      const buf = payoffPdf(q, loan);
+      const stored = crypto.randomUUID() + '.pdf';
+      fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf);
+      run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+           VALUES (?,?,?,?,?,?,?,?,?,1)`,
+        loan.company_id, loan.id, loan.property_id, 'other', 'misc_shared',
+        `Payoff statement ${q.quote_number} — good through ${q.good_through_date}`,
+        `payoff-${q.quote_number}.pdf`, stored, 'application/pdf');
+      const adminId = get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL ORDER BY id LIMIT 1", loan.company_id);
+      if (adminId) {
+        run(`INSERT INTO messages (loan_id, sender_user_id, body, subject, read_by_admin, channels)
+             VALUES (?,?,?,?,1,'app')`, loan.id, adminId.id,
+          `Your payoff statement ${q.quote_number} is ready and filed in your Documents. ` +
+          `The amount is good through ${q.good_through_date}; after that date a new statement is needed.`,
+          `Payoff statement ${q.quote_number}`);
+      }
+    } catch (e) { console.error('Payoff statement not filed:', e.message); }
     res.json({ ok: true, quote: q, reused: false });
   } catch (e) { next(e); }
 });
@@ -3941,13 +3964,28 @@ app.post('/api/admin/loans', adminOnly, (req, res) => {
   const payment = b.payment_cents || loanEngine.calcPayment(b.principal_cents, b.interest_rate_bps, b.term_months);
   const r = run(`INSERT INTO loans (company_id, property_id, tenant_user_id, loan_type, sale_price_cents, down_payment_cents,
       principal_cents, interest_rate_bps, term_months, payment_cents, escrow_cents, late_fee_cents, grace_days,
-      first_payment_date, due_day, principal_balance_cents, beneficial_interest_pct)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      first_payment_date, due_day, principal_balance_cents, beneficial_interest_pct, escrow_structure)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     req.companyId, b.property_id, b.tenant_user_id || null, b.loan_type || 'land_contract', b.sale_price_cents,
     b.down_payment_cents || 0, b.principal_cents, b.interest_rate_bps, b.term_months, payment,
     b.escrow_cents || 0, b.late_fee_cents || 0, b.grace_days ?? 5, b.first_payment_date,
-    b.due_day || Number(b.first_payment_date.slice(8, 10)), b.principal_cents, b.beneficial_interest_pct || null);
+    b.due_day || Number(b.first_payment_date.slice(8, 10)), b.principal_cents, b.beneficial_interest_pct || null,
+    b.escrow_structure === 'pit' ? 'pit' : 'piti');
   res.json(loanFull(get('SELECT * FROM loans WHERE id=?', r.lastInsertRowid)));
+});
+
+// Send (or re-send) the welcome guide by hand — for buyers who joined before the
+// guide existed, or after the loan's PIT/PITI designation changes.
+app.post('/api/admin/loans/:id/homebuyer-guide', adminOnly, (req, res, next) => {
+  try {
+    const loan = get('SELECT * FROM loans WHERE id=? AND company_id=?', req.params.id, req.companyId);
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    if (!loan.tenant_user_id) return res.status(400).json({ error: 'No buyer is linked to this loan yet' });
+    const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+    if (!noticeRules.isMichigan(property)) return res.status(400).json({ error: 'The welcome guide covers Michigan properties' });
+    const r = sendHomebuyerGuide(loan.tenant_user_id, { force: true });
+    res.json({ ok: true, ...r });
+  } catch (e) { next(e); }
 });
 app.get('/api/admin/loans/:id', adminOnly, (req, res) => {
   const loan = ownedLoan(req, req.params.id);
@@ -3964,13 +4002,14 @@ app.put('/api/admin/loans/:id', adminOnly, (req, res) => {
   if (!loan) return res.status(404).json({ error: 'Not found' });
   // Everything on the note can be corrected. Posted ledger entries are never rewritten —
   // changing terms affects how future payments are applied, not history.
-  const allowed = ['tenant_user_id', 'status', 'escrow_cents', 'late_fee_cents', 'grace_days',
+  const allowed = ['tenant_user_id', 'status', 'escrow_cents', 'late_fee_cents', 'grace_days', 'escrow_structure',
     'loan_type', 'beneficial_interest_pct', 'payment_cents', 'sale_price_cents', 'down_payment_cents',
     'principal_cents', 'interest_rate_bps', 'term_months', 'first_payment_date', 'due_day',
     'principal_balance_cents', 'escrow_balance_cents', 'fees_due_cents',
     'monthly_taxes_cents', 'monthly_insurance_cents', 'monthly_utilities_cents',
     'monthly_servicing_cents', 'monthly_misc_cents', 'misc_label'];
   const b = req.body || {};
+  if (b.escrow_structure !== undefined) b.escrow_structure = b.escrow_structure === 'pit' ? 'pit' : 'piti';
   const sets = [], vals = [];
   for (const k of allowed) if (b[k] !== undefined) { sets.push(`${k}=?`); vals.push(b[k]); }
 
@@ -3993,8 +4032,83 @@ app.put('/api/admin/loans/:id', adminOnly, (req, res) => {
 
   if (sets.length) run(`UPDATE loans SET ${sets.join(',')} WHERE id=?`, ...vals, loan.id);
   if (b.status === 'cancelled') unstampSoldIfNoLoans(loan.property_id);
+  // A change to the tax or insurance figures changes the buyer's monthly payment —
+  // that news arrives as a formal escrow update statement, not as a surprise on the
+  // first of the month.
+  try {
+    const after = get('SELECT * FROM loans WHERE id=?', loan.id);
+    const taxChanged = (after.monthly_taxes_cents || 0) !== (loan.monthly_taxes_cents || 0);
+    const insChanged = (after.monthly_insurance_cents || 0) !== (loan.monthly_insurance_cents || 0);
+    if ((taxChanged || insChanged) && after.tenant_user_id) escrowUpdateStatement(loan, after);
+  } catch (e) { console.error('Escrow update statement:', e.message); }
   res.json(loanFull(get('SELECT * FROM loans WHERE id=?', loan.id)));
 });
+
+// The escrow update: old and new tax and insurance figures side by side, the new
+// monthly total, and when it takes effect — filed into the buyer's documents and
+// announced in the thread the moment the numbers change.
+function escrowUpdateStatement(before, after) {
+  const property = get('SELECT * FROM properties WHERE id=?', after.property_id);
+  const co = get('SELECT * FROM companies WHERE id=?', after.company_id);
+  const tenant = get('SELECT * FROM users WHERE id=?', after.tenant_user_id);
+  if (!tenant) return;
+  const money = (c) => '$' + ((c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const ledger = all('SELECT * FROM ledger WHERE loan_id=?', after.id);
+  const status = loanEngine.loanStatus(after, ledger, today());
+  const effective = status.next_due_date || 'your next payment';
+  const oldTotal = (before.payment_cents || 0) + (before.escrow_cents || 0);
+  const newTotal = (after.payment_cents || 0) + (after.escrow_cents || 0);
+  const piti = (after.escrow_structure || 'piti') !== 'pit';
+
+  const body =
+`ESCROW UPDATE — TAXES AND INSURANCE
+${property ? `${property.address}, ${property.city}, ${property.state} ${property.zip}` : ''}
+
+Your escrow figures have been updated. Here is exactly what changed and what your payment is now.
+
+WHAT CHANGED
+Monthly taxes: ${money(before.monthly_taxes_cents)}  →  ${money(after.monthly_taxes_cents)}
+Monthly insurance: ${money(before.monthly_insurance_cents)}  →  ${money(after.monthly_insurance_cents)}
+Monthly escrow total: ${money(before.escrow_cents)}  →  ${money(after.escrow_cents)}
+
+YOUR MONTHLY PAYMENT
+Principal & interest (unchanged): ${money(after.payment_cents)}
+Escrow (taxes${piti ? ' and insurance' : ''}): ${money(after.escrow_cents)}
+NEW TOTAL MONTHLY PAYMENT: ${money(newTotal)}
+Previous total: ${money(oldTotal)}
+
+EFFECTIVE
+The new amount applies beginning with the payment due ${effective}. If you are enrolled in autopay, the drafted amount updates automatically — nothing to do on your end.
+
+Questions about how these figures were calculated? Message us in the app and we will walk you through the tax bill or insurance premium behind them.`;
+
+  const buf = pdfDoc.letter({
+    company: co, subject: 'Escrow Update — Taxes and Insurance', sentAt: today(),
+    logo: companyLogo(co), bodyText: body,
+  });
+  const stored = crypto.randomUUID() + '.pdf';
+  fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf);
+  run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+       VALUES (?,?,?,?,?,?,?,?,?,1)`,
+    after.company_id, after.id, after.property_id, 'other', 'misc_shared',
+    `Escrow update — new payment ${money(newTotal)} (${today()})`,
+    `escrow-update-${after.id}-${today()}.pdf`, stored, 'application/pdf');
+
+  const adminId = get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL ORDER BY id LIMIT 1", after.company_id);
+  if (adminId) {
+    run(`INSERT INTO messages (loan_id, sender_user_id, body, subject, read_by_admin, channels)
+         VALUES (?,?,?,?,1,'app')`, after.id, adminId.id,
+      `Your escrow has been updated. Your new total monthly payment is ${money(newTotal)} ` +
+      `(was ${money(oldTotal)}), effective with the payment due ${effective}. The full breakdown is in ` +
+      `your Documents — Escrow update.`, 'Escrow update — your new payment amount');
+  }
+  notify.notify(tenant.id, {
+    kind: 'notice', title: 'Your escrow was updated',
+    body: `New total monthly payment: ${money(newTotal)}. The statement is in your documents.`,
+    url: '/?tab=docs', dedupeKey: `escrow-update-${after.id}-${today()}`,
+  }).catch(() => {});
+  console.log(`Escrow update statement filed for loan ${after.id}: ${money(oldTotal)} -> ${money(newTotal)}`);
+}
 // Selling stamps the property 'sold'. When the loan that made it sold goes away —
 // deleted, purged, cancelled — and no live loan remains, the stamp has to come off,
 // or the dashboard keeps counting a sale that no longer exists.
@@ -5248,8 +5362,53 @@ app.post('/api/tenant/accept-terms', tenantOnly, (req, res) => {
   logConsent(req, 'terms', TERMS_VERSION);
   logConsent(req, 'privacy', TERMS_VERSION);
   logConsent(req, 'messaging', TERMS_VERSION);   // in-app messaging + electronic notices
+  // First moment the buyer is really "in" the app — the welcome guide goes out now.
+  try { sendHomebuyerGuide(req.user.id); } catch (e) { console.error('Welcome guide:', e.message); }
   res.json({ ok: true, terms_version: TERMS_VERSION });
 });
+
+// The welcome guide, generated for this buyer's city and this loan's structure,
+// filed in their shared documents and announced in the thread. Once per loan —
+// re-accepting terms after an update must not send a second copy (the admin
+// button can, deliberately).
+function sendHomebuyerGuide(tenantUserId, { force } = {}) {
+  const loan = get("SELECT * FROM loans WHERE tenant_user_id=? AND status='active' ORDER BY id DESC LIMIT 1", tenantUserId);
+  if (!loan) return null;
+  const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+  if (!noticeRules.isMichigan(property)) return null;
+  if (!force && get(`SELECT id FROM documents WHERE loan_id=? AND title LIKE 'Welcome guide%'`, loan.id)) return null;
+  const co = get('SELECT * FROM companies WHERE id=?', loan.company_id);
+  const tenant = get('SELECT * FROM users WHERE id=?', tenantUserId);
+
+  const buf = guide.render({ company: co, loan, property, tenant, logo: companyLogo(co) });
+  const stored = crypto.randomUUID() + '.pdf';
+  fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf);
+  const cityLabel = (guide.cityFor(property) || { label: 'Michigan' }).label;
+  const structure = (loan.escrow_structure || 'piti').toUpperCase();
+  run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+       VALUES (?,?,?,?,?,?,?,?,?,1)`,
+    loan.company_id, loan.id, loan.property_id, 'other', 'misc_shared',
+    `Welcome guide — your new home (${cityLabel}, ${structure})`,
+    `welcome-guide-${loan.id}.pdf`, stored, 'application/pdf');
+
+  const adminId = get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL ORDER BY id LIMIT 1", loan.company_id);
+  if (adminId && tenant) {
+    run(`INSERT INTO messages (loan_id, sender_user_id, body, subject, read_by_admin, channels)
+         VALUES (?,?,?,?,1,'app')`, loan.id, adminId.id,
+      `Welcome to your new home! 🏡\n\nYour homeowner's guide is in your Documents — everything you need for ` +
+      `your first weeks: utilities to switch over, your city's property rules, how your payment works, and your ` +
+      `insurance requirements.\n\nRemember: all payments are made right here in the app, and if you enroll in ` +
+      `autopay your $50.00 servicing fee is removed.`,
+      'Your homeowner welcome guide');
+    notify.notify(tenant.id, {
+      kind: 'notice', title: 'Your homeowner welcome guide is here',
+      body: 'Everything for your first weeks in the home — open Documents to read it.',
+      url: '/?tab=docs', dedupeKey: `welcome-guide-${loan.id}`,
+    }).catch(() => {});
+  }
+  console.log(`Welcome guide (${cityLabel}, ${structure}) filed for loan ${loan.id}`);
+  return { loan_id: loan.id, city: cityLabel, structure };
+}
 app.get('/api/tenant/consents', tenantOnly, (req, res) => {
   res.json({
     terms_accepted_at: req.user.terms_accepted_at,
