@@ -554,7 +554,7 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
     <button id="nb-pay" onclick="go('pay')"><span class="ico">💵</span>Pay<span id="cnt-pay" class="cnt hidden"></span></button>
     <button id="nb-loan" onclick="go('loan')"><span class="ico">📊</span>Loan</button>
     <button id="nb-docs" onclick="go('docs')"><span class="ico">📁</span>Docs<span id="cnt-docs" class="cnt hidden"></span></button>
-    <button id="nb-msgs" onclick="go('msgs')"><span class="ico">💬</span>Messages<span id="cnt-msgs" class="cnt hidden"></span></button>
+    <button id="nb-msgs" onclick="go('msgs')"><span class="ico">💬</span>Messages<span id="cnt-msgs" class="cnt hidden"></span><span id="nav-dot" class="dot hidden"></span></button>
     <button id="nb-out" onclick="logout()"><span class="ico">🚪</span>Sign out</button>
   </nav>
 </div>
@@ -1026,8 +1026,11 @@ async function pollMsgs(){
   try{
     const msgs=await api('/api/tenant/messages');
     const unread=msgs.some(m=>m.sender_role!=='tenant'&&!m.read_by_tenant);
-    $('nav-dot').classList.toggle('hidden',!unread||tab==='msgs');
-    $('m-list').innerHTML=msgs.length?msgs.map(m=>{
+    // The unread dot is optional decoration; the thread must render with or without it.
+    // (A missing element here once threw and silently blanked the whole thread.)
+    const dot=$('nav-dot'); if(dot) dot.classList.toggle('hidden',!unread||tab==='msgs');
+    const list=$('m-list'); if(!list) return;
+    list.innerHTML=msgs.length?msgs.map(m=>{
       const when=new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
       if(m.body_html) return `${m.body_html}<div class="note" style="margin:-6px 0 14px 4px">${when}
         · <a href="/api/tenant/messages/${m.id}/pdf" style="color:var(--brand);font-weight:600">⬇️ PDF</a></div>`;

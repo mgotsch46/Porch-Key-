@@ -2061,6 +2061,22 @@ async function main() {
     .split('Partial payment non-waiver receipt').length;
   ok(docsAfter === docsBefore, 'MI: a payment in full generates no non-waiver receipt');
 
+  console.log('— no page references an element that does not exist');
+  {
+    // A $('id') pointing at nothing throws at runtime, and inside a silent catch it
+    // blanks whole features — the buyer's message thread went dark exactly this way.
+    const fs2 = require('fs');
+    const dynamic = new Set(['pp-toast']);   // created by JS at runtime, not in markup
+    for (const page of ['public/tenant.html', 'public/admin.html']) {
+      const html = fs2.readFileSync(page, 'utf8');
+      const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map(m => m[1]));
+      const used = [...new Set([...html.matchAll(/\$\('([^']+)'\)/g)].map(m => m[1]))];
+      const missing = used.filter(u => !ids.has(u) && !dynamic.has(u));
+      ok(missing.length === 0, `${page}: every referenced element exists` +
+        (missing.length ? ` — MISSING: ${missing.join(', ')}` : ''));
+    }
+  }
+
   console.log('— the workflow timeline knows each state\'s track');
   {
     // Ohio: the generic ladder, every rung visible, fired ones marked with channels.
