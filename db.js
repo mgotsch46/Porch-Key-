@@ -913,6 +913,13 @@ addColumnIfMissing('loans', 'contract_date', 'TEXT');
 // only and the buyer pays insurance directly. The welcome guide, and eventually every
 // buyer-facing explanation of the payment, reads this rather than guessing.
 addColumnIfMissing('loans', 'escrow_structure', "TEXT NOT NULL DEFAULT 'piti' CHECK (escrow_structure IN ('pit','piti'))");
+// A template row can claim one of the system emails — welcome guide, escrow update,
+// payoff ready, partial-payment receipt. When a company customizes one, its wording
+// replaces the built-in intro; the computed numbers block is always appended so a
+// wording change can never garble an amount.
+addColumnIfMissing('message_templates', 'system_key', 'TEXT');
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_system
+  ON message_templates(company_id, system_key) WHERE system_key IS NOT NULL AND archived=0;`);
 // A DC 101 lives on the notices table like every other notice, but it has a life
 // cycle the others don't: prepared (drafted by the sweep, waiting for a human),
 // served (mailed certified; the statutory clock starts), and a cure deadline the

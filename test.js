@@ -1858,6 +1858,48 @@ async function main() {
   r = await req(`/api/admin/loans/${miLoanId}/messages`);
   ok(r.json.some(m => /Payoff statement/.test(m.subject || '')), 'buyer messaged that the payoff is filed');
 
+  console.log('— system email templates & document gallery');
+  r = await req('/api/admin/system-templates');
+  ok(r.json.length === 4 && r.json.every(s => !s.customized), 'four system emails, all default');
+  // Customize the welcome guide wording, resend, and check the custom intro leads
+  // while the always-appended details survive.
+  r = await req('/api/admin/templates', { method: 'POST', body: JSON.stringify({
+    name: 'Welcome guide delivered', system_key: 'welcome_guide',
+    subject: 'Welcome home, {{first_name}}!',
+    body_html: '<p>Howdy {{first_name}} — your guide from {{company_name}} is filed in Documents.</p>' }) });
+  ok(r.status === 200 && r.json.system_key === 'welcome_guide', 'system email customized');
+  r = await req('/api/admin/system-templates');
+  ok(r.json.find(s => s.key === 'welcome_guide').customized, 'customization shows in the list');
+  await req(`/api/admin/loans/${miLoanId}/homebuyer-guide`, { method: 'POST', body: '{}' });
+  r = await req(`/api/admin/loans/${miLoanId}/messages`);
+  const wm = r.json.filter(m => /Welcome home, Mia/.test(m.subject || '')).pop();
+  ok(!!wm, 'custom subject with merge field used on resend');
+  ok(wm && /Howdy Mia/.test(wm.body), 'custom intro leads the message');
+  ok(wm && /\$50\.00 servicing/.test(wm.body), 'appended details survive customization');
+  // Unknown system keys are refused; the general list hides system rows.
+  r = await req('/api/admin/templates', { method: 'POST', body: JSON.stringify({
+    name: 'x', system_key: 'nope', body_html: '<p>x</p>' }) });
+  ok(r.status === 400, 'unknown system email key rejected');
+  r = await req('/api/admin/templates');
+  ok(!r.json.templates.some(t => t.system_key), 'system customizations stay out of the general list');
+  ok(r.json.system.length === 1, 'and appear in their own list');
+
+  r = await req('/api/admin/doc-templates');
+  ok(r.json.length === 7, 'seven buyer document templates listed');
+  for (const key of ['welcome_guide', 'late5_notice', 'delivery_certificate', 'partial_receipt',
+                     'escrow_update', 'payoff_statement', 'dc101']) {
+    const pr = await fetch(`${BASE}/api/admin/doc-templates/${key}.pdf${key === 'welcome_guide' ? '?city=Detroit&structure=pit' : ''}`,
+      { headers: { Cookie: adminCookie } });
+    const pb = Buffer.from(await pr.arrayBuffer());
+    ok(pr.status === 200 && pb.slice(0, 5).toString() === '%PDF-', `doc template preview renders: ${key}`);
+  }
+
+  console.log('— dashboard property counts');
+  r = await req('/api/admin/summary');
+  const pcBefore = r.json.property_counts;
+  ok(typeof pcBefore.archived === 'number', 'summary reports archived count separately');
+  ok(pcBefore.total >= 2, 'live properties counted');
+
   console.log('— login throttling');
   let throttled = false;
   for (let i = 0; i < 8; i++) {

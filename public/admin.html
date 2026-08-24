@@ -858,6 +858,20 @@ a{color:var(--brand);font-weight:600}
     <section id="pg-templates" class="hidden">
       <h1>Message Templates</h1>
       <p class="note" style="margin-bottom:14px">Write once, send often. Every message goes out on your company letterhead with your logo. Merge fields fill in that buyer's real numbers.</p>
+      <div class="card">
+        <h2>&#128231; System emails</h2>
+        <p class="note" style="margin-bottom:10px">The automated messages buyers get in-app <b>and by email at the same moment</b> —
+          welcome guide, escrow updates, payoffs, payment receipts. Re-word any of them in your own voice; the computed
+          amounts, deadlines and legal language are always appended and cannot be edited away.</p>
+        <div id="sys-tpl"><p class="note">Loading…</p></div>
+      </div>
+      <div class="card">
+        <h2>&#128196; Buyer document templates (PDF)</h2>
+        <p class="note" style="margin-bottom:10px">Every PDF the app generates for a buyer, previewable with sample data —
+          so nothing that goes out is ever a surprise.</p>
+        <div id="doc-tpl"><p class="note">Loading…</p></div>
+      </div>
+      <h2 style="margin:18px 0 8px">Your templates</h2>
       <button class="primary" style="margin-bottom:14px" onclick="templateModal()">+ New template</button>
       <div id="tpl-list"></div>
       <div class="card">
@@ -3872,7 +3886,7 @@ async function loadInvites(){
 let TEMPLATES=[], MERGE_FIELDS=[];
 async function loadTemplates(){
   const d=await api('/api/admin/templates');
-  TEMPLATES=d.templates; MERGE_FIELDS=d.merge_fields;
+  TEMPLATES=d.templates; MERGE_FIELDS=d.merge_fields; window.SYSTEM_TPLS=d.system||[];
   $('tpl-list').innerHTML=TEMPLATES.map(t=>`
     <div class="tplcard"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
       <div><b style="font-size:15px">${esc(t.name)}</b>
@@ -3885,13 +3899,68 @@ async function loadTemplates(){
     </div></div>`).join('')||'<p class="note">No templates yet.</p>';
   $('tpl-fields').innerHTML=MERGE_FIELDS.map(f=>
     `<button class="mergechip" title="${esc(f.label)} - e.g. ${esc(f.example)}" onclick="copyMerge('${f.key}')">{{${f.key}}}</button>`).join('');
+  loadSystemTemplates(); loadDocTemplates();
+}
+// The automated buyer emails, each claimable for a re-word.
+async function loadSystemTemplates(){
+  const el=$('sys-tpl'); if(!el) return;
+  let rows=[]; try{ rows=await api('/api/admin/system-templates'); }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  el.innerHTML=rows.map(s=>`
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:9px 0;border-bottom:1px solid #eef0f4">
+      <div><b style="font-size:14px">${esc(s.label)}</b>
+        ${s.customized?'<span class="pill ok">customized</span>':'<span class="pill gray">default wording</span>'}
+        <div class="note" style="margin-top:3px">${esc(s.hint)}</div></div>
+      <div style="white-space:nowrap">
+        ${s.customized
+          ? `<button class="small" onclick="templateModal(${s.template_id})">Edit wording</button>
+             <button class="small warn" onclick="resetSystemTemplate(${s.template_id})">Use default</button>`
+          : `<button class="small" onclick="customizeSystem('${esc(s.key)}','${esc(s.label)}')">Customize</button>`}
+      </div>
+    </div>`).join('');
+}
+function customizeSystem(key,label){
+  templateModal();
+  setTimeout(()=>{
+    $('tm-name').value=label;
+    $('tm-subject').value='';
+    $('tm-body').value='<p>Hi {{first_name}},</p>\n<p>Write your own opening here — the amounts, deadlines and required language are appended automatically after it.</p>\n<p>&mdash; {{company_name}}</p>';
+    window.TM_SYSTEM_KEY=key;
+  },50);
+}
+async function resetSystemTemplate(id){
+  if(!confirm('Go back to the built-in wording for this email?'))return;
+  await api('/api/admin/templates/'+id,{method:'DELETE'}); loadTemplates();
+}
+// The PDF gallery: one row per document, preview opens with sample data.
+async function loadDocTemplates(){
+  const el=$('doc-tpl'); if(!el) return;
+  let rows=[]; try{ rows=await api('/api/admin/doc-templates'); }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  el.innerHTML=rows.map(d=>`
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:9px 0;border-bottom:1px solid #eef0f4">
+      <div><b style="font-size:14px">${esc(d.label)}</b>
+        <div class="note" style="margin-top:3px">${esc(d.hint)}</div></div>
+      <div style="white-space:nowrap;display:flex;gap:6px;align-items:center">
+        ${d.hasCity?`<select id="dt-city-${d.key}" class="small" style="padding:4px 6px">
+          <option>Flint</option><option>Detroit</option><option>Saginaw</option></select>`:''}
+        ${d.hasStructure?`<select id="dt-str-${d.key}" class="small" style="padding:4px 6px">
+          <option value="piti">PITI</option><option value="pit">PIT</option></select>`:''}
+        <button class="small" onclick="previewDocTemplate('${d.key}',${!!d.hasCity},${!!d.hasStructure})">👁 Preview PDF</button>
+      </div>
+    </div>`).join('');
+}
+function previewDocTemplate(key,hasCity,hasStructure){
+  const qs=[];
+  if(hasCity) qs.push('city='+encodeURIComponent($(`dt-city-${key}`).value));
+  if(hasStructure) qs.push('structure='+encodeURIComponent($(`dt-str-${key}`).value));
+  window.open(`/api/admin/doc-templates/${key}.pdf${qs.length?'?'+qs.join('&'):''}`,'_blank');
 }
 function copyMerge(key){
   const t=document.createElement('textarea'); t.value='{{'+key+'}}';
   document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove();
 }
 function templateModal(id){
-  const t=TEMPLATES.find(x=>x.id===id)||{};
+  window.TM_SYSTEM_KEY=null;                       // set only by customizeSystem()
+  const t=TEMPLATES.find(x=>x.id===id)||(window.SYSTEM_TPLS||[]).find(x=>x.id===id)||{};
   const starter='<p>Hi {{first_name}},</p>\n<p></p>\n<p>&mdash; {{company_name}}</p>';
   modal(`<h2>${id?'Edit':'New'} template</h2>
     <div class="grid2">
@@ -3914,6 +3983,7 @@ async function saveTemplate(id){
   try{
     const body={ name:$('tm-name').value, category:$('tm-cat').value,
       subject:$('tm-subject').value, body_html:$('tm-body').value };
+    if(window.TM_SYSTEM_KEY) body.system_key=window.TM_SYSTEM_KEY;
     if(!body.name) throw new Error('Give the template a name');
     if(id) await api('/api/admin/templates/'+id,{method:'PUT',body:JSON.stringify(body)});
     else await api('/api/admin/templates',{method:'POST',body:JSON.stringify(body)});
@@ -4797,7 +4867,7 @@ async function loadDash(){
     : '';
 
   $('d-stats').innerHTML = [
-    ['Properties', pc.total, `${pc.owned} held · ${pc.sold} sold`],
+    ['Properties', pc.total, `${pc.owned} held · ${pc.sold} sold${pc.archived?` · ${pc.archived} archived`:''}`],
     ['Active buyer loans', d.active_loans, fmt(d.total_balance_cents)+' owed to you'],
     ['Past due', d.past_due_count, d.owed_now_cents?fmt(d.owed_now_cents)+' outstanding':'all current'],
     ['Owed to lenders', fmt(d.pml_total_balance_cents||0), (d.pml_loans||[]).length+' active'],
