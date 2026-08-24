@@ -1624,10 +1624,6 @@ async function openProp(id){
       <td class="right" style="white-space:nowrap">${c.document_id?`<a href="#" title="View receipt" onclick="viewDoc(${c.document_id},'application/pdf');return false">🧾</a> `:''}<button class="small" onclick='editCostModal(${JSON.stringify(c).replace(/'/g,"&#39;")})'>✏️</button>
         <button class="small warn" onclick="delCost(${c.id})">✕</button></td></tr>`).join('')
       ||'<tr><td colspan="6" class="note">No costs logged yet.</td></tr>'}</tbody></table></div></div>
-  <div class="card"><h2>📁 Documents</h2>
-    <p class="note" style="margin-bottom:12px">Everything filed on this house — acquisition, private money, trust and sale paperwork, plus the folders the buyer sees.</p>
-    <button class="primary" onclick="openDocsPage({property_id:${p.id}})">Open documents</button>
-  </div>
   <div class="grid2">
     <div class="card"><h2>📇 Who works on this house</h2>
       <div id="prop-contacts"><p class="note">Loading…</p></div>
