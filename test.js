@@ -2125,6 +2125,19 @@ async function main() {
     .split('Partial payment non-waiver receipt').length;
   ok(docsAfter === docsBefore, 'MI: a payment in full generates no non-waiver receipt');
 
+  console.log('— the softphone SDK ships with the app');
+  {
+    // Twilio's CDN silently 403'd the SDK and the softphone died. It is vendored now:
+    // served from our own origin, loaded from our own origin, no third party involved.
+    const sdk = await fetch(BASE + '/twilio-voice.min.js');
+    ok(sdk.status === 200, 'the vendored Voice SDK is served');
+    const body = await sdk.text();
+    ok(body.length > 100000 && /Twilio/.test(body), 'and it is the real SDK, not an error page');
+    const page = require('fs').readFileSync('public/admin.html', 'utf8');
+    ok(page.includes("s.src='/twilio-voice.min.js'"), 'the admin app loads it from our own domain');
+    ok(!page.includes('sdk.twilio.com'), 'and never from the CDN that broke');
+  }
+
   console.log('— no page references an element that does not exist');
   {
     // A $('id') pointing at nothing throws at runtime, and inside a silent catch it

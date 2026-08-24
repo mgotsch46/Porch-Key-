@@ -3260,11 +3260,14 @@ function defaultCallMode(){
   return matchMedia('(max-width: 700px)').matches ? 'cell' : 'softphone';
 }
 function loadTwilioSdk(){
+  // The SDK ships with the app (v2.18.3, vendored at public/twilio-voice.min.js).
+  // Twilio's CDN once served this file and then quietly stopped — the softphone died
+  // with it. Never again: our copy loads from our own domain, no third party involved.
   return new Promise((ok,err)=>{
     if(window.Twilio&&window.Twilio.Device) return ok();
     const s=document.createElement('script');
-    s.src='https://sdk.twilio.com/js/voice/releases/2.12.1/twilio.min.js';
-    s.onload=()=>ok(); s.onerror=()=>err(new Error('Could not load the calling software — check the connection.'));
+    s.src='/twilio-voice.min.js';
+    s.onload=()=>ok(); s.onerror=()=>err(new Error('Could not load the calling software — refresh and try again.'));
     document.head.appendChild(s);
   });
 }
