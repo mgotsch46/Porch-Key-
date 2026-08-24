@@ -2436,7 +2436,8 @@ app.get('/api/admin/calc-payment', adminOnly, (req, res) => {
 // ---------- property profile: costs, basis, and the sale ----------
 const COST_LABELS = {
   purchase: 'Purchase price', closing: 'Closing costs', filing: 'Filing & recording fees',
-  rehab: 'Rehab / repairs', bog: 'Boots on the ground', lawncare: 'Lawn care', insurance: 'Insurance',
+  rehab: 'Rehab / repairs', bog: 'Boots on the ground', lawncare: 'Lawn care',
+  birddog: 'Bird dog / wholesale fee', insurance: 'Insurance',
   taxes: 'Property taxes', utilities: 'Utilities', marketing: 'Marketing',
   legal: 'Legal / title', other: 'Other',
 };

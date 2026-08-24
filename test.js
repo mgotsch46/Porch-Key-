@@ -660,6 +660,20 @@ async function main() {
     db2.prepare('UPDATE companies SET twilio_from=NULL, forward_calls=0 WHERE id=?').run(co.id);
   }
 
+  console.log('— bird dog / wholesale fees are a cost of the deal');
+  {
+    r = await req(`/api/admin/properties/${propId}/costs`, { method: 'POST', body: JSON.stringify({
+      category: 'birddog', description: 'Wholesale assignment fee — J. Finder', amount_cents: 250000, cost_date: '2026-08-01' }) });
+    ok(r.status === 200 && r.json.category === 'birddog', 'a bird dog fee is accepted as its own category');
+    r = await req(`/api/admin/properties/${propId}`);
+    ok((r.json.basis.by_category.birddog || 0) === 250000, 'and it lands in the property basis under its own line');
+    ok(r.json.cost_labels && /Bird dog/i.test(r.json.cost_labels.birddog || ''), 'with a proper label for every report');
+    // Nonsense categories still bounce.
+    r = await req(`/api/admin/properties/${propId}/costs`, { method: 'POST', body: JSON.stringify({
+      category: 'bribes', description: 'no', amount_cents: 100 }) });
+    ok(r.status !== 200, 'an unknown category is still refused');
+  }
+
   console.log('— a payment can never vanish between Stripe and the ledger');
   {
     const payMod = require('./payments.js');

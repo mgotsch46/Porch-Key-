@@ -2326,10 +2326,11 @@ async function savePropTerms(pid){
 function costModal(pid){
   modal(`<h2>Add a cost</h2>
     <div class="grid2">
-      <div class="field"><label>Category</label><select id="ct-cat">
+      <div class="field"><label>Category</label><select id="ct-cat" onchange="otherServiceLine('ct')">
         <option value="purchase">🏷️ Purchase price</option><option value="closing">📑 Closing costs</option>
         <option value="filing">🗂️ Filing &amp; recording fees</option>
         <option value="rehab">🔨 Rehab / repairs</option><option value="bog">👷 Boots on the ground</option>
+        <option value="birddog">🐕 Bird dog / wholesale fee</option>
         <option value="lawncare">🌿 Lawn care</option>
         <option value="insurance">🛡️ Insurance</option><option value="taxes">🏛️ Property taxes</option>
         <option value="utilities">💡 Utilities</option><option value="marketing">📣 Marketing</option>
@@ -2346,19 +2347,40 @@ function costModal(pid){
         <input id="ct-end" type="date">
         <span class="note">Leave blank to run until you stop it. The date above is the first occurrence.</span></div>
     </div>
+    <div class="field hidden" id="ct-service-wrap"><label>What service was this? <span class="note">— required for Other</span></label>
+      <input id="ct-service" placeholder="e.g. Septic inspection, snow plowing, referral fee"></div>
     <div class="field"><label>Description</label><input id="ct-desc" placeholder="e.g. Roof repair, weekly check-in, title fee"></div>
     <div class="field"><label>Receipt <span class="note">— optional, photo or PDF</span></label>
       <input id="ct-receipt" type="file" accept=".pdf,image/*"></div>
     <div id="ct-err" class="err hidden"></div>
     <button class="primary" onclick="addCost(${pid})">Add cost</button>`);
 }
+// "Other" is a shrug of a category — the line that appears under it asks what the
+// service actually was, and that answer leads the description so reports read plainly.
+function otherServiceLine(prefix){
+  const sel=$(prefix+'-cat'), wrap=$(prefix+'-service-wrap');
+  if(!sel||!wrap) return;
+  wrap.classList.toggle('hidden', sel.value!=='other');
+  if(sel.value==='other'){ const f=$(prefix+'-service'); if(f) setTimeout(()=>f.focus(),0); }
+}
+function withServiceLine(prefix){
+  const cat=$(prefix+'-cat').value;
+  let desc=$(prefix+'-desc')?$(prefix+'-desc').value.trim():'';
+  if(cat!=='other') return { cat, desc, err:null };
+  const svc=($(prefix+'-service')&&$(prefix+'-service').value.trim())||'';
+  if(!svc) return { cat, desc, err:'Describe the service — that is what "Other" will show as everywhere.' };
+  // The service is the headline; any extra description rides behind it.
+  return { cat, desc: desc && desc!==svc ? `${svc} — ${desc}` : svc, err:null };
+}
 async function addCost(pid){
   try{
-    const docId=await uploadReceipt(pid, $('ct-receipt').files[0], $('ct-desc').value);
+    const sv=withServiceLine('ct');
+    if(sv.err) throw new Error(sv.err);
+    const docId=await uploadReceipt(pid, $('ct-receipt').files[0], sv.desc||$('ct-desc').value);
     await api(`/api/admin/properties/${pid}/costs`,{method:'POST',body:JSON.stringify({
       document_id:docId||undefined,
       cadence:$('ct-cadence').value||undefined, end_date:$('ct-end').value||undefined,
-      category:$('ct-cat').value, description:$('ct-desc').value, vendor:$('ct-vendor').value,
+      category:sv.cat, description:sv.desc, vendor:$('ct-vendor').value,
       amount_cents:Math.round(parseFloat($('ct-amt').value)*100), cost_date:$('ct-date').value })});
     closeModal(); openProp(pid);
   }catch(e){ $('ct-err').textContent=e.message; $('ct-err').classList.remove('hidden'); }
@@ -2381,10 +2403,11 @@ async function delCost(id){
 function editCostModal(c){
   modal(`<h2>Edit cost</h2>
     <div class="grid2">
-      <div class="field"><label>Category</label><select id="ec-cat">
+      <div class="field"><label>Category</label><select id="ec-cat" onchange="otherServiceLine('ec')">
         <option value="purchase">🏷️ Purchase price</option><option value="closing">📑 Closing costs</option>
         <option value="filing">🗂️ Filing &amp; recording fees</option>
         <option value="rehab">🔨 Rehab / repairs</option><option value="bog">👷 Boots on the ground</option>
+        <option value="birddog">🐕 Bird dog / wholesale fee</option>
         <option value="lawncare">🌿 Lawn care</option>
         <option value="insurance">🛡️ Insurance</option><option value="taxes">🏛️ Property taxes</option>
         <option value="utilities">💡 Utilities</option><option value="marketing">📣 Marketing</option>
@@ -2392,6 +2415,8 @@ function editCostModal(c){
       <div class="field"><label>Amount ($)</label><input id="ec-amt" type="number" step="0.01" value="${(c.amount_cents/100).toFixed(2)}"></div>
       <div class="field"><label>Date</label><input id="ec-date" type="date" value="${esc(c.cost_date||'')}"></div>
       <div class="field"><label>Vendor / paid to</label><input id="ec-vendor" value="${esc(c.vendor||'')}"></div>
+      <div class="field ${c.category==='other'?'':'hidden'}" id="ec-service-wrap"><label>What service was this? <span class="note">— required for Other</span></label>
+        <input id="ec-service" value="${c.category==='other'?esc(c.description||''):''}" placeholder="e.g. Septic inspection, snow plowing, referral fee"></div>
     </div>
     <div class="field"><label>Description</label><input id="ec-desc" value="${esc(c.description||'')}"></div>
     <div class="field"><label>Receipt <span class="note">— optional</span></label>
@@ -2400,15 +2425,20 @@ function editCostModal(c){
     <div id="ec-err" class="err hidden"></div>
     <button class="primary" onclick="saveCost(${c.id})">Save</button>`);
   $('ec-cat').value=c.category||'other';
+  // For an Other cost, the service line carries the words; keep Description for the
+  // optional extra so saving does not double the text.
+  if((c.category||'other')==='other' && $('ec-desc')) $('ec-desc').value='';
 }
 async function saveCost(id){
   try{
-    const docId=await uploadReceipt(currentPropId, $('ec-receipt').files[0], $('ec-desc').value);
+    const sv=withServiceLine('ec');
+    if(sv.err) throw new Error(sv.err);
+    const docId=await uploadReceipt(currentPropId, $('ec-receipt').files[0], sv.desc||$('ec-desc').value);
     await api('/api/admin/costs/'+id,{method:'PUT',body:JSON.stringify({
       document_id:docId!==null?docId:undefined,
-      category:$('ec-cat').value, amount_cents:Math.round(parseFloat($('ec-amt').value)*100),
+      category:sv.cat, amount_cents:Math.round(parseFloat($('ec-amt').value)*100),
       cost_date:$('ec-date').value||undefined, vendor:$('ec-vendor').value,
-      description:$('ec-desc').value })});
+      description:sv.desc })});
     closeModal(); openProp(currentPropId);
   }catch(e){ $('ec-err').textContent=e.message; $('ec-err').classList.remove('hidden'); }
 }
@@ -4714,7 +4744,7 @@ async function renderReturns(){
 async function renderPL(){
   const q=[]; if($('rp-from').value) q.push('from='+$('rp-from').value); if($('rp-to').value) q.push('to='+$('rp-to').value);
   const d=await api('/api/admin/reports/pl'+(q.length?'?'+q.join('&'):''));
-  const L={rehab:'Rehab &amp; repairs',bog:'Boots on the ground',filing:'Filing &amp; recording',
+  const L={rehab:'Rehab &amp; repairs',bog:'Boots on the ground',birddog:'Bird dog / wholesale',filing:'Filing &amp; recording',
     insurance:'Insurance',taxes:'Property taxes',utilities:'Utilities',marketing:'Marketing',
     legal:'Legal &amp; title',closing:'Closing costs',other:'Other',imported:'Imported from statements'};
   const e=d.expenses;
