@@ -56,9 +56,24 @@ async function createCheckoutSession({ loan, amountCents, baseUrl, tenantEmail, 
     'metadata[loan_id]': loan.id,
     'metadata[amount_cents]': amountCents,
     'metadata[fee_cents]': feeCents || 0,
-    success_url: `${baseUrl}/?paid=1&session_id={CHECKOUT_SESSION_ID}`,
+    // The success URL is a server route on purpose. A buyer paying from the installed
+    // app gets bounced through their external browser, where no session cookie exists —
+    // so the landing must not need one. The server verifies the session with Stripe
+    // directly and posts the payment before the buyer even sees the confirmation.
+    success_url: `${baseUrl}/api/pay/landing?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${baseUrl}/?paid=0`,
   });
+}
+
+// Recent checkout sessions, straight from Stripe — the reconciliation sweep walks
+// these and posts anything the webhook missed. Idempotent downstream by external_id.
+async function listRecentSessions(limit = 100) {
+  const res = await fetch(`https://api.stripe.com/v1/checkout/sessions?limit=${Math.min(100, limit)}&status=complete`, {
+    headers: { Authorization: `Bearer ${STRIPE_KEY()}` },
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error ? json.error.message : `Stripe error ${res.status}`);
+  return json.data || [];
 }
 
 async function retrieveSession(sessionId) {
@@ -181,7 +196,7 @@ async function listAccountTransactions(accountId, limit = 100) {
   return r.data || [];
 }
 
-module.exports = { stripeEnabled, createCheckoutSession, retrieveSession, verifyStripeSignature,
+module.exports = { stripeEnabled, createCheckoutSession, retrieveSession, listRecentSessions, verifyStripeSignature,
   getOrCreateCustomer, createSetupSession, retrieveSetupIntent, retrievePaymentMethod,
   listCustomerPaymentMethods, detachPaymentMethod, chargeSavedMethod,
   createFinancialConnectionsSession, listFinancialAccounts,

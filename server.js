@@ -150,6 +150,11 @@ app.post('/api/stripe/webhook', express.raw({ type: '*/*' }), (req, res) => {
   const whSecret = process.env.STRIPE_WEBHOOK_SECRET;
   const payload = req.body.toString('utf8');
   if (whSecret && !pay.verifyStripeSignature(payload, req.headers['stripe-signature'], whSecret)) {
+    // Say so in the log. A silently rejected webhook is a payment that vanishes:
+    // Stripe took the money and the ledger never heard. The reconciliation sweep
+    // will still catch it, but the mismatch itself needs fixing.
+    console.error('Stripe webhook REJECTED — signature did not verify. ' +
+      'STRIPE_WEBHOOK_SECRET probably does not match this endpoint\'s signing secret.');
     return res.status(400).send('Bad signature');
   }
   try {
@@ -1090,6 +1095,12 @@ app.post('/api/login', (req, res) => {
   }
   throttleClear(key);
   if (user.archived_at) return res.status(403).json({ error: 'This account is archived. Contact your servicer.' });
+  // A buyer who signs in has, by definition, accepted their invitation — whatever
+  // lifecycle stage the invitation row froze at. Without this, an invite that went out
+  // by hand (or before texting was connected) kept its badge forever.
+  if (user.role === 'tenant') {
+    run("UPDATE invitations SET status='accepted', accepted_at=datetime('now') WHERE user_id=? AND status<>'accepted'", user.id);
+  }
   const token = sign({ uid: user.id, exp: Date.now() + 30 * 86400000 });
   res.setHeader('Set-Cookie', `session=${token}; HttpOnly; Path=/; Max-Age=${30 * 86400}; SameSite=Lax`);
   res.json({ id: user.id, name: user.name, role: user.role, email: user.email, must_change_password: !!user.must_change_password });
@@ -1106,6 +1117,15 @@ app.post('/api/change-password', anyUser, (req, res) => {
   run("UPDATE invitations SET status='accepted', accepted_at=datetime('now') WHERE user_id=? AND status<>'accepted'", req.user.id);
   res.json({ ok: true });
 });
+
+// Heal invitation statuses at boot: anyone who has accepted terms is in the app, so
+// their invitations are accepted no matter what stage the rows froze at. This clears
+// badges that went stale before the sign-in flip above existed.
+try {
+  const healed = run(`UPDATE invitations SET status='accepted', accepted_at=COALESCE(accepted_at, datetime('now'))
+    WHERE status<>'accepted' AND user_id IN (SELECT id FROM users WHERE terms_accepted_at IS NOT NULL AND deleted_at IS NULL)`);
+  if (healed.changes > 0) console.log(`Healed ${healed.changes} stale invitation status(es) for buyers already in the app`);
+} catch (e) { console.error('Invitation heal:', e.message); }
 
 // ---------- admin: summary ----------
 app.get('/api/admin/summary', adminOnly, (req, res) => {
@@ -6296,6 +6316,51 @@ app.post('/api/tenant/pay/checkout', tenantReady, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+// Where Stripe sends the buyer after paying. No login required — a buyer paying from
+// the installed app lands in their external browser with no session cookie, which is
+// exactly how a real payment once vanished. The server asks Stripe about the session
+// itself, posts the payment (idempotent by session id), and only then shows the app.
+app.get('/api/pay/landing', async (req, res) => {
+  try {
+    if (pay.stripeEnabled() && req.query.session_id) {
+      const s = await pay.retrieveSession(String(req.query.session_id));
+      if (s && s.payment_status === 'paid' && s.metadata && Number(s.metadata.loan_id)) {
+        const r = postStripePayment(s);
+        if (!r.duplicate) console.log(`Stripe payment posted at landing — session ${s.id}, loan ${s.metadata.loan_id}`);
+      }
+    }
+  } catch (e) { console.error('Pay landing:', e.message); }
+  res.redirect('/?paid=1');
+});
+
+// The safety net under both the webhook and the landing: walk Stripe's own list of
+// completed sessions and post anything the ledger is missing. Runs at boot and every
+// six hours; posting is idempotent, so at worst it does nothing.
+async function reconcileStripePayments() {
+  if (!pay.stripeEnabled()) return { checked: 0, posted: 0 };
+  const sessions = await pay.listRecentSessions(100);
+  let posted = 0, checked = 0;
+  for (const s of sessions) {
+    if (s.payment_status !== 'paid' || !s.metadata || !Number(s.metadata.loan_id)) continue;
+    checked++;
+    try {
+      const r = postStripePayment(s);
+      if (!r.duplicate) {
+        posted++;
+        console.log(`Stripe reconciliation posted a missed payment — session ${s.id}, loan ${s.metadata.loan_id}, ` +
+          `$${(Number(s.metadata.amount_cents || 0) / 100).toFixed(2)}`);
+      }
+    } catch (e) { console.error(`Stripe reconciliation, session ${s.id}:`, e.message); }
+  }
+  return { checked, posted };
+}
+setTimeout(() => { reconcileStripePayments().catch(e => console.error('Stripe reconciliation:', e.message)); }, 8000);
+setInterval(() => { reconcileStripePayments().catch(e => console.error('Stripe reconciliation:', e.message)); }, 6 * 60 * 60 * 1000);
+// And on demand, for the moment someone says "a payment is missing".
+app.post('/api/admin/stripe/reconcile', adminOnly, async (req, res, next) => {
+  try { res.json(await reconcileStripePayments()); } catch (e) { next(e); }
+});
+
 // Confirm after redirect (covers local/dev where webhooks can't reach the server)
 app.get('/api/tenant/pay/confirm', tenantReady, async (req, res) => {
   if (!pay.stripeEnabled()) return res.json({ ok: false, reason: 'stripe_not_configured' });

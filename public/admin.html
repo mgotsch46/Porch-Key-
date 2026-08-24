@@ -6235,19 +6235,60 @@ async function loadTBs(){
   $('tbf-arch').classList.toggle('active',tbArchived);
   const rows=await api('/api/admin/tenants'+(tbArchived?'?archived=1':''));
   TBS=rows;
-  $('tb-rows').innerHTML=rows.map(t=>
-    `<tr><td>${esc(t.name)}${t.terms_accepted_at?'':' <span class="pill amber">terms pending</span>'}
+  $('tb-rows').innerHTML=rows.map(t=>{
+    const nm=esc(t.name), ph=t.phone?esc(String(t.phone)):'';
+    // Reaching the buyer comes first; housekeeping lives behind ⋯ so the row stays
+    // readable and the dangerous buttons stop sitting one pixel from the useful ones.
+    const reach = t.archived_at?'':`
+       <button class="small" ${ph?'':'disabled title="No phone on file"'} onclick="callNow('${ph}','${nm}')">📞</button>
+       <button class="small" ${t.loan&&ph?'':'disabled title="Needs a phone and a loan"'} onclick="tbQuickSend(${t.loan?t.loan.id:0},'${nm}','sms')">💬</button>
+       <button class="small" ${t.loan&&t.email?'':'disabled title="Needs an email and a loan"'} onclick="tbQuickSend(${t.loan?t.loan.id:0},'${nm}','email')">✉️</button>
+       <button class="small" ${t.loan?'':'disabled title="Needs a loan"'} onclick="msgLoanId=${t.loan?t.loan.id:0};nav('msgs');openThread(${t.loan?t.loan.id:0},'${t.loan?esc(t.loan.address||''):''}')">📩</button>`;
+    return `<tr><td>${nm}${t.terms_accepted_at?'':' <span class="pill amber">terms pending</span>'}
        ${t.archived_at?` <span class="pill gray">archived</span>`:''}
        ${t.archived_reason?`<br><span class="note">${esc(t.archived_reason)}</span>`:''}</td>
-     <td>${esc(t.email)}</td><td>${esc(t.phone||'')}</td>
+     <td>${esc(t.email)}</td><td>${ph}</td>
      <td>${t.loan?`<a href="#" onclick="openLoan(${t.loan.id});return false">${esc(t.loan.address||('Loan #'+t.loan.id))}</a>`:'<span class="note">none</span>'}</td>
-     <td class="right" style="white-space:nowrap">${t.archived_at
-        ? `<button class="small" onclick="restoreTB(${t.id})">Restore</button>`
-        : `<button class="small" onclick="editTenantModal(${t.id})">✏️ Edit</button>
-           <button class="small" onclick="resetTB(${t.id})">Reset password</button>
-           <button class="small" onclick="archiveTB(${t.id},'${esc(t.name)}')">Archive</button>`}
-       <button class="small warn" onclick="deleteTB(${t.id},'${esc(t.name)}')">Delete</button></td></tr>`
-  ).join('')||`<tr><td colspan="5" class="note">${tbArchived?'No archived buyers.':'No tenant buyers yet.'}</td></tr>`;
+     <td class="right" style="white-space:nowrap">${reach}
+       ${t.archived_at
+        ? `<button class="small" onclick="restoreTB(${t.id})">Restore</button>
+           <button class="small warn" onclick="deleteTB(${t.id},'${nm}')">Delete</button>`
+        : `<button class="small" onclick="editTenantModal(${t.id})">✏️</button>
+           <button class="small" onclick="tbMoreModal(${t.id},'${nm}')" title="Reset password, archive, delete">⋯</button>`}</td></tr>`;
+  }).join('')||`<tr><td colspan="5" class="note">${tbArchived?'No archived buyers.':'No tenant buyers yet.'}</td></tr>`;
+}
+
+// One little composer for both quick channels. Everything sent here also lands in the
+// message thread, so the record stays whole no matter which channel carried it.
+function tbQuickSend(loanId,name,chan){
+  if(!loanId) return;
+  const isEmail=chan==='email';
+  modal(`<h2>${isEmail?'✉️ Email':'💬 Text'} ${esc(name)}</h2>
+    <p class="note" style="margin-bottom:10px">${isEmail
+      ?'Sent as a branded email from your servicing address, and kept in their message thread.'
+      :'Goes out as a real text from your business number. Their reply lands back in Messages.'}</p>
+    ${isEmail?'<div class="field"><label>Subject</label><input id="qs-subject" placeholder="Subject"></div>':''}
+    <div class="field"><textarea id="qs-body" rows="4" placeholder="Type the message…"></textarea></div>
+    <div id="qs-err" class="err hidden"></div>
+    <button class="primary" onclick="tbQuickSendGo(${loanId},'${chan}')">Send</button>`);
+}
+async function tbQuickSendGo(loanId,chan){
+  try{
+    const body=$('qs-body').value.trim(); if(!body) throw new Error('Type something first');
+    const payload={ body, channels:[chan] };
+    if(chan==='email'&&$('qs-subject')&&$('qs-subject').value.trim()) payload.subject=$('qs-subject').value.trim();
+    await api(`/api/admin/loans/${loanId}/messages`,{method:'POST',body:JSON.stringify(payload)});
+    closeModal(); toast(chan==='email'?'Email sent and filed in the thread.':'Text sent from your business number.');
+  }catch(e){ $('qs-err').textContent=e.message; $('qs-err').classList.remove('hidden'); }
+}
+// Housekeeping, one step away from the row: the rare actions, with room to breathe.
+function tbMoreModal(id,name){
+  modal(`<h2>${esc(name)}</h2>
+    <div class="actions" style="flex-direction:column;align-items:stretch;gap:8px">
+      <button class="small" onclick="closeModal();resetTB(${id})">🔑 Reset password — issue a new temporary one</button>
+      <button class="small" onclick="closeModal();archiveTB(${id},'${esc(name)}')">📦 Archive — hide from the active list, keep everything</button>
+      <button class="small warn" onclick="closeModal();deleteTB(${id},'${esc(name)}')">🗑️ Delete permanently — erases their identity, keeps the ledger</button>
+    </div>`);
 }
 function archiveTB(id,name){
   modal(`<h2>Archive ${esc(name)}</h2>

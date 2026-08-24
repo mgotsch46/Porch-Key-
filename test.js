@@ -660,6 +660,56 @@ async function main() {
     db2.prepare('UPDATE companies SET twilio_from=NULL, forward_calls=0 WHERE id=?').run(co.id);
   }
 
+  console.log('— a payment can never vanish between Stripe and the ledger');
+  {
+    const payMod = require('./payments.js');
+    const fakeSession = (sid, loanIdForPay, cents) => ({
+      id: sid, payment_status: 'paid', payment_method_types: ['card'],
+      amount_total: cents + 33,
+      metadata: { loan_id: String(loanIdForPay), amount_cents: String(cents), fee_cents: '33' },
+    });
+    const origEnabled = payMod.stripeEnabled, origList = payMod.listRecentSessions, origRetrieve = payMod.retrieveSession;
+    payMod.stripeEnabled = () => true;
+    payMod.listRecentSessions = async () => [fakeSession('cs_recon_1', loanId, 100)];
+    payMod.retrieveSession = async (sid) => fakeSession(sid, loanId, 250);
+
+    // The reconciliation sweep posts what the webhook missed…
+    const before = (await req('/api/admin/loans/' + loanId)).json.ledger.filter(l => l.type === 'payment').length;
+    r = await req('/api/admin/stripe/reconcile', { method: 'POST', body: '{}' });
+    ok(r.status === 200 && r.json.posted === 1, 'reconciliation posts the missed payment');
+    let led = (await req('/api/admin/loans/' + loanId)).json.ledger;
+    const recon = led.find(l => l.external_id === 'stripe:cs_recon_1');
+    ok(!!recon && recon.amount_cents === 100, 'for the right amount, tagged with its Stripe session');
+    // …and never twice.
+    r = await req('/api/admin/stripe/reconcile', { method: 'POST', body: '{}' });
+    ok(r.json.posted === 0, 'running it again posts nothing — idempotent by session id');
+
+    // The success landing posts with NO session cookie — the installed-app case where
+    // Stripe bounces the buyer through an external browser that is not signed in.
+    const landing = await fetch(BASE + '/api/pay/landing?session_id=cs_landing_1', { redirect: 'manual' });
+    ok(landing.status === 302 || landing.status === 301, 'the landing redirects into the app');
+    led = (await req('/api/admin/loans/' + loanId)).json.ledger;
+    const landed = led.find(l => l.external_id === 'stripe:cs_landing_1');
+    ok(!!landed && landed.amount_cents === 250, 'and the payment posted without any login');
+    ok(led.filter(l => l.type === 'payment').length === before + 2, 'exactly the two new payments, no strays');
+
+    payMod.stripeEnabled = origEnabled; payMod.listRecentSessions = origList; payMod.retrieveSession = origRetrieve;
+  }
+
+  console.log('— an invitation is accepted the moment the buyer signs in');
+  {
+    // An invite frozen at pending — sent by hand before texting was connected.
+    require('./db.js').db.prepare(`INSERT INTO invitations (company_id, loan_id, user_id, phone, status, channel)
+      VALUES (1, ?, ?, '555-0100', 'pending', 'manual')`).run(loanId, tbId);
+    let badge = (await req('/api/admin/summary')).json.pending_invitations;
+    ok(badge >= 1, 'the stale invite counts against the badge');
+    // The buyer signs in — nothing else — and the badge lets go.
+    const relog = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'jane@test.com', password: 'JanePass123!' }) }, '');
+    ok(relog.status === 200, 'the buyer signs in');
+    const after = (await req('/api/admin/summary')).json.pending_invitations;
+    ok(after === badge - 1, 'and their pending invitation is accepted by the act of signing in');
+  }
+
   console.log('— extra payments on the calculator');
   {
     const q = 'principal_cents=10000000&interest_rate_bps=950&term_months=360&first_payment_date=2026-06-01';
