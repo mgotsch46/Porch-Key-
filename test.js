@@ -583,6 +583,23 @@ async function main() {
     await req('/api/admin/voice-settings', { method: 'PUT', body: JSON.stringify({ record_calls: false }) });
   }
 
+  console.log('— mail cost is computed, not typed');
+  {
+    const lobMod = require('./lob.js');
+    ok(lobMod.estimateCostCents({ service: 'first_class' }) === 106, 'regular letter costs the published $1.06');
+    ok(lobMod.estimateCostCents({ service: 'certified' }) === 106 + 695, 'certified letter costs the published $8.01');
+    ok(lobMod.estimateCostCents({ service: 'certified', pages: 3 }) === 106 + 695 + 20, 'extra pages add their dime each');
+    r = await req('/api/admin/lob');
+    ok(r.json.auto_certified_cents === 801 && r.json.auto_first_class_cents === 106, 'settings reports the automatic rates');
+    // Mailing a notice without Lob connected explains itself.
+    const list = await req(`/api/admin/loans/${loanId}/notices`);
+    const unm = list.json.find(n => !n.lob_id);
+    if (unm) {
+      r = await req(`/api/admin/notices/${unm.id}/mail`, { method: 'POST', body: JSON.stringify({ service: 'certified' }) });
+      ok(r.status === 500 && /not set up/i.test(r.json.error), 'manual mail without Lob names the missing setup');
+    }
+  }
+
   console.log('— in-app dialer guards');
   r = await req('/api/admin/call', { method: 'POST', body: JSON.stringify({ to: 'not-a-number' }) });
   ok(r.status === 400, 'refuses a nonsense number');

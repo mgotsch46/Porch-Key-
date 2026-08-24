@@ -3077,6 +3077,8 @@ app.get('/api/admin/lob', adminOnly, (req, res) => {
     key_set: !!co.lob_api_key,
     test_mode: /^test_/.test(co.lob_api_key || ''),
     cost_cents: Number(co.lob_cost_cents) || 0,
+    auto_certified_cents: lob.estimateCostCents({ service: 'certified' }),
+    auto_first_class_cents: lob.estimateCostCents({ service: 'first_class' }),
     mail_address_line1: co.mail_address_line1 || null,
     mail_address_city: co.mail_address_city || null,
     mail_address_state: co.mail_address_state || null,
@@ -3108,6 +3110,40 @@ app.delete('/api/admin/lob', ownerOnly, (req, res) => {
   run('UPDATE companies SET lob_api_key=NULL WHERE id=?', req.companyId);
   res.json({ ok: true });
 });
+// Mail any notice by hand — certified when it needs to be provable, regular first
+// class when it just needs to arrive. Cost is computed from Lob's published rates
+// (or the settings override), posted as a collection fee on live sends.
+app.post('/api/admin/notices/:id/mail', adminOnly, async (req, res, next) => {
+  try {
+    const n = get(`SELECT n.* FROM notices n JOIN loans l ON l.id=n.loan_id
+                   WHERE n.id=? AND l.company_id=?`, req.params.id, req.companyId);
+    if (!n) return res.status(404).json({ error: 'Not found' });
+    if (n.lob_id) return res.status(400).json({ error: 'This notice already went by mail — its tracking is on the notice' });
+    const service = req.body && req.body.service === 'first_class' ? 'first_class' : 'certified';
+    const co = myCompany(req);
+    const loan = get('SELECT * FROM loans WHERE id=?', n.loan_id);
+    const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+    const tenant = loan.tenant_user_id ? get('SELECT * FROM users WHERE id=?', loan.tenant_user_id) : null;
+    if (!property || !property.address) return res.status(400).json({ error: 'No property address to mail to' });
+    const sent = await lob.sendLetter(co, {
+      to: { name: (tenant && tenant.name) || 'Occupant', address_line1: property.address,
+            address_city: property.city, address_state: property.state, address_zip: property.zip },
+      subject: n.subject, body: n.body,
+      description: `${n.stage || n.type} — loan ${loan.id}`, service,
+      idempotencyKey: `manual-${n.id}-${service}`,
+    });
+    run(`UPDATE notices SET lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=? WHERE id=?`,
+      sent.id, sent.tracking_number, sent.expected_delivery_date, sent.cost_cents || null, n.id);
+    if (sent.cost_cents > 0 && !sent.test) {
+      run(`INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo) VALUES (?,?, 'fee', ?, ?)`,
+        loan.id, today(), -sent.cost_cents,
+        `Collection fee — ${service === 'certified' ? 'certified' : 'first-class'} mail (${sent.tracking_number || sent.id})`);
+      run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', sent.cost_cents, loan.id);
+    }
+    res.json({ ok: true, service, tracking: sent.tracking_number, cost_cents: sent.cost_cents, test: sent.test });
+  } catch (e) { next(e); }
+});
+
 // Ask USPS (via Lob) where a certified letter is now, and remember the answer.
 app.get('/api/admin/notices/:id/mail-status', adminOnly, async (req, res, next) => {
   try {

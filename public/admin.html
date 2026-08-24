@@ -3022,11 +3022,12 @@ async function loadLob(){
           <div style="display:flex;gap:8px"><input id="lob-state" maxlength="2" style="width:70px" value="${esc(d.mail_address_state||'')}">
           <input id="lob-zip" value="${esc(d.mail_address_zip||'')}"></div></div>
       </div>
-      <div class="field"><label>What Lob charges you per certified letter ($)</label>
-        <input id="lob-cost" type="number" step="0.01" min="0" value="${(d.cost_cents/100).toFixed(2)}">
-        <p class="note" style="margin-top:4px">Lob's API does not report the price, so this figure becomes the
-          collection fee passed to the buyer. Check your Lob plan's certified-letter rate and match it exactly.
-          Leave 0 and no fee is charged. Test-mode letters never charge a fee either way.</p></div>
+      <div class="field"><label>Cost override ($ per certified letter) <span class="note">— optional</span></label>
+        <input id="lob-cost" type="number" step="0.01" min="0" value="${d.cost_cents?(d.cost_cents/100).toFixed(2):''}" placeholder="automatic">
+        <p class="note" style="margin-top:4px"><b>Automatic by default:</b> the fee passed to the buyer is computed
+          from Lob's published rates — currently ${fmt(d.auto_certified_cents)} certified, ${fmt(d.auto_first_class_cents)} regular,
+          per one-page letter. Type an amount here only if your Lob plan has negotiated pricing.
+          Test-mode letters never charge anything.</p></div>
       <div id="lob-err" class="err hidden"></div><div id="lob-ok" class="okmsg hidden"></div>
       <button class="primary" onclick="saveLob()">Connect certified mail</button>
       </div>
@@ -3042,6 +3043,33 @@ async function saveLob(){
     $('lob-ok').textContent='Connected.'; $('lob-ok').classList.remove('hidden');
     setTimeout(loadLob,900);
   }catch(e){ $('lob-err').textContent=e.message; $('lob-err').classList.remove('hidden'); }
+}
+let LOB_PRICES=null;
+async function mailNoticeModal(noticeId){
+  if(!LOB_PRICES){ try{ LOB_PRICES=await api('/api/admin/lob'); }catch{ LOB_PRICES={}; } }
+  if(!LOB_PRICES.connected){
+    modal(`<h2>Mail is not set up yet</h2>
+      <p class="note" style="margin-bottom:12px">Connect Lob under Settings → Certified mail first — a free
+        account and a test key are enough to try it.</p>
+      <button class="primary" onclick="closeModal();nav('settings')">Open Settings</button>`);
+    return;
+  }
+  const cert=(LOB_PRICES.cost_cents||LOB_PRICES.auto_certified_cents)||0;
+  const first=LOB_PRICES.auto_first_class_cents||0;
+  modal(`<h2>📮 Mail this notice</h2>
+    <p class="note" style="margin-bottom:12px">Printed and mailed to the property address by Lob.
+      ${LOB_PRICES.test_mode?'<b>Test mode:</b> nothing is actually printed or charged.':'The cost is passed to the buyer as a collection fee.'}</p>
+    <button class="primary" style="display:block;width:100%;margin-bottom:8px" onclick="mailNotice(${noticeId},'certified')">
+      Certified mail — ${fmt(cert)} · tracked, provable, the one for default notices</button>
+    <button style="display:block;width:100%" onclick="mailNotice(${noticeId},'first_class')">
+      Regular first-class — ${fmt(first)} · cheaper, no tracking</button>`);
+}
+async function mailNotice(noticeId,service){
+  try{
+    const r=await api(`/api/admin/notices/${noticeId}/mail`,{method:'POST',body:JSON.stringify({service})});
+    closeModal(); toast(r.test?'Test letter created at Lob — nothing printed.':'Letter on its way'+(r.tracking?' — tracking '+r.tracking:'')+'.');
+    loadNoticesAdmin();
+  }catch(e){ alert(e.message); }
 }
 async function refreshMailStatus(noticeId){
   try{ await api(`/api/admin/notices/${noticeId}/mail-status`); }catch(e){ alert(e.message); }
@@ -5068,6 +5096,7 @@ async function loadNoticesAdmin(){
         <span class="note">Sent ${new Date((n.sent_at||n.created_at)+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
           ${n.read_at?`· <span style="color:var(--green)">✓✓ Read ${new Date(n.read_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</span>`:'· <span style="color:var(--amber)">Unread</span>'}</span>
       </div>
+      ${!n.lob_id?`<div class="note" style="margin-top:4px"><button class="small" onclick="mailNoticeModal(${n.id})">📮 Mail this notice</button></div>`:''}
       ${n.lob_id?`<div class="note" style="margin-top:4px">📬 Certified mail:
         <b>${esc(n.lob_status||'created')}</b>${n.lob_tracking?` · tracking ${esc(n.lob_tracking)}`:''}
         ${n.lob_expected?` · expected ${fdate(n.lob_expected)}`:''}

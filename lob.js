@@ -62,6 +62,23 @@ function creds(company) {
 
 const lobEnabled = (company) => !!creds(company);
 
+// Lob's API does not return the price of a piece, but their published rate card is
+// exact, so the cost is computed here at ordering time. Developer-plan rates as of
+// the July 2026 USPS adjustment (help.lob.com → pricing details); a settings override
+// exists for accounts on negotiated plans.
+const RATES = {
+  letter_first_class_bw_cents: 106,   // 1-page B/W letter, first class, incl. print+postage+envelope
+  certified_addon_cents: 695,         // certified mail surcharge
+  err_addon_cents: 986,               // certified WITH electronic return receipt surcharge
+  extra_page_cents: 10,               // each additional B/W page
+};
+function estimateCostCents({ service = 'certified', pages = 1 } = {}) {
+  let c = RATES.letter_first_class_bw_cents + Math.max(0, pages - 1) * RATES.extra_page_cents;
+  if (service === 'certified') c += RATES.certified_addon_cents;
+  if (service === 'certified_return_receipt') c += RATES.err_addon_cents;
+  return c;
+}
+
 // Wrap plain notice text in the minimal HTML Lob's letter renderer wants. The top
 // margin leaves room for the address block Lob prints on page one.
 function letterHtml({ subject, body }) {
@@ -78,14 +95,17 @@ function letterHtml({ subject, body }) {
   </div></body></html>`;
 }
 
-// Create the certified letter. use_type "operational" because this is account
-// servicing, not marketing — Lob requires the distinction and the postal rules differ.
-async function sendCertifiedLetter(company, { to, subject, body, description, idempotencyKey }) {
+// Create a letter — certified with tracking, or plain first class. use_type
+// "operational" because this is account servicing, not marketing — Lob requires the
+// distinction and the postal rules differ. The returned cost is the company's
+// override when one is set, otherwise the computed published rate.
+async function sendLetter(company, { to, subject, body, description, idempotencyKey, service = 'certified' }) {
   const c = creds(company);
-  if (!c) throw new Error('Certified mail is not set up — add the Lob key and your mailing address in Settings.');
+  if (!c) throw new Error('Mail is not set up — add the Lob key and your mailing address in Settings.');
   if (!to || !to.address_line1 || !to.address_city || !to.address_state || !to.address_zip) {
     throw new Error('The recipient needs a full mailing address.');
   }
+  const certified = service !== 'first_class';
   const letter = await lobFetch(c.key, '/letters', {
     method: 'POST', idempotencyKey,
     body: {
@@ -97,7 +117,7 @@ async function sendCertifiedLetter(company, { to, subject, body, description, id
       file: letterHtml({ subject, body }),
       color: false,
       address_placement: 'top_first_page',
-      extra_service: 'certified',
+      ...(certified ? { extra_service: 'certified' } : {}),
       mail_type: 'usps_first_class',
       use_type: 'operational',
     },
@@ -108,9 +128,11 @@ async function sendCertifiedLetter(company, { to, subject, body, description, id
     expected_delivery_date: letter.expected_delivery_date || null,
     pdf_url: letter.url || null,
     test: c.test,
-    cost_cents: c.costCents,
+    service,
+    cost_cents: c.costCents > 0 ? c.costCents : estimateCostCents({ service: certified ? 'certified' : 'first_class' }),
   };
 }
+const sendCertifiedLetter = (company, opts) => sendLetter(company, { ...opts, service: 'certified' });
 
 // Where the letter is now. Lob's tracking_events are USPS scans; the last one is the
 // current truth. "Delivered" here is the scan a court will accept.
@@ -138,4 +160,4 @@ async function verifyKey(key) {
   return { test: /^test_/.test(key) };
 }
 
-module.exports = { lobEnabled, creds, sendCertifiedLetter, getLetterStatus, verifyKey, letterHtml };
+module.exports = { lobEnabled, creds, sendLetter, sendCertifiedLetter, getLetterStatus, verifyKey, letterHtml, estimateCostCents, RATES };
