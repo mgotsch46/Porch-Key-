@@ -4629,8 +4629,9 @@ async function openPML(id){
       ${p.lender_phone?`<button class="small" onclick="callNow('${esc(p.lender_phone)}','${esc(p.lender_name)}')">📞 Call</button>
       <button class="small" onclick="location.href='sms:'+String('${esc(p.lender_phone)}').replace(/[^+\d]/g,'')">📲 Text</button>`:''}
       ${p.lender_email?`<a href="mailto:${esc(p.lender_email)}" style="text-decoration:none"><button class="small">📧 Email</button></a>`:''}
-      <button class="small" onclick="pmlDrawModal()">Record additional draw</button>
+      <button class="small" onclick="pmlPayModal()">💵 Record additional payment</button>
       <button class="small" onclick="pmlScheduleModal(${p.id})">⏱️ Payment schedule</button>
+      <button class="small" title="Only for when the lender advances MORE money — this increases the balance" onclick="pmlDrawModal()">🏦 Lender advanced more (draw)</button>
       <button class="small" onclick="pmlModal(null, PML_CACHE)">✏️ Edit loan</button>
       <button class="small warn" onclick="deletePMLModal(PML_CACHE)">🗑️ Delete</button></div>
     <p class="note" style="margin-top:10px">${p.autopay_enabled
