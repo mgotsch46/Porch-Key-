@@ -1667,6 +1667,126 @@ async function main() {
   r = await req(`/api/admin/tenants/${tbId}`, { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) }, rivalCookie);
   ok(r.status === 404, 'rival cannot delete company A buyer');
 
+  console.log('— Michigan forfeiture track (DC 101)');
+  // A Flint land contract, 12 days past due: one sweep should fire the 5-day notice
+  // (with non-waiver language and the late fee charged), and draft the DC 101.
+  const db = require('./db');
+  const lobMod = require('./lob');
+  const miToday = new Date(); miToday.setUTCDate(miToday.getUTCDate() - 12);
+  const miFirst = miToday.toISOString().slice(0, 10);
+  r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({
+    address: '456 Buick Ave', city: 'Flint', state: 'MI', zip: '48503',
+    trust_name: 'Buick Ave Trust', trustee: 'SAAPM LLC' }) });
+  const miPropId = r.json.id;
+  r = await req('/api/admin/tenants', { method: 'POST', body: JSON.stringify({
+    name: 'Mia Michigander', email: 'mia@test.com' }) });
+  const miTbId = r.json.id, miTmp = r.json.temp_password;
+  r = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'mia@test.com', password: miTmp }) }, '');
+  let miCookie = r.cookie;
+  await req('/api/change-password', { method: 'POST', body: JSON.stringify({ password: 'MiaPass123!' }) }, miCookie);
+  await req('/api/tenant/accept-terms', { method: 'POST', body: JSON.stringify({ accept_terms: true, accept_privacy: true }) }, miCookie);
+  r = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+    property_id: miPropId, tenant_user_id: miTbId, loan_type: 'land_contract',
+    sale_price_cents: 7500000, down_payment_cents: 1500000,
+    principal_cents: 6000000, interest_rate_bps: 800, term_months: 240,
+    escrow_cents: 0, late_fee_cents: 4500, grace_days: 5, first_payment_date: miFirst }) });
+  const miLoanId = r.json.loan.id;
+
+  await req('/api/admin/notice-sweep', { method: 'POST', body: '{}' });
+  r = await req(`/api/admin/loans/${miLoanId}/notices`);
+  const mi5 = r.json.find(n => n.stage === 'late_5');
+  const miDraft = r.json.find(n => n.stage === 'mi_dc101');
+  ok(!!mi5, 'MI: 5-day notice fired at day 12');
+  ok(mi5 && /does not waive/.test(mi5.body), 'MI: 5-day notice carries non-waiver language');
+  ok(mi5 && /has been charged/.test(mi5.body), 'MI: notice states the late fee as charged, not a maybe');
+  ok(!r.json.some(n => ['late_15', 'late_30'].includes(n.stage)), 'MI: generic ladder rungs suppressed');
+  ok(!!miDraft && miDraft.prepared === 1 && !miDraft.served_at, 'MI: DC 101 drafted, not served');
+  r = await req('/api/admin/loans/' + miLoanId);
+  ok(r.json.ledger.some(l => l.type === 'late_fee'), 'MI: late fee posted with the 5-day notice');
+  const miFeesBefore = r.json.loan.fees_due_cents;
+  await req('/api/admin/notice-sweep', { method: 'POST', body: '{}' });
+  r = await req('/api/admin/loans/' + miLoanId);
+  ok(r.json.loan.fees_due_cents === miFeesBefore, 'MI: second sweep does not double the late fee');
+  r = await req(`/api/admin/loans/${miLoanId}/notices`);
+  ok(r.json.filter(n => n.stage === 'mi_dc101').length === 1, 'MI: second sweep does not draft a second DC 101');
+
+  // The draft is the admin's business only.
+  r = await req('/api/tenant/notices', {}, miCookie);
+  ok(!r.json.some(n => n.stage === 'mi_dc101'), 'MI: buyer cannot see the unserved draft');
+
+  // Review: values are prefilled from the deal, and Flint suggests the 67th.
+  r = await req(`/api/admin/notices/${miDraft.id}/dc101`);
+  ok(r.json.values['land contract purchaser or purchasers names'] === 'Mia Michigander', 'DC 101: purchaser prefilled');
+  ok(/456 Buick Ave, Flint, MI 48503/.test(r.json.values['address or legal description of the premises line 1']), 'DC 101: premises prefilled');
+  ok(r.json.values['land contract seller or selllers names line 1'] === 'Buick Ave Trust', 'DC 101: seller is the trust');
+  ok(r.json.court_suggestion && r.json.court_suggestion.district === '67th', 'DC 101: Flint suggests the 67th District');
+  ok(r.json.mail_cost_cents === 821, 'DC 101: 3-page certified letter estimates $8.21');
+  r = await req(`/api/admin/notices/${miDraft.id}/dc101`, { method: 'PUT', body: JSON.stringify({
+    values: { 'judicial district': '67th', 'court address': '630 S. Saginaw St., Flint, MI 48502',
+              'land contract date': '1/15/2025', 'bogus field': 'ignored' } }) });
+  ok(r.status === 200 && r.json.values['judicial district'] === '67th', 'DC 101: edits saved');
+  ok(!('bogus field' in r.json.values), 'DC 101: unknown fields rejected');
+
+  // The PDF preview is the real SCAO form with the values drawn in.
+  const pdfRes = await fetch(`${BASE}/api/admin/notices/${miDraft.id}/dc101.pdf`, { headers: { Cookie: adminCookie } });
+  const pdfBuf = Buffer.from(await pdfRes.arrayBuffer());
+  ok(pdfRes.status === 200 && pdfBuf.slice(0, 5).toString() === '%PDF-', 'DC 101: preview renders a PDF');
+  ok(pdfBuf.length > 200000, 'DC 101: preview is the full template, not a stub');
+  ok(pdfBuf.includes('(Mia Michigander)'), 'DC 101: purchaser name is drawn into the form');
+
+  // Serving without mail set up fails cleanly; with it (stubbed), it works once.
+  r = await req(`/api/admin/notices/${miDraft.id}/serve-dc101`, { method: 'POST', body: '{}' });
+  ok(r.status === 400 && /not set up/.test(r.json.error), 'DC 101: cannot serve without Lob configured');
+  const origSend = lobMod.sendLetter, origEnabled = lobMod.lobEnabled;
+  lobMod.lobEnabled = () => true;
+  let lobSawPdf = null;
+  lobMod.sendLetter = async (co, opts) => {
+    lobSawPdf = opts.pdf;
+    return { id: 'ltr_mi_test', tracking_number: '9207MITEST', expected_delivery_date: '2099-01-01',
+             test: true, service: opts.service, cost_cents: 821 };
+  };
+  try {
+    r = await req(`/api/admin/notices/${miDraft.id}/serve-dc101`, { method: 'POST', body: '{}' });
+    ok(r.status === 200 && r.json.tracking === '9207MITEST', 'DC 101: served certified (stubbed Lob)');
+    ok(Buffer.isBuffer(lobSawPdf) && lobSawPdf.slice(0, 5).toString() === '%PDF-', 'DC 101: Lob got the filled PDF, not HTML');
+    const cure = new Date(); cure.setUTCDate(cure.getUTCDate() + 15);
+    ok(r.json.cure_deadline === cure.toISOString().slice(0, 10), 'DC 101: cure deadline is service + 15 days');
+    r = await req(`/api/admin/notices/${miDraft.id}/serve-dc101`, { method: 'POST', body: '{}' });
+    ok(r.status === 400, 'DC 101: cannot be served twice');
+  } finally { lobMod.sendLetter = origSend; lobMod.lobEnabled = origEnabled; }
+
+  r = await req(`/api/admin/loans/${miLoanId}/documents`);
+  const miDocs = JSON.stringify(r.json);
+  ok(/DC 101 served/.test(miDocs) && /9207MITEST/.test(miDocs), 'DC 101: court copy with tracking filed under documents');
+  r = await req('/api/admin/tasks');
+  const openTasks = (r.json.tasks || r.json);
+  ok(!openTasks.some(t => t.title && t.title.startsWith('Review & serve DC 101') && t.status === 'open'),
+    'DC 101: review task closed by serving');
+
+  // Once served, the sweep goes quiet on this loan…
+  await req('/api/admin/notice-sweep', { method: 'POST', body: '{}' });
+  r = await req(`/api/admin/loans/${miLoanId}/notices`);
+  ok(r.json.filter(n => n.stage === 'mi_dc101').length === 1 && !r.json.some(n => n.stage === 'late_15'),
+    'MI: no further automated notices after service');
+
+  // …until the cure clock dies. Yesterday, in this case.
+  const yd = new Date(); yd.setUTCDate(yd.getUTCDate() - 1);
+  db.run('UPDATE notices SET cure_deadline=? WHERE id=?', yd.toISOString().slice(0, 10), miDraft.id);
+  await req('/api/admin/notice-sweep', { method: 'POST', body: '{}' });
+  r = await req('/api/admin/tasks');
+  const dc102Task = (r.json.tasks || r.json).find(t => t.title && t.title.startsWith('File DC 102'));
+  ok(!!dc102Task, 'MI: expired cure creates the File-DC 102 task');
+  ok(dc102Task && /\$55 filing fee/.test(dc102Task.notes || ''), 'MI: task carries the Flint 67th filing checklist');
+  await req('/api/admin/notice-sweep', { method: 'POST', body: '{}' });
+  r = await req('/api/admin/tasks');
+  ok((r.json.tasks || r.json).filter(t => t.title && t.title.startsWith('File DC 102')).length === 1,
+    'MI: DC 102 task is not duplicated by later sweeps');
+
+  // The served notice is visible to the buyer; the certified letter was the service.
+  r = await req('/api/tenant/notices', {}, miCookie);
+  ok(r.json.some(n => n.stage === 'mi_dc101' && /Served by certified mail/.test(n.body)),
+    'MI: buyer sees the served notice in the app');
+
   console.log('— login throttling');
   let throttled = false;
   for (let i = 0; i < 8; i++) {

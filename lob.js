@@ -17,16 +17,46 @@ function authHeader(key) {
   return 'Basic ' + Buffer.from(String(key) + ':').toString('base64');
 }
 
-async function lobFetch(key, path, { method = 'GET', body, idempotencyKey } = {}) {
+// When a real PDF has to travel — a court form, not our own HTML — Lob wants
+// multipart/form-data. Built by hand: a boundary, one part per field, the file part
+// with a content type. Nested objects (to[name] etc.) flatten to bracket keys.
+function multipartBody(fields, fileBuf, fileField) {
+  const boundary = '----porchpay' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+  const parts = [];
+  const flat = (prefix, val) => {
+    if (val === undefined || val === null) return;
+    if (typeof val === 'object' && !Buffer.isBuffer(val)) {
+      for (const [k, v] of Object.entries(val)) flat(`${prefix}[${k}]`, v);
+    } else {
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${prefix}"\r\n\r\n${val}\r\n`));
+    }
+  };
+  for (const [k, v] of Object.entries(fields)) flat(k, v);
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="letter.pdf"\r\nContent-Type: application/pdf\r\n\r\n`));
+  parts.push(fileBuf);
+  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+  return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
+async function lobFetch(key, path, { method = 'GET', body, idempotencyKey, pdf } = {}) {
   const headers = { Authorization: authHeader(key) };
-  if (body) headers['Content-Type'] = 'application/json';
   // Lob honours Idempotency-Key on creates: a retried request returns the original
   // letter instead of printing and billing a second one.
   if (idempotencyKey) headers['Idempotency-Key'] = String(idempotencyKey).slice(0, 100);
 
+  let payload;
+  if (pdf) {
+    const mp = multipartBody(body || {}, pdf, 'file');
+    headers['Content-Type'] = mp.contentType;
+    payload = mp.body;
+  } else if (body) {
+    headers['Content-Type'] = 'application/json';
+    payload = JSON.stringify(body);
+  }
+
   let r, text;
   try {
-    r = await fetch(API + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    r = await fetch(API + path, { method, headers, body: payload });
     text = await r.text();
   } catch (e) {
     throw new Error(`Could not reach Lob: ${e.message}`);
@@ -99,29 +129,36 @@ function letterHtml({ subject, body }) {
 // "operational" because this is account servicing, not marketing — Lob requires the
 // distinction and the postal rules differ. The returned cost is the company's
 // override when one is set, otherwise the computed published rate.
-async function sendLetter(company, { to, subject, body, description, idempotencyKey, service = 'certified' }) {
+// Create a letter — certified with tracking, or plain first class. Content is either
+// our own HTML (subject + body) or a finished PDF such as a filled court form. A PDF
+// goes up as multipart with the address on an inserted page, so page one of the form
+// arrives exactly as the court published it — nothing overprinted.
+async function sendLetter(company, { to, subject, body, pdf, pdfPages = 1, description, idempotencyKey, service = 'certified' }) {
   const c = creds(company);
   if (!c) throw new Error('Mail is not set up — add the Lob key and your mailing address in Settings.');
   if (!to || !to.address_line1 || !to.address_city || !to.address_state || !to.address_zip) {
     throw new Error('The recipient needs a full mailing address.');
   }
   const certified = service !== 'first_class';
+  const fields = {
+    description: (description || 'Notice').slice(0, 255),
+    to: { name: (to.name || 'Occupant').slice(0, 40), address_line1: to.address_line1,
+          address_line2: to.address_line2 || undefined, address_city: to.address_city,
+          address_state: to.address_state, address_zip: to.address_zip },
+    from: c.from,
+    color: false,
+    address_placement: pdf ? 'insert_blank_page' : 'top_first_page',
+    ...(certified ? { extra_service: 'certified' } : {}),
+    mail_type: 'usps_first_class',
+    use_type: 'operational',
+  };
+  if (!pdf) fields.file = letterHtml({ subject, body });
   const letter = await lobFetch(c.key, '/letters', {
-    method: 'POST', idempotencyKey,
-    body: {
-      description: (description || 'Notice').slice(0, 255),
-      to: { name: (to.name || 'Occupant').slice(0, 40), address_line1: to.address_line1,
-            address_line2: to.address_line2 || undefined, address_city: to.address_city,
-            address_state: to.address_state, address_zip: to.address_zip },
-      from: c.from,
-      file: letterHtml({ subject, body }),
-      color: false,
-      address_placement: 'top_first_page',
-      ...(certified ? { extra_service: 'certified' } : {}),
-      mail_type: 'usps_first_class',
-      use_type: 'operational',
-    },
+    method: 'POST', idempotencyKey, pdf,
+    body: fields,
   });
+  // The inserted address page is a page like any other on the bill.
+  const pages = pdf ? pdfPages + 1 : 1;
   return {
     id: letter.id,
     tracking_number: letter.tracking_number || null,
@@ -129,7 +166,7 @@ async function sendLetter(company, { to, subject, body, description, idempotency
     pdf_url: letter.url || null,
     test: c.test,
     service,
-    cost_cents: c.costCents > 0 ? c.costCents : estimateCostCents({ service: certified ? 'certified' : 'first_class' }),
+    cost_cents: c.costCents > 0 ? c.costCents : estimateCostCents({ service: certified ? 'certified' : 'first_class', pages }),
   };
 }
 const sendCertifiedLetter = (company, opts) => sendLetter(company, { ...opts, service: 'certified' });

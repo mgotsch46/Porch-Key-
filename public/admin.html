@@ -4963,6 +4963,15 @@ async function openLoan(id){
     <p class="note" style="margin-bottom:8px">Late and legal notices go out automatically when a payment is past grace and nothing has been confirmed received. ✓✓ = buyer opened it (read receipt).</p>
     <div id="notices-admin"></div>
   </div>
+  ${f.property&&String(f.property.state||'').trim().toUpperCase()==='MI'?`
+  <div class="card"><h2>⚖️ Michigan forfeiture track — DC 101</h2>
+    <p class="note" style="margin-bottom:8px">Michigan land contracts run the statutory clock instead of the
+      generic ladder: <b>day 6</b> the 5-day late notice with non-waiver language and the late fee ·
+      <b>day 10</b> the DC 101 forfeiture notice is filled out on the official SCAO form and waits for your
+      review · <b>serve it certified</b> to start the 15-day cure period · if it expires unpaid, a
+      <b>File DC 102</b> task appears with your district court's filing checklist.</p>
+    <div id="mi-dc101"><p class="note">Loading…</p></div>
+  </div>`:''}
   <div class="card"><h2>📁 Documents</h2>
     <p class="note" style="margin-bottom:10px">Everything filed on this loan and its house — shared folders the buyer sees, and the private vault only you do.</p>
     <button class="primary" onclick="openDocsPage({loan_id:${L.id}})">Open documents</button>
@@ -5006,6 +5015,7 @@ async function openLoan(id){
   loadEscrow(L.id);
   loadPayoff(L.id);
   loadNoticesAdmin();
+  loadDc101Card();
   if (f.tenant) loadTBLocation(f.tenant.id);
 }
 const ago = (iso) => {
@@ -5075,7 +5085,8 @@ async function loadTBLocation(tbId){
   }catch{}
 }
 async function loadNoticesAdmin(){
-  const rows = await api(`/api/admin/loans/${currentLoanId}/notices`);
+  // A prepared-but-unserved DC 101 is a draft: it lives in the Michigan card, not here.
+  const rows = (await api(`/api/admin/loans/${currentLoanId}/notices`)).filter(n=>!n.prepared);
   // The per-loan pause, shown where the notices it affects live.
   let pauseBar='';
   try{
@@ -5104,6 +5115,149 @@ async function loadNoticesAdmin(){
         <button class="small" onclick="refreshMailStatus(${n.id})">↻ Update</button></div>`:''}
       <details style="margin-top:4px"><summary class="note" style="cursor:pointer">View text</summary><div class="note" style="white-space:pre-wrap;margin-top:6px">${esc(n.body)}</div></details>
     </div>`).join('') : '<p class="note">No notices sent.</p>');
+}
+// ---------- Michigan DC 101 ----------
+// The forfeiture notice is a legal document with a statutory clock attached, so the
+// flow is deliberately review-first: the app fills the official form, a person reads
+// it, and one labelled click serves it. Nothing here fires on its own.
+async function loadDc101Card(){
+  const el=$('mi-dc101'); if(!el) return;
+  let rows=[]; try{ rows=await api(`/api/admin/loans/${currentLoanId}/notices`); }catch{}
+  const n=rows.find(r=>r.stage==='mi_dc101');
+  const past=LOAN_F&&LOAN_F.status&&LOAN_F.status.is_past_due;
+  if(!n){
+    el.innerHTML=`${past
+      ? '<p class="note" style="margin-bottom:8px">This loan is past due. The sweep prepares the DC 101 automatically on day 10 — or start it now.</p>'
+      : '<p class="note" style="margin-bottom:8px">Nothing to do — this loan is current.</p>'}
+      <button class="small" ${past?'':'disabled'} onclick="startDc101()">📄 Prepare DC 101 now</button>`;
+    return;
+  }
+  if(!n.served_at){
+    el.innerHTML=`<div style="padding:8px 10px;border:1px solid #f5c344;border-radius:9px;background:#fffdf4;font-size:13.5px">
+      📄 <b>DC 101 drafted and waiting for review.</b> Check the amounts and court details, then serve it.
+      <div style="margin-top:8px"><button class="primary" onclick="dc101Modal(${n.id})">Review & serve</button></div></div>`;
+    return;
+  }
+  const cureLeft=Math.ceil((new Date(n.cure_deadline+'T00:00:00Z')-new Date())/86400000);
+  const expired=cureLeft<0 && past;
+  el.innerHTML=`<div style="font-size:13.5px">
+    <div style="display:flex;justify-content:space-between;padding:5px 0"><span class="note">Served by certified mail</span><b>${fdate(n.served_at)}</b></div>
+    <div style="display:flex;justify-content:space-between;padding:5px 0"><span class="note">Tracking</span>
+      <span><b>${esc(n.lob_tracking||'—')}</b> · ${esc(n.lob_status||'created')} <button class="small" onclick="refreshMailStatus(${n.id})">↻</button></span></div>
+    <div style="display:flex;justify-content:space-between;padding:5px 0"><span class="note">Cure deadline</span>
+      <b style="color:${expired?'var(--red)':cureLeft<=3?'var(--amber)':'inherit'}">${fdate(n.cure_deadline)}
+      ${past?(expired?'— expired':`— ${cureLeft} day${cureLeft===1?'':'s'} left`):'— cured ✓'}</b></div>
+    ${expired?`<div style="padding:8px 10px;margin-top:6px;border:1px solid var(--red);border-radius:9px;background:#fff5f5">
+      ⚠️ <b>The cure period expired unpaid.</b> A File-DC 102 task with your court's filing checklist is on
+      your task list. The served DC 101 with its certificate of service is in this loan's documents.</div>`:''}
+    <div style="margin-top:8px"><a class="small" style="text-decoration:none" href="/api/admin/notices/${n.id}/dc101.pdf" target="_blank"><button class="small">👁 View served form (court copy is in Documents)</button></a></div>
+  </div>`;
+}
+async function startDc101(){
+  try{
+    const r=await api(`/api/admin/loans/${currentLoanId}/dc101/prepare`,{method:'POST'});
+    await loadDc101Card(); dc101Modal(r.notice_id);
+  }catch(e){ modal(`<h2>Cannot prepare</h2><p class="note">${esc(e.message)}</p>`); }
+}
+// One editable line per form blank, grouped the way the form reads. Values live under
+// the form's own field names, so what you see here is literally what prints.
+async function dc101Modal(id){
+  let d; try{ d=await api(`/api/admin/notices/${id}/dc101`); }
+  catch(e){ modal(`<h2>Could not load</h2><p class="note">${esc(e.message)}</p>`); return; }
+  const v=d.values||{}; const val=k=>esc(v[k]||'');
+  const chk=k=>v[k]?'checked':'';
+  const F=(k,label,ph)=>`<div class="field"><label>${label}</label><input data-dc101="${esc(k)}" value="${val(k)}" placeholder="${ph||''}"></div>`;
+  const sugg=d.court_suggestion;
+  modal(`<h2>📄 DC 101 — Forfeiture Notice</h2>
+    <p class="note" style="margin-bottom:10px">This is the official SCAO form, filled from the loan. Fix anything
+      that reads wrong — <b>the arrears figure especially</b> — then serve it. Case No. and Judge stay blank;
+      the court assigns them when the complaint is filed.</p>
+    ${sugg?`<p class="note" style="margin-bottom:10px">🏛 Suggested court for ${esc(LOAN_F.property.city||'this property')}:
+      <b>${esc(sugg.name)}</b>, ${esc(sugg.address)}${sugg.phone?' · '+esc(sugg.phone):''}
+      <button class="small" onclick="dc101FillCourt('${esc(sugg.district)}','${esc(sugg.address)}','${esc(sugg.phone)}')">Use it</button></p>`:''}
+    <div class="grid2">
+      ${F('judicial district','Judicial district','e.g. 67th')}
+      ${F('court telephone no','Court telephone')}
+    </div>
+    ${F('court address','Court address')}
+    <div class="grid2">
+      ${F('land contract date','Land contract date (m/d/yyyy)')}
+      ${F('cured or paid within days','Cure period (days — 15 minimum)')}
+    </div>
+    ${F('land contract seller or selllers names line 1','Seller(s)')}
+    ${F('land contract seller or selllers names line 2','Seller line 2 (trustee, co-seller…)')}
+    ${F('land contract purchaser or purchasers names','Purchaser(s)')}
+    ${F('address or legal description of the premises line 1','Premises — address')}
+    ${F('address or legal description of the premises line 2','Premises — legal description (optional)')}
+    <div class="grid2">
+      ${F('sum amount','Past due principal & interest ($)')}
+      ${F('payments due dates','Missed due dates')}
+    </div>
+    <div class="grid2">
+      <div class="field"><label><input type="checkbox" data-dc101="amount other" ${chk('amount other')}> Other amounts due</label>
+        <input data-dc101="other amount" value="${val('other amount')}" placeholder="$"></div>
+      ${F('other amount description','Other — description')}
+    </div>
+    ${F('demanded by name','Payment demanded by')}
+    ${F('signature','Signature (typed)','Your name, agent for seller')}
+    <div id="dc101-err" class="err hidden"></div>
+    <div class="actions" style="margin-top:10px">
+      <button class="small" onclick="saveDc101(${id},false)">💾 Save draft</button>
+      <button class="small" onclick="previewDc101(${id})">👁 Preview PDF</button>
+      <button class="primary" onclick="saveDc101(${id},true)">📬 Serve by certified mail — ${fmt(d.mail_cost_cents)}</button>
+    </div>
+    <p class="note" style="margin-top:8px">Serving starts the statutory cure clock and cannot be un-sent.
+      ${d.lob_ready?'':'<b>Certified mail is not set up — connect Lob in Settings first.</b>'}</p>`);
+}
+function dc101FillCourt(district,address,phone){
+  document.querySelector('[data-dc101="judicial district"]').value=district;
+  document.querySelector('[data-dc101="court address"]').value=address;
+  document.querySelector('[data-dc101="court telephone no"]').value=phone;
+}
+function dc101Collect(){
+  const values={};
+  document.querySelectorAll('[data-dc101]').forEach(i=>{
+    values[i.getAttribute('data-dc101')]=i.type==='checkbox'?i.checked:i.value;
+  });
+  return values;
+}
+async function saveDc101(id,serve){
+  const err=$('dc101-err'); err.classList.add('hidden');
+  const values=dc101Collect();
+  try{
+    await api(`/api/admin/notices/${id}/dc101`,{method:'PUT',body:JSON.stringify({values})});
+    if(!serve){ closeModal(); loadDc101Card(); return; }
+  }catch(e){ err.textContent=e.message; err.classList.remove('hidden'); return; }
+  modal(`<h2>Serve the DC 101?</h2>
+    <p class="note" style="margin-bottom:12px">It goes to the buyer at the property by <b>USPS certified
+      mail</b> with tracking. Service starts the cure period — <b>${esc(values['cured or paid within days']||'15')} days</b>
+      from today. The court copy with the certificate of service files itself under Documents.</p>
+    <div id="dc101-serve-err" class="err hidden"></div>
+    <button class="primary" onclick="serveDc101(${id})">Yes — serve it now</button>
+    <button class="small" onclick="dc101Modal(${id})" style="margin-left:8px">Back to the form</button>`);
+}
+async function previewDc101(id){
+  const values=dc101Collect();
+  try{ await api(`/api/admin/notices/${id}/dc101`,{method:'PUT',body:JSON.stringify({values})}); }catch{}
+  window.open(`/api/admin/notices/${id}/dc101.pdf`,'_blank');
+}
+async function serveDc101(id){
+  const err=$('dc101-serve-err'); if(err) err.classList.add('hidden');
+  try{
+    const r=await api(`/api/admin/notices/${id}/serve-dc101`,{method:'POST',body:JSON.stringify({})});
+    modal(`<h2>✅ Served</h2>
+      <p class="note">Certified mail is on its way${r.test?' — <b>test mode</b>, nothing actually printed or charged':''}.</p>
+      <div style="font-size:13.5px;margin:10px 0">
+        <div style="display:flex;justify-content:space-between;padding:4px 0"><span class="note">Tracking</span><b>${esc(r.tracking||'—')}</b></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0"><span class="note">Cure deadline</span><b>${fdate(r.cure_deadline)}</b></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0"><span class="note">Cost${r.test?' (not charged in test)':' — billed as a collection fee'}</span><b>${fmt(r.cost_cents)}</b></div>
+      </div>
+      <button class="primary" onclick="closeModal()">Done</button>`);
+    loadDc101Card(); loadNoticesAdmin();
+  }catch(e){
+    if(err){ err.textContent=e.message; err.classList.remove('hidden'); }
+    else modal(`<h2>Could not serve</h2><p class="note">${esc(e.message)}</p>`);
+  }
 }
 function customNoticeModal(){
   modal(`<h2>Send a custom notice</h2>

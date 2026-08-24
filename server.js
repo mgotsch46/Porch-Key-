@@ -28,6 +28,7 @@ backfill.maybeRunOnBoot();
 
 const pdfDoc = require('./pdf');
 const lob = require('./lob');
+const dc101 = require('./dc101');
 const escrow = require('./escrow');
 escrow.initSchema();
 
@@ -353,11 +354,13 @@ function postStripePayment(session) {
 // to open first.
 const LEGAL_NOTICE_DAYS = Number(process.env.LEGAL_NOTICE_DAYS || 30);
 
-async function sendLadderNotice({ rule, loan, property, tenant, co, status, dueDate, period, daysPast }) {
+async function sendLadderNotice({ rule, loan, property, tenant, co, status, dueDate, period, daysPast,
+                                  reserveRights, feeCharged }) {
   const wording = (rule.subject && rule.body)
     ? { subject: rule.subject, body: rule.body }
     : noticeRules.defaultWording(rule, {
-        loan, property, tenant, amountCents: status.owed_now_cents, dueDate, daysPast });
+        loan, property, tenant, amountCents: status.owed_now_cents, dueDate, daysPast,
+        reserveRights, feeCharged });
 
   const paras = wording.body.split('\n\n').map(par => `<p>${tpl.escapeHtml(par)}</p>`).join('');
   const baseUrl = process.env.BASE_URL || '';
@@ -472,6 +475,109 @@ async function sendLadderNotice({ rule, loan, property, tenant, co, status, dueD
   return noticeId;
 }
 
+// ---------- the Michigan forfeiture track ----------
+// Land contracts in Michigan get the statutory sequence instead of the generic
+// ladder: day 6 a 5-day late notice with non-waiver language (and the contractual
+// late fee, charged once per missed payment), day 10 a DC 101 forfeiture notice —
+// prepared on the official SCAO form, reviewed by a human, and served by certified
+// mail with one click. Service starts a cure clock of at least 15 days; when it runs
+// out unpaid, a File-DC 102 task appears with that district court's own filing
+// checklist. The complaint itself is filed by a person, never by a cron job.
+
+function missedDueDatesFor(loan, status) {
+  const first = new Date(loan.first_payment_date + 'T00:00:00Z');
+  const dates = [];
+  for (let i = status.payments_made_equiv; i < status.payments_due; i++) {
+    dates.push(loanEngine.addMonthsUTC(first, i).toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+function notifyAdmins(companyId, payload) {
+  for (const a of all("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL", companyId)) {
+    notify.notify(a.id, payload).catch(() => {});
+  }
+}
+
+// Draft the DC 101 — fill the form from what the app knows, park it as a prepared
+// notice, and ask a human to look before anything is mailed. A wrong arrears figure
+// on this document can sink the forfeiture case; ten seconds of eyes on it is cheap.
+function prepareDc101(loan, { period, status, property, tenant, co }) {
+  // One live DC 101 per default cycle: an unserved draft is reused, and once one has
+  // been served the legal track owns the account until it is cured or filed.
+  const open = get(`SELECT * FROM notices WHERE loan_id=? AND stage='mi_dc101' AND served_at IS NULL AND prepared=1`, loan.id);
+  if (open) return open;
+  const served = get(`SELECT id FROM notices WHERE loan_id=? AND stage='mi_dc101' AND served_at IS NOT NULL ORDER BY id DESC LIMIT 1`, loan.id);
+  if (served) return null;
+
+  const court = noticeRules.miCourtFor(property);
+  const values = dc101.buildValues({
+    company: co, property, tenant,
+    missedDueDates: missedDueDatesFor(loan, status),
+    pastDueCents: Math.max(0, status.owed_now_cents - status.fees_due_cents),
+    feesCents: status.fees_due_cents,
+    courtDistrict: property.court_district || (court && court.district) || '',
+    courtAddress: property.court_address || (court && court.address) || '',
+    courtPhone: property.court_phone || (court && court.phone) || '',
+    contractDate: loan.contract_date || '',
+    cureDays: 15,
+    signerName: '', serviceDate: '',
+  });
+
+  const subject = `Forfeiture Notice (DC 101) — ${property.address}`;
+  const body = `Prepared for review. $${(status.owed_now_cents / 100).toFixed(2)} past due; ` +
+    `serve by certified mail to start the 15-day cure period. Not yet served.`;
+  const ins = run(`INSERT INTO notices (loan_id, type, period, stage, subject, body, days_past_due, prepared, fill_json)
+    VALUES (?,?,?,?,?,?,?,1,?)`, loan.id, 'legal_notice', period, 'mi_dc101', subject, body,
+    null, JSON.stringify(values));
+  const noticeId = ins.lastInsertRowid;
+
+  try {
+    run(`INSERT INTO tasks (company_id, property_id, loan_id, title, notes, category, priority, due_date, source_key)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+      loan.company_id, loan.property_id, loan.id,
+      `Review & serve DC 101 — ${property.address}`,
+      `The forfeiture notice is filled out and waiting on the loan page. Check the amounts and the ` +
+      `court details, then serve it by certified mail with one click. Service starts the 15-day cure clock.`,
+      'legal', 'high', today(), `dc101-prep-${noticeId}`);
+  } catch (e) { /* task already exists */ }
+
+  notifyAdmins(loan.company_id, {
+    kind: 'notice', title: `DC 101 ready to review — ${property.address}`,
+    body: 'The Michigan forfeiture notice is prepared. Review and serve it from the loan page.',
+    url: '/admin', dedupeKey: `dc101-prep-${noticeId}`,
+  });
+  console.log(`DC 101 prepared for loan ${loan.id} (${property.address})`);
+  return get('SELECT * FROM notices WHERE id=?', noticeId);
+}
+
+// The morning after the cure deadline dies unpaid, the next move belongs on the task
+// list — with the right courthouse and that court's own quirks attached.
+function createDc102Task(notice, loan, property, status) {
+  const court = noticeRules.miCourtFor(property);
+  const filing = (court && court.filing) ||
+    'File with the district court for the property’s district — call ahead for fee and copy count.';
+  try {
+    const r = run(`INSERT INTO tasks (company_id, property_id, loan_id, title, notes, category, priority, due_date, source_key)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+      loan.company_id, loan.property_id, loan.id,
+      `File DC 102 — land contract forfeiture (${property.address})`,
+      `The DC 101 cure deadline (${notice.cure_deadline}) has passed and ` +
+      `$${(status.owed_now_cents / 100).toFixed(2)} is still owed.\n\n${filing}\n\n` +
+      `The served DC 101 with its certificate of service and certified-mail tracking number is filed ` +
+      `under this loan's documents. Case No. and Judge are assigned at filing — leave them blank on your copies.`,
+      'legal', 'high', today(), `dc102-${notice.id}`);
+    if (r.changes > 0) {
+      notifyAdmins(loan.company_id, {
+        kind: 'notice', title: `Cure period expired — ${property.address}`,
+        body: 'The DC 101 cure deadline passed unpaid. A filing task with the court checklist is on your list.',
+        url: '/admin', dedupeKey: `dc102-${notice.id}`,
+      });
+      console.log(`DC 102 filing task created for loan ${loan.id}`);
+    }
+  } catch (e) { /* unique source_key — already created */ }
+}
+
 async function runNoticeSweep() {
   const loans = all("SELECT * FROM loans WHERE status='active' AND tenant_user_id IS NOT NULL");
   const nowDate = new Date(today() + 'T00:00:00Z');
@@ -518,13 +624,59 @@ async function runNoticeSweep() {
         if (paid && paid.c > 0 && paid.c >= minCents) continue;
       }
 
-      noticeRules.seedLadder(loan.company_id);
-      const due = noticeRules.dueRule(loan.company_id, loan.id, period, daysPast);
-      if (!due) continue;
-
       const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
       const tenant = get('SELECT * FROM users WHERE id=?', loan.tenant_user_id);
       const co = co0;
+
+      // Michigan runs its own statutory track and never touches the generic ladder.
+      if (noticeRules.isMichigan(property)) {
+        noticeRules.seedLadder(loan.company_id);
+
+        // Once the DC 101 is out the door, the only automated job left is watching
+        // the cure clock. More notices mid-forfeiture are noise a court can quote.
+        const served = get(`SELECT * FROM notices WHERE loan_id=? AND stage='mi_dc101'
+          AND served_at IS NOT NULL ORDER BY id DESC LIMIT 1`, loan.id);
+        if (served) {
+          if (served.cure_deadline && served.cure_deadline < today()) {
+            createDc102Task(served, loan, property, status);
+          }
+          continue;
+        }
+
+        // Day 6: the 5-day late notice, with non-waiver language, and the
+        // contractual late fee charged once per missed payment — the notice then
+        // states the fee as charged, not as a maybe.
+        if (daysPast >= 6 && !get(`SELECT id FROM notices WHERE loan_id=? AND period=? AND stage='late_5'`, loan.id, period)) {
+          let feeCharged = false;
+          if (loan.late_fee_cents > 0 &&
+              !get(`SELECT id FROM ledger WHERE loan_id=? AND type='late_fee' AND memo LIKE ?`, loan.id, `%${period}%`)) {
+            run(`INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo)
+                 VALUES (?,?, 'late_fee', ?, ?)`, loan.id, today(), -loan.late_fee_cents,
+              `Late fee — ${period} missed payment (5-day notice)`);
+            run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', loan.late_fee_cents, loan.id);
+            loan = get('SELECT * FROM loans WHERE id=?', loan.id);
+            feeCharged = true;
+          }
+          const freshStatus = loanEngine.loanStatus(loan, all('SELECT * FROM ledger WHERE loan_id=?', loan.id), today());
+          const rule = get(`SELECT * FROM notice_rules WHERE company_id=? AND stage='late_5'`, loan.company_id);
+          if (rule) {
+            await sendLadderNotice({ rule, loan, property, tenant, co, status: freshStatus,
+              dueDate, period, daysPast, reserveRights: true, feeCharged });
+          }
+        }
+
+        // Day 10: fill the DC 101 and put it in front of a human.
+        if (daysPast >= 10) {
+          const freshLedger = all('SELECT * FROM ledger WHERE loan_id=?', loan.id);
+          const freshStatus = loanEngine.loanStatus(loan, freshLedger, today());
+          prepareDc101(loan, { period, status: freshStatus, property, tenant, co });
+        }
+        continue;
+      }
+
+      noticeRules.seedLadder(loan.company_id);
+      const due = noticeRules.dueRule(loan.company_id, loan.id, period, daysPast);
+      if (!due) continue;
 
       // Rungs that came due while nothing was running are recorded, not sent. Four
       // notices arriving together about one missed payment helps nobody.
@@ -2530,7 +2682,7 @@ app.get('/api/tenant/notices/:id/pdf', tenantReady, (req, res, next) => {
   try {
     const loan = tenantLoan(req);
     if (!loan) return res.status(404).json({ error: 'No loan' });
-    const n = get('SELECT * FROM notices WHERE id=? AND loan_id=?', Number(req.params.id), loan.id);
+    const n = get('SELECT * FROM notices WHERE id=? AND loan_id=? AND COALESCE(prepared,0)=0', Number(req.params.id), loan.id);
     if (!n) return res.status(404).json({ error: 'Not found' });
     sendPdf(res, noticePdf(n, loan), `notice-${n.id}.pdf`);
   } catch (e) { next(e); }
@@ -3119,6 +3271,7 @@ app.post('/api/admin/notices/:id/mail', adminOnly, async (req, res, next) => {
                    WHERE n.id=? AND l.company_id=?`, req.params.id, req.companyId);
     if (!n) return res.status(404).json({ error: 'Not found' });
     if (n.lob_id) return res.status(400).json({ error: 'This notice already went by mail — its tracking is on the notice' });
+    if (n.stage === 'mi_dc101') return res.status(400).json({ error: 'A DC 101 is served from its review screen, not mailed as a letter' });
     const service = req.body && req.body.service === 'first_class' ? 'first_class' : 'certified';
     const co = myCompany(req);
     const loan = get('SELECT * FROM loans WHERE id=?', n.loan_id);
@@ -3167,6 +3320,180 @@ app.get('/api/admin/notices/:id/mail-status', adminOnly, async (req, res, next) 
     run('UPDATE notices SET lob_status=?, lob_tracking=?, lob_expected=? WHERE id=?',
       s.status, s.tracking_number, s.expected_delivery_date, n.id);
     res.json(s);
+  } catch (e) { next(e); }
+});
+
+// ---------- DC 101: review, preview, serve ----------
+// The Michigan forfeiture notice moves in three steps that are deliberately human:
+// the sweep (or a button) prepares it, the admin reviews the filled form and can edit
+// any line, and one click serves it by certified mail. Court details typed here are
+// remembered on the property; the contract date is remembered on the loan.
+
+function dc101ValuesFrom(n, posted) {
+  const values = JSON.parse(n.fill_json || '{}');
+  if (posted && typeof posted === 'object') {
+    const known = new Set(dc101.fieldNames);
+    for (const [k, v] of Object.entries(posted)) {
+      if (known.has(k)) values[k] = v;
+    }
+  }
+  return values;
+}
+
+function getDc101(req) {
+  return get(`SELECT n.* FROM notices n JOIN loans l ON l.id=n.loan_id
+              WHERE n.id=? AND l.company_id=? AND n.stage='mi_dc101'`, req.params.id, req.companyId);
+}
+
+// Start (or fetch) the draft by hand — the sweep does this on day 10, but nothing
+// stops an admin starting earlier when the situation is already clear.
+app.post('/api/admin/loans/:id/dc101/prepare', adminOnly, (req, res, next) => {
+  try {
+    let loan = get('SELECT * FROM loans WHERE id=? AND company_id=?', req.params.id, req.companyId);
+    if (!loan) return res.status(404).json({ error: 'Loan not found' });
+    const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+    if (!noticeRules.isMichigan(property)) {
+      return res.status(400).json({ error: 'DC 101 is a Michigan form — this property is not in Michigan' });
+    }
+    loan = assessRecurringCharges(loan);
+    const ledger = all('SELECT * FROM ledger WHERE loan_id=?', loan.id);
+    const status = loanEngine.loanStatus(loan, ledger, today());
+    if (!status.is_past_due) return res.status(400).json({ error: 'This loan is current — nothing to forfeit' });
+    const tenant = loan.tenant_user_id ? get('SELECT * FROM users WHERE id=?', loan.tenant_user_id) : null;
+    const idx = status.payments_made_equiv;
+    const period = loanEngine.addMonthsUTC(new Date(loan.first_payment_date + 'T00:00:00Z'), idx)
+      .toISOString().slice(0, 7);
+    const n = prepareDc101(loan, { period, status, property, tenant, co: myCompany(req) });
+    if (!n) return res.status(400).json({ error: 'A DC 101 has already been served for this default — the cure clock is running' });
+    res.json({ ok: true, notice_id: n.id, values: JSON.parse(n.fill_json || '{}') });
+  } catch (e) { next(e); }
+});
+
+// The review screen's read: current values plus the court suggestion for the district.
+app.get('/api/admin/notices/:id/dc101', adminOnly, (req, res, next) => {
+  try {
+    const n = getDc101(req);
+    if (!n) return res.status(404).json({ error: 'Not found' });
+    const loan = get('SELECT * FROM loans WHERE id=?', n.loan_id);
+    const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+    const court = noticeRules.miCourtFor(property);
+    res.json({
+      id: n.id, loan_id: n.loan_id, prepared: n.prepared, served_at: n.served_at,
+      cure_deadline: n.cure_deadline, lob_tracking: n.lob_tracking, lob_status: n.lob_status,
+      values: JSON.parse(n.fill_json || '{}'),
+      court_suggestion: court, contract_date: loan.contract_date,
+      mail_cost_cents: lob.estimateCostCents({ service: 'certified', pages: 3 }),
+      lob_ready: lob.lobEnabled(myCompany(req)),
+    });
+  } catch (e) { next(e); }
+});
+
+// Save edits without serving — the draft keeps whatever the admin last reviewed.
+app.put('/api/admin/notices/:id/dc101', adminOnly, (req, res, next) => {
+  try {
+    const n = getDc101(req);
+    if (!n) return res.status(404).json({ error: 'Not found' });
+    if (n.served_at) return res.status(400).json({ error: 'Already served — the form cannot change after service' });
+    const values = dc101ValuesFrom(n, req.body && req.body.values);
+    run('UPDATE notices SET fill_json=? WHERE id=?', JSON.stringify(values), n.id);
+    res.json({ ok: true, values });
+  } catch (e) { next(e); }
+});
+
+// The form exactly as it stands — before service a draft preview, after service the
+// court copy with the certificate of service and tracking number on it.
+app.get('/api/admin/notices/:id/dc101.pdf', adminOnly, (req, res, next) => {
+  try {
+    const n = getDc101(req);
+    if (!n) return res.status(404).json({ error: 'Not found' });
+    const values = dc101ValuesFrom(n, null);
+    const buf = dc101.render(values);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="dc101-${n.id}.pdf"`);
+    res.send(buf);
+  } catch (e) { next(e); }
+});
+
+// Serve it. One certified letter, one started cure clock, one filed court copy.
+app.post('/api/admin/notices/:id/serve-dc101', adminOnly, async (req, res, next) => {
+  try {
+    const n = getDc101(req);
+    if (!n) return res.status(404).json({ error: 'Not found' });
+    if (n.served_at) return res.status(400).json({ error: 'Already served — the cure clock is running' });
+    const co = myCompany(req);
+    if (!lob.lobEnabled(co)) {
+      return res.status(400).json({ error: 'Certified mail is not set up — add the Lob key and your mailing address in Settings' });
+    }
+    const loan = get('SELECT * FROM loans WHERE id=?', n.loan_id);
+    const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+    const tenant = loan.tenant_user_id ? get('SELECT * FROM users WHERE id=?', loan.tenant_user_id) : null;
+    if (!property || !property.address) return res.status(400).json({ error: 'No property address to serve at' });
+
+    const values = dc101ValuesFrom(n, req.body && req.body.values);
+    // Service date and signer are stamped at the moment of service, not before.
+    values['date'] = values['date'] || undefined;
+    const serviceDate = today();
+    const usService = `${Number(serviceDate.slice(5, 7))}/${Number(serviceDate.slice(8, 10))}/${serviceDate.slice(0, 4)}`;
+    values['date'] = usService;
+    if (!values['signature']) values['signature'] = `${req.user.name || 'Agent'}, agent for seller`;
+
+    // Court details and the contract date, remembered for the next time this house —
+    // or this loan — needs paperwork.
+    run('UPDATE properties SET court_district=COALESCE(?,court_district), court_address=COALESCE(?,court_address), court_phone=COALESCE(?,court_phone) WHERE id=?',
+      values['judicial district'] || null, values['court address'] || null, values['court telephone no'] || null, property.id);
+    if (req.body && req.body.contract_date) {
+      run('UPDATE loans SET contract_date=? WHERE id=?', req.body.contract_date, loan.id);
+    }
+
+    const buyerPdf = dc101.render(values);
+    const sent = await lob.sendLetter(co, {
+      to: { name: (tenant && tenant.name) || 'Occupant', address_line1: property.address,
+            address_city: property.city, address_state: property.state, address_zip: property.zip },
+      pdf: buyerPdf, pdfPages: 2,
+      description: `DC 101 forfeiture notice — loan ${loan.id}`,
+      idempotencyKey: `dc101-${n.id}`, service: 'certified',
+    });
+
+    const cureDays = Math.max(15, parseInt(values['cured or paid within days'], 10) || 15);
+    const cure = new Date(serviceDate + 'T00:00:00Z');
+    cure.setUTCDate(cure.getUTCDate() + cureDays);
+    const cureDeadline = cure.toISOString().slice(0, 10);
+
+    run(`UPDATE notices SET prepared=0, served_at=?, cure_deadline=?, fill_json=?,
+          subject=?, body=?, lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=?,
+          delivery_json=? WHERE id=?`,
+      serviceDate, cureDeadline, JSON.stringify(values),
+      `Forfeiture Notice (DC 101) — ${property.address}`,
+      `Served by certified mail on ${usService}. Cure deadline ${cureDeadline}. Tracking ${sent.tracking_number || sent.id}.`,
+      sent.id, sent.tracking_number, sent.expected_delivery_date, sent.cost_cents || null,
+      JSON.stringify({ mail: { ok: true, lob_id: sent.id, tracking: sent.tracking_number, test: sent.test } }), n.id);
+
+    // The court copy: same form, certificate of service completed with the tracking
+    // number. This is the exhibit that goes with the DC 102.
+    try {
+      const courtPdf = dc101.render({
+        ...values,
+        ...dc101.certificateValues({ tenant, property, mailedAt: serviceDate,
+          tracking: sent.tracking_number, signerName: values['signature'] }),
+      });
+      const stored = crypto.randomUUID() + '.pdf';
+      fs.writeFileSync(path.join(UPLOAD_DIR, stored), courtPdf);
+      run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+           VALUES (?,?,?,?,?,?,?,?,?,0)`,
+        loan.company_id, loan.id, loan.property_id, 'other', 'private',
+        `DC 101 served ${usService} — certified (${sent.tracking_number || sent.id})`,
+        `dc101-served-${n.id}.pdf`, stored, 'application/pdf');
+    } catch (e) { console.error('DC 101 court copy not filed:', e.message); }
+
+    if (sent.cost_cents > 0 && !sent.test) {
+      run(`INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo) VALUES (?,?, 'fee', ?, ?)`,
+        loan.id, today(), -sent.cost_cents, `Collection fee — DC 101 certified mail (${sent.tracking_number || sent.id})`);
+      run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', sent.cost_cents, loan.id);
+    }
+    run(`UPDATE tasks SET status='done', completed_at=datetime('now') WHERE source_key=? AND status='open'`, `dc101-prep-${n.id}`);
+
+    res.json({ ok: true, tracking: sent.tracking_number, cost_cents: sent.cost_cents,
+      cure_deadline: cureDeadline, test: sent.test });
   } catch (e) { next(e); }
 });
 
@@ -4296,7 +4623,8 @@ app.post('/api/admin/notice-sweep', adminOnly, async (req, res, next) => {
 app.get('/api/tenant/notices', tenantReady, (req, res) => {
   const loan = get('SELECT * FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', req.user.id);
   if (!loan) return res.json([]);
-  res.json(all('SELECT * FROM notices WHERE loan_id=? ORDER BY id DESC', loan.id));
+  // A prepared-but-unserved DC 101 is a draft on the admin's desk, not a notice.
+  res.json(all('SELECT * FROM notices WHERE loan_id=? AND COALESCE(prepared,0)=0 ORDER BY id DESC', loan.id));
 });
 app.post('/api/tenant/notices/:id/read', tenantReady, (req, res) => {
   const loan = get('SELECT * FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', req.user.id);
@@ -4734,7 +5062,7 @@ app.get('/api/account/export', anyUser, (req, res) => {
       out.property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
       out.payment_history = all('SELECT * FROM ledger WHERE loan_id=? ORDER BY id', loan.id);
       out.messages = all('SELECT body, created_at, sender_user_id FROM messages WHERE loan_id=? ORDER BY id', loan.id);
-      out.notices = all('SELECT type, subject, body, sent_at, read_at FROM notices WHERE loan_id=? ORDER BY id', loan.id);
+      out.notices = all('SELECT type, subject, body, sent_at, read_at FROM notices WHERE loan_id=? AND COALESCE(prepared,0)=0 ORDER BY id', loan.id);
       out.documents = all('SELECT filename, category, created_at FROM documents WHERE loan_id=? AND visible_to_tenant=1', loan.id);
     }
   }

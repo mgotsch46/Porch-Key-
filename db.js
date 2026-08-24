@@ -900,6 +900,25 @@ addColumnIfMissing('tasks', 'source_key', 'TEXT');
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_source
   ON tasks(source_key) WHERE source_key IS NOT NULL;`);
 
+// ---------- Michigan forfeiture track ----------
+// A property in Michigan carries its district court on its back — typed once, reused
+// on every DC 101 the house ever needs.
+addColumnIfMissing('properties', 'court_district', 'TEXT');
+addColumnIfMissing('properties', 'court_address', 'TEXT');
+addColumnIfMissing('properties', 'court_phone', 'TEXT');
+// The date on the land contract itself — the form asks for it, and it is not the
+// first payment date.
+addColumnIfMissing('loans', 'contract_date', 'TEXT');
+// A DC 101 lives on the notices table like every other notice, but it has a life
+// cycle the others don't: prepared (drafted by the sweep, waiting for a human),
+// served (mailed certified; the statutory clock starts), and a cure deadline the
+// watcher compares against the calendar. fill_json holds the reviewed field values
+// so the court copy re-renders exactly as served.
+addColumnIfMissing('notices', 'prepared', 'INTEGER NOT NULL DEFAULT 0');
+addColumnIfMissing('notices', 'served_at', 'TEXT');
+addColumnIfMissing('notices', 'cure_deadline', 'TEXT');
+addColumnIfMissing('notices', 'fill_json', 'TEXT');
+
 
 // ---------- contacts ----------
 // The people you deal with on a house: boots on the ground, the attorney, the insurance
