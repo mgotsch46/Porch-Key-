@@ -1708,7 +1708,8 @@ function editPropModal(pid){
       <div class="field"><label>Insurance carrier</label><input id="ep-carrier" value="${esc(v(p.insurance_carrier))}"></div>
       <div class="field"><label>Insurance expires</label><input id="ep-insexp" type="date" value="${v(p.insurance_expires)}"></div>
     </div>
-    <div class="field"><label>Next tax due</label><input id="ep-taxdue" type="date" value="${v(p.tax_due_date)}"></div>
+    <div class="field"><label>Taxes due — 1st installment</label><input id="ep-taxdue" type="date" value="${v(p.tax_due_date)}"></div>
+    <div class="field"><label>Taxes due — 2nd installment</label><input id="ep-taxdue2" type="date" value="${v(p.tax_due_date2)}"></div>
     <div class="field"><label>Notes</label><textarea id="ep-notes" rows="3">${esc(v(p.notes))}</textarea></div>
     <div id="ep-err" class="err hidden"></div>
     <button class="primary" onclick="saveProp(${pid})">Save changes</button>`);
@@ -1727,7 +1728,7 @@ async function saveProp(pid){
       purchase_price_cents:cents('ep-price'), target_sale_price_cents:cents('ep-target'),
       late_fee_cents:cents('ep-latefee'), grace_days:num('ep-grace'), due_day:num('ep-dueday'),
       insurance_carrier:$('ep-carrier').value.trim(), insurance_expires:$('ep-insexp').value||null,
-      tax_due_date:$('ep-taxdue').value||null, notes:$('ep-notes').value })});
+      tax_due_date:$('ep-taxdue').value||null, tax_due_date2:$('ep-taxdue2').value||null, notes:$('ep-notes').value })});
     closeModal(); await loadProps(); openProp(pid);
   }catch(e){ $('ep-err').textContent=e.message; $('ep-err').classList.remove('hidden'); }
 }
@@ -2228,7 +2229,8 @@ function propTermsModal(pid){
     <div class="grid3">
       <div class="field"><label>Insurance expires</label><input id="pt-insexp" type="date" value="${p.insurance_expires||''}"></div>
       <div class="field"><label>Insurance carrier</label><input id="pt-inscar" value="${esc(p.insurance_carrier||'')}" placeholder="State Farm"></div>
-      <div class="field"><label>Property taxes due</label><input id="pt-taxdue" type="date" value="${p.tax_due_date||''}"></div>
+      <div class="field"><label>Taxes due — 1st installment <span class="note">(e.g. summer)</span></label><input id="pt-taxdue" type="date" value="${p.tax_due_date||''}"></div>
+      <div class="field"><label>Taxes due — 2nd installment <span class="note">(e.g. winter)</span></label><input id="pt-taxdue2" type="date" value="${p.tax_due_date2||''}"></div>
     </div>
     <div id="pt-err" class="err hidden"></div>
     <button class="primary" onclick="savePropTerms(${pid})">Save</button>`);
@@ -2242,7 +2244,7 @@ async function savePropTerms(pid){
       owner_name:$('pt-owner').value||null, owner_type:$('pt-ownertype').value,
       trustee:$('pt-trustee').value||null,
       insurance_expires:$('pt-insexp').value||null, insurance_carrier:$('pt-inscar').value||null,
-      tax_due_date:$('pt-taxdue').value||null })});
+      tax_due_date:$('pt-taxdue').value||null, tax_due_date2:$('pt-taxdue2').value||null })});
     closeModal(); await loadProps(); openProp(pid);
   }catch(e){ $('pt-err').textContent=e.message; $('pt-err').classList.remove('hidden'); }
 }
@@ -4535,7 +4537,8 @@ function pmlModal(presetProp, e){
   modal(`<h2>${edit?'Edit lender loan':'Add PML loan'}</h2>
     <div class="grid2">
       <div class="field"><label>Lender name</label><input id="pm-lender" value="${edit?esc(v.lender_name||''):''}"></div>
-      <div class="field"><label>Lender contact (email/phone)</label><input id="pm-contact" value="${edit?esc(v.lender_contact||''):''}"></div>
+      <div class="field"><label>Lender phone</label><input id="pm-phone" inputmode="tel" placeholder="(555) 555-5555" value="${edit?esc(v.lender_phone||''):''}"></div>
+      <div class="field"><label>Lender email</label><input id="pm-email" type="email" placeholder="lender@example.com" value="${edit?esc(v.lender_email||''):''}"></div>
       <div class="field"><label>Property</label><select id="pm-prop">${PROPS.map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('')}</select>
         ${edit?'<p class="note" style="margin-top:4px">Moving the loan takes its ledger with it — history follows the loan, not the house.</p>':''}</div>
       <div class="field"><label>Lien position</label><select id="pm-lien"><option value="1">1st</option><option value="2">2nd</option><option value="3">3rd</option></select></div>
@@ -4564,7 +4567,8 @@ function pmlModal(presetProp, e){
   }
 }
 function pmlBody(){
-  return { lender_name:$('pm-lender').value, lender_contact:$('pm-contact').value,
+  return { lender_name:$('pm-lender').value,
+    lender_phone:$('pm-phone').value, lender_email:$('pm-email').value,
     lien_position:Number($('pm-lien').value), principal_cents:Math.round(parseFloat($('pm-principal').value)*100),
     interest_rate_bps:pctToBps($('pm-rate').value), term_months:parseInt($('pm-term').value),
     payment_type:$('pm-type').value, payment_cents:$('pm-pmt').value?Math.round(parseFloat($('pm-pmt').value)*100):null,
@@ -4619,9 +4623,12 @@ async function openPML(id){
   </div>
   <div class="card">
     <h2>${esc(p.lender_name)} — ${esc(f.property?f.property.address:'')} <span class="pill gray">lien ${p.lien_position}</span></h2>
-    <p class="note">${rateStr(p.interest_rate_bps)}% · ${p.term_months} mo · ${p.payment_type.replace('_',' ')} · first payment ${fdate(p.first_payment_date)}${p.balloon_date?' · balloon due '+fdate(p.balloon_date):''}${p.lender_contact?' · '+esc(p.lender_contact):''}</p>
+    <p class="note">${rateStr(p.interest_rate_bps)}% · ${p.term_months} mo · ${p.payment_type.replace('_',' ')} · first payment ${fdate(p.first_payment_date)}${p.balloon_date?' · balloon due '+fdate(p.balloon_date):''}${p.lender_phone?' · 📱 '+esc(p.lender_phone):''}${p.lender_email?' · 📧 '+esc(p.lender_email):''}</p>
     <p class="note">Next payment due: ${fdate(f.next_due_date)} · Original principal ${fmt(p.principal_cents)}${p.notes?' · '+esc(p.notes):''}</p>
     <div class="actions"><button class="primary" onclick="pmlPayModal()">💵 Record payment to lender</button>
+      ${p.lender_phone?`<button class="small" onclick="callNow('${esc(p.lender_phone)}','${esc(p.lender_name)}')">📞 Call</button>
+      <button class="small" onclick="location.href='sms:'+String('${esc(p.lender_phone)}').replace(/[^+\d]/g,'')">📲 Text</button>`:''}
+      ${p.lender_email?`<a href="mailto:${esc(p.lender_email)}" style="text-decoration:none"><button class="small">📧 Email</button></a>`:''}
       <button class="small" onclick="pmlDrawModal()">Record additional draw</button>
       <button class="small" onclick="pmlScheduleModal(${p.id})">⏱️ Payment schedule</button>
       <button class="small" onclick="pmlModal(null, PML_CACHE)">✏️ Edit loan</button>

@@ -584,6 +584,18 @@ CREATE INDEX IF NOT EXISTS idx_recurring_costs_due ON recurring_costs(active, ne
 // Trust documents were briefly a buyer-visible bucket. They are the ownership
 // structure, not the buyer's file — pull back anything already shared. Idempotent.
 try { run("UPDATE documents SET visible_to_tenant=0 WHERE category='trust_docs' AND visible_to_tenant=1"); } catch {}
+// Lenders get a real phone and a real email, not one free-text "contact" field.
+// Whatever was already typed into lender_contact sorts itself into the right slot.
+addColumnIfMissing('pml_loans', 'lender_phone', 'TEXT');
+addColumnIfMissing('pml_loans', 'lender_email', 'TEXT');
+try {
+  for (const pl of all(`SELECT id, lender_contact FROM pml_loans
+      WHERE lender_contact IS NOT NULL AND lender_contact <> '' AND lender_phone IS NULL AND lender_email IS NULL`)) {
+    const c = String(pl.lender_contact).trim();
+    if (/@/.test(c) && !/\d{7}/.test(c.replace(/@.*/, ''))) run('UPDATE pml_loans SET lender_email=? WHERE id=?', c, pl.id);
+    else if ((c.match(/\d/g) || []).length >= 7) run('UPDATE pml_loans SET lender_phone=? WHERE id=?', c, pl.id);
+  }
+} catch {}
 // The notice pause is a per-loan exception, not a company policy. NULL means no rule:
 // notices run on normal timing. A loan with no rule inherits nothing from anywhere.
 addColumnIfMissing('loans', 'notice_pause_days', 'INTEGER');
@@ -880,6 +892,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_property ON tasks(property_id);
 addColumnIfMissing('properties', 'insurance_expires', 'TEXT');
 addColumnIfMissing('properties', 'insurance_carrier', 'TEXT');
 addColumnIfMissing('properties', 'tax_due_date', 'TEXT');
+// Most counties bill in two installments — summer and winter in Michigan.
+addColumnIfMissing('properties', 'tax_due_date2', 'TEXT');
 // Auto-generated tasks carry the thing they came from, so the sweep that creates them
 // can run as often as it likes without ever making a second copy.
 addColumnIfMissing('tasks', 'source_key', 'TEXT');

@@ -979,13 +979,13 @@ app.put('/api/admin/properties/:id', adminOnly, (req, res) => {
        notes=?, lat=?, lng=?, owner_name=?, owner_type=?, beds=?, baths=?, sqft=?, year_built=?,
        acquired_date=?, purchase_price_cents=?, target_sale_price_cents=?,
        late_fee_cents=?, grace_days=?, due_day=?,
-       insurance_carrier=?, insurance_expires=?, tax_due_date=? WHERE id=?`,
+       insurance_carrier=?, insurance_expires=?, tax_due_date=?, tax_due_date2=? WHERE id=?`,
     b.address, b.city, b.state, b.zip, b.county ?? null, b.trust_name, b.trustee,
     b.notes, b.lat ?? null, b.lng ?? null, b.owner_name ?? null, b.owner_type ?? null,
     n(b.beds), b.baths === '' || b.baths == null ? null : Number(b.baths), n(b.sqft), n(b.year_built),
     b.acquired_date || null, n(b.purchase_price_cents), n(b.target_sale_price_cents),
     n(b.late_fee_cents), n(b.grace_days), n(b.due_day),
-    b.insurance_carrier || null, b.insurance_expires || null, b.tax_due_date || null, p.id);
+    b.insurance_carrier || null, b.insurance_expires || null, b.tax_due_date || null, b.tax_due_date2 || null, p.id);
   res.json(get('SELECT * FROM properties WHERE id=?', p.id));
 });
 
@@ -1489,7 +1489,7 @@ app.get('/api/admin/calendar', adminOnly, (req, res) => {
 
   // 5. Renewals that belong to the house.
   if (want('renewals')) {
-    for (const p of all(`SELECT id, address, insurance_expires, insurance_carrier, tax_due_date
+    for (const p of all(`SELECT id, address, insurance_expires, insurance_carrier, tax_due_date, tax_due_date2
       FROM properties WHERE company_id=?`, req.companyId)) {
       if (p.insurance_expires && p.insurance_expires >= from && p.insurance_expires <= to) {
         events.push({
@@ -1499,12 +1499,15 @@ app.get('/api/admin/calendar', adminOnly, (req, res) => {
           overdue: p.insurance_expires < todayStr(),
         });
       }
-      if (p.tax_due_date && p.tax_due_date >= from && p.tax_due_date <= to) {
-        events.push({
-          source: 'renewal', id: `tax-${p.id}`, date: p.tax_due_date, icon: '🏛️',
-          title: 'Property taxes due', property_id: p.id, property_address: p.address,
-          overdue: p.tax_due_date < todayStr(),
-        });
+      for (const [n, d] of [[1, p.tax_due_date], [2, p.tax_due_date2]]) {
+        if (d && d >= from && d <= to) {
+          events.push({
+            source: 'renewal', id: `tax-${p.id}-${n}`, date: d, icon: '🏛️',
+            title: `Property taxes due${p.tax_due_date && p.tax_due_date2 ? ` (${n === 1 ? '1st' : '2nd'} installment)` : ''}`,
+            property_id: p.id, property_address: p.address,
+            overdue: d < todayStr(),
+          });
+        }
       }
     }
   }
@@ -1963,7 +1966,7 @@ app.put('/api/admin/properties/:id/details', adminOnly, (req, res) => {
         target_sale_price_cents=?, beds=?, baths=?, sqft=?, year_built=?, notes=?,
         late_fee_cents=?, grace_days=?, due_day=?,
         owner_name=?, owner_type=?, trustee=?,
-        insurance_expires=?, insurance_carrier=?, tax_due_date=? WHERE id=?`,
+        insurance_expires=?, insurance_carrier=?, tax_due_date=?, tax_due_date2=? WHERE id=?`,
     b.status || p.status, b.acquired_date ?? p.acquired_date,
     b.purchase_price_cents ?? p.purchase_price_cents, b.target_sale_price_cents ?? p.target_sale_price_cents,
     b.beds ?? p.beds, b.baths ?? p.baths, b.sqft ?? p.sqft, b.year_built ?? p.year_built,
@@ -1971,7 +1974,7 @@ app.put('/api/admin/properties/:id/details', adminOnly, (req, res) => {
     b.due_day ?? p.due_day,
     b.owner_name ?? p.owner_name, b.owner_type ?? p.owner_type, b.trustee ?? p.trustee,
     b.insurance_expires ?? p.insurance_expires, b.insurance_carrier ?? p.insurance_carrier,
-    b.tax_due_date ?? p.tax_due_date, p.id);
+    b.tax_due_date ?? p.tax_due_date, b.tax_due_date2 ?? p.tax_due_date2, p.id);
   res.json(get('SELECT * FROM properties WHERE id=?', p.id));
 });
 
@@ -3992,10 +3995,12 @@ app.post('/api/admin/pml', adminOnly, (req, res) => {
       : loanEngine.calcPayment(b.principal_cents, b.interest_rate_bps, b.term_months);
   }
   if (!ownedProperty(req, b.property_id)) return res.status(404).json({ error: 'Property not found' });
-  const r = run(`INSERT INTO pml_loans (company_id, property_id, lender_name, lender_contact, lien_position, principal_cents,
+  const r = run(`INSERT INTO pml_loans (company_id, property_id, lender_name, lender_contact, lender_phone, lender_email, lien_position, principal_cents,
       interest_rate_bps, term_months, payment_type, payment_cents, balloon_date, first_payment_date,
-      principal_balance_cents, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    req.companyId, b.property_id, b.lender_name, b.lender_contact || null, b.lien_position || 1, b.principal_cents,
+      principal_balance_cents, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    req.companyId, b.property_id, b.lender_name, b.lender_contact || null,
+    b.lender_phone ? addr.formatPhone(b.lender_phone) : null, b.lender_email || null,
+    b.lien_position || 1, b.principal_cents,
     b.interest_rate_bps, b.term_months, type, payment, b.balloon_date || null, b.first_payment_date,
     b.principal_cents, b.notes || null);
   res.json(get('SELECT * FROM pml_loans WHERE id=?', r.lastInsertRowid));
@@ -4079,12 +4084,14 @@ app.put('/api/admin/pml/:id', adminOnly, (req, res, next) => {
     const balance = paidAnything ? pml.principal_balance_cents
       : num(b.principal_balance_cents, principal);
 
-    run(`UPDATE pml_loans SET property_id=?, lender_name=?, lender_contact=?, lien_position=?, status=?,
+    run(`UPDATE pml_loans SET property_id=?, lender_name=?, lender_contact=?, lender_phone=?, lender_email=?, lien_position=?, status=?,
            principal_cents=?, interest_rate_bps=?, term_months=?, payment_type=?, payment_cents=?,
            balloon_date=?, first_payment_date=?, principal_balance_cents=?, notes=? WHERE id=?`,
       propertyId,
       String(b.lender_name || pml.lender_name).trim(),
       b.lender_contact !== undefined ? (b.lender_contact || null) : pml.lender_contact,
+      b.lender_phone !== undefined ? (b.lender_phone ? addr.formatPhone(b.lender_phone) : null) : pml.lender_phone,
+      b.lender_email !== undefined ? (b.lender_email || null) : pml.lender_email,
       num(b.lien_position, pml.lien_position), b.status || pml.status,
       principal, rate, term, type, payment,
       b.balloon_date !== undefined ? (b.balloon_date || null) : pml.balloon_date,

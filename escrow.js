@@ -355,16 +355,18 @@ function syncPrepTasks(companyId, { workingDays = PREP_WORKING_DAYS } = {}) {
   }
 
   // And the dates recorded straight on a property, for houses with no escrow set up.
-  const props = all(`SELECT id, address, tax_due_date, insurance_expires, insurance_carrier
+  const props = all(`SELECT id, address, tax_due_date, tax_due_date2, insurance_expires, insurance_carrier
     FROM properties WHERE company_id=? AND archived_at IS NULL`, companyId);
   for (const p of props) {
-    if (p.tax_due_date && p.tax_due_date <= horizon) {
-      ensure({
-        key: `prop_tax:${p.id}:${p.tax_due_date}`, propertyId: p.id,
-        title: `Property tax due ${p.tax_due_date} — ${p.address}`,
-        notes: 'Recorded on the property. Confirm the amount with the county before paying.',
-        dueDate: subtractBusinessDays(p.tax_due_date, workingDays), category: 'taxes',
-      });
+    for (const taxDate of [p.tax_due_date, p.tax_due_date2]) {
+      if (taxDate && taxDate <= horizon) {
+        ensure({
+          key: `prop_tax:${p.id}:${taxDate}`, propertyId: p.id,
+          title: `Property tax due ${taxDate} — ${p.address}`,
+          notes: 'Recorded on the property. Confirm the amount with the county before paying.',
+          dueDate: subtractBusinessDays(taxDate, workingDays), category: 'taxes',
+        });
+      }
     }
     if (p.insurance_expires && p.insurance_expires <= horizon) {
       ensure({

@@ -816,6 +816,40 @@ async function main() {
     await req('/api/admin/staff/' + st.json.id, { method: 'DELETE' });
   }
 
+  console.log('— two property tax installments');
+  {
+    const tp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '50 TwoTax Ter', city: 'Flint', state: 'MI', zip: '48503' }) });
+    r = await req('/api/admin/properties/' + tp.json.id + '/terms', { method: 'PUT', body: JSON.stringify({
+      tax_due_date: '2026-09-14', tax_due_date2: '2027-02-14' }) });
+    if (r.status === 404) {
+      // terms endpoint lives under a different path in this build — use the general update
+      r = await req('/api/admin/properties/' + tp.json.id, { method: 'PUT', body: JSON.stringify({
+        tax_due_date: '2026-09-14', tax_due_date2: '2027-02-14' }) });
+    }
+    ok(r.status === 200, 'both tax dates saved');
+    const pv = await req('/api/admin/properties/' + tp.json.id);
+    ok(pv.json.property.tax_due_date === '2026-09-14' && pv.json.property.tax_due_date2 === '2027-02-14',
+      'summer and winter installments round-trip');
+    // Both appear on the calendar, labelled.
+    r = await req('/api/admin/calendar?from=2026-09-01&to=2027-03-01');
+    const taxEvents = (r.json.events || r.json).filter(e => e.property_id === tp.json.id && /taxes due/i.test(e.title));
+    ok(taxEvents.length === 2, `both installments land on the calendar (${taxEvents.length})`);
+    ok(taxEvents.some(e => /1st/.test(e.title)) && taxEvents.some(e => /2nd/.test(e.title)), 'labelled 1st and 2nd installment');
+  }
+
+  console.log('— lender phone and email');
+  {
+    const lp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '40 Lender Ln', city: 'Flint', state: 'MI', zip: '48503' }) });
+    r = await req('/api/admin/pml', { method: 'POST', body: JSON.stringify({
+      property_id: lp.json.id, lender_name: 'Reach Capital', lender_phone: '5554443333',
+      lender_email: 'funds@reach.example', principal_cents: 1000000,
+      interest_rate_bps: 1000, term_months: 60, first_payment_date: '2026-09-01' }) });
+    ok(r.status === 200 && r.json.lender_email === 'funds@reach.example', 'lender email stored');
+    ok(/555/.test(r.json.lender_phone), 'lender phone stored formatted');
+    r = await req('/api/admin/pml/' + r.json.id, { method: 'PUT', body: JSON.stringify({ lender_phone: '5551112222', lender_email: 'newdesk@reach.example' }) });
+    ok(/1112222|111-2222/.test(r.json.lender_phone) && r.json.lender_email === 'newdesk@reach.example', 'both editable');
+  }
+
   console.log('— moving a PML loan to another property');
   {
     const pa = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '21 Move St', city: 'Flint', state: 'MI', zip: '48503' }) });
