@@ -72,8 +72,11 @@ async function placeCall(to, adminPhone, company, { announce, record, baseUrl } 
     ? ` record="record-from-answer-dual" recordingStatusCallback="${baseUrl}/api/voice/recording?co=${company.id}&amp;kind=call"`
     : '';
   const whisper = record && baseUrl ? ` url="${baseUrl}/api/voice/announce"` : '';
+  // The action URL hears how the dial went, so even an unrecorded call gets its
+  // outcome and duration in the log.
+  const done = baseUrl ? ` action="${baseUrl}/api/voice/dial-done?co=${company.id}"` : '';
   const twiml = `<Response><Say voice="alice">Connecting you to ${who}.${record ? ' This call may be recorded.' : ''} One moment.</Say>` +
-    `<Dial callerId="${c.from}" timeout="25"${recAttrs}><Number${whisper}>${number}</Number></Dial></Response>`;
+    `<Dial callerId="${c.from}" timeout="25"${recAttrs}${done}><Number${whisper}>${number}</Number></Dial></Response>`;
   const params = new URLSearchParams({ To: mine, From: c.from, Twiml: twiml });
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/Calls.json`, {
     method: 'POST',
@@ -94,16 +97,47 @@ async function placeCall(to, adminPhone, company, { announce, record, baseUrl } 
 const crypto = require('node:crypto');
 const b64url = (input) => Buffer.from(input).toString('base64')
   .replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+// The grant carries both directions. Outgoing lets the browser place calls through the
+// TwiML app; incoming lets Twilio ring this client by name, which is what makes the
+// softphone answerable and not just a dialer.
 function voiceToken({ accountSid, keySid, keySecret, appSid, identity }) {
   if (!accountSid || !keySid || !keySecret || !appSid) throw new Error('Softphone is not fully configured');
   const now = Math.floor(Date.now() / 1000);
   const header = b64url(JSON.stringify({ typ: 'JWT', alg: 'HS256', cty: 'twilio-fpa;v=1' }));
   const payload = b64url(JSON.stringify({
     jti: `${keySid}-${now}`, iss: keySid, sub: accountSid, iat: now, exp: now + 3600,
-    grants: { identity, voice: { outgoing: { application_sid: appSid } } },
+    grants: {
+      identity,
+      voice: {
+        outgoing: { application_sid: appSid },
+        incoming: { allow: true },
+      },
+    },
   }));
   const sig = b64url(crypto.createHmac('sha256', keySecret).update(`${header}.${payload}`).digest());
   return `${header}.${payload}.${sig}`;
+}
+
+// Proof that a webhook really came from Twilio. Twilio signs the full request URL plus
+// every POST field, sorted by name and concatenated, with the account's auth token. Our
+// voice endpoints cannot use a session cookie — Twilio has none — so this signature is
+// the only thing standing between the internet and an endpoint that places billed calls.
+function expectedSignature(authToken, url, params) {
+  const body = Object.keys(params || {}).sort()
+    .map(k => k + (params[k] == null ? '' : params[k])).join('');
+  return crypto.createHmac('sha1', authToken).update(Buffer.from(url + body, 'utf-8')).digest('base64');
+}
+// A timing-safe compare that does not throw on length mismatch.
+function sameSignature(a, b) {
+  const x = Buffer.from(String(a || ''));
+  const y = Buffer.from(String(b || ''));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+// Behind Railway's proxy the URL Twilio signed is not always the URL we see, so a few
+// plausible spellings are checked rather than guessing one and rejecting real calls.
+function validateWebhook({ authToken, signature, urls, params }) {
+  if (!authToken || !signature) return false;
+  return (urls || []).some(u => sameSignature(signature, expectedSignature(authToken, u, params)));
 }
 
 // Twilio's error codes are famously opaque. Translate the ones that actually happen.
@@ -163,4 +197,5 @@ function autoReplyTwiml(companyName) {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${esc(body)}</Message></Response>`;
 }
 
-module.exports = { smsEnabled, sendSms, placeCall, voiceToken, normalizePhone, inviteMessage, autoReplyTwiml, creds, verifyCreds };
+module.exports = { smsEnabled, sendSms, placeCall, voiceToken, normalizePhone, inviteMessage, autoReplyTwiml, creds, verifyCreds,
+                   validateWebhook, expectedSignature };

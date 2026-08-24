@@ -450,6 +450,11 @@ addColumnIfMissing('companies', 'record_calls', 'INTEGER DEFAULT 0');
 addColumnIfMissing('companies', 'voicemail_greeting', 'TEXT');
 addColumnIfMissing('companies', 'forward_calls', 'INTEGER DEFAULT 0');
 addColumnIfMissing('companies', 'voice_intel_sid', 'TEXT');   // Twilio Intelligence service, for call transcripts
+// Where a person's calls happen by default. 'softphone' talks through the browser;
+// 'cell' rings their own handset and bridges. Either way the call runs through Twilio,
+// so recording and transcription behave identically — the only difference is the
+// hardware in your hand. NULL means "never chosen", and the app decides by device.
+addColumnIfMissing('users', 'call_mode', 'TEXT');
 db.exec(`
 CREATE TABLE IF NOT EXISTS call_recordings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -977,6 +982,42 @@ CREATE TABLE IF NOT EXISTS contact_messages (
 CREATE INDEX IF NOT EXISTS idx_cmsg_contact ON contact_messages(contact_id, id);
 CREATE INDEX IF NOT EXISTS idx_cmsg_company ON contact_messages(company_id, id);
 `);
+
+// ---------- the call log ----------
+// Every call leaves a row the moment it happens — placed from the browser, bridged to a
+// cell, or arriving on the business number — whether or not recording is on. Without
+// this, call history only existed when a recording did, and the unified communication
+// log would have holes exactly where recording was off. Duration and status arrive
+// later from Twilio's callbacks; a row with none means the call was placed and nothing
+// more was heard, which is itself worth knowing.
+db.exec(`
+CREATE TABLE IF NOT EXISTS call_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER NOT NULL REFERENCES companies(id),
+  direction TEXT NOT NULL CHECK (direction IN ('out','in')),
+  mode TEXT CHECK (mode IN ('softphone','cell','inbound')),
+  call_sid TEXT,
+  counterpart_phone TEXT,            -- the buyer's/vendor's number, normalized
+  counterpart_name TEXT,             -- as known at call time; history survives renames
+  user_id INTEGER REFERENCES users(id),
+  loan_id INTEGER REFERENCES loans(id),
+  contact_id INTEGER REFERENCES contacts(id),
+  property_id INTEGER REFERENCES properties(id),
+  duration_sec INTEGER,
+  status TEXT DEFAULT 'placed',      -- placed | completed | missed | voicemail
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_call_log_co ON call_log(company_id, id);
+CREATE INDEX IF NOT EXISTS idx_call_log_prop ON call_log(property_id, id);
+CREATE INDEX IF NOT EXISTS idx_call_log_sid ON call_log(call_sid);
+`);
+
+// Emails filed against the property and the vendor they concern, not only the loan —
+// added here, after contacts and properties exist, because a column with a foreign key
+// reference cannot be added before the table it points at.
+addColumnIfMissing('email_log', 'property_id', 'INTEGER REFERENCES properties(id)');
+addColumnIfMissing('email_log', 'contact_id', 'INTEGER REFERENCES contacts(id)');
+db.exec(`CREATE INDEX IF NOT EXISTS idx_email_log_prop ON email_log(property_id, id);`);
 
 
 // ---------- notes ----------

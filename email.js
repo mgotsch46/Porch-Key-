@@ -116,7 +116,17 @@ function encodeHeader(text) {
 }
 
 function formatFrom(address, displayName) {
-  return displayName ? `${encodeHeader(displayName)} <${address}>` : address;
+  if (!displayName) return address;
+  const name = String(displayName);
+  // A display name with a comma — "SAA Property Management, LLC" — must be quoted, or
+  // the header reads as two addresses and mail clients show the sender as "LLC". Any
+  // RFC 5322 special gets the same treatment.
+  if (/^[\x20-\x7E]*$/.test(name)) {
+    const needsQuotes = /[",;:<>@()\[\]\\.]/.test(name);
+    const safe = needsQuotes ? `"${name.replace(/[\\"]/g, '\\$&')}"` : name;
+    return `${safe} <${address}>`;
+  }
+  return `${encodeHeader(name)} <${address}>`;
 }
 
 // Quoted-printable keeps long HTML inside SMTP's 998-character line limit without

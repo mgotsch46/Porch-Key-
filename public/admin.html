@@ -421,7 +421,10 @@ aside button.signout{margin-top:6px;color:#7FA3B2}
   font-family:inherit;font-weight:600;margin-bottom:8px;cursor:pointer;color:var(--ink)}
 .wstep{flex:1;height:4px;border-radius:2px;background:var(--line)}
 .wstep.on{background:var(--brand)}
-.modal{background:#fff;border-radius:18px;padding:26px;width:100%;max-width:660px;max-height:92vh;overflow:auto}
+.modal-x{position:absolute;top:10px;right:12px;border:0;background:none;font-size:17px;
+  line-height:1;cursor:pointer;color:var(--gray,#6B7A5F);padding:6px;border-radius:8px;z-index:2}
+.modal-x:hover{background:rgba(0,0,0,.06)}
+.modal{position:relative;background:#fff;border-radius:18px;padding:26px;width:100%;max-width:660px;max-height:92vh;overflow:auto}
 .tabs-inline{display:flex;gap:7px;margin-bottom:16px;flex-wrap:wrap}
 .tabs-inline button{background:#EDF2F0;border:none;border-radius:10px;padding:8px 16px;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer;color:var(--mut)}
 .tabs-inline button.active{background:var(--brand);color:#fff}
@@ -827,6 +830,25 @@ a{color:var(--brand);font-weight:600}
         </div>
         <div id="ca-msg" class="note" style="margin-top:10px"></div>
       </div>
+
+      <!-- Extra payments: optional, additive, and honest about what they buy. -->
+      <div class="card" style="margin-bottom:14px">
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="margin:0;min-width:180px">
+            <label>Extra every month <span class="note">— optional</span></label>
+            <input id="ca-extra-mo" type="number" step="0.01" inputmode="decimal" placeholder="0.00" oninput="calcInput(this.id)"></div>
+          <div class="field" style="margin:0;min-width:140px">
+            <label>One-time extra</label>
+            <input id="ca-extra-amt" type="number" step="0.01" inputmode="decimal" placeholder="amount"></div>
+          <div class="field" style="margin:0;min-width:110px">
+            <label>At month #</label>
+            <input id="ca-extra-n" type="number" inputmode="numeric" placeholder="e.g. 12"></div>
+          <button class="small" onclick="calcAddExtra()">＋ Add</button>
+        </div>
+        <div id="ca-extra-list" style="margin-top:8px"></div>
+        <p class="note" style="margin-top:8px">Extra money goes straight to principal, so the loan pays off sooner
+          and the interest on the retired balance is never charged.</p>
+      </div>
       <div id="ca-out"></div>
     </section>
 
@@ -912,14 +934,6 @@ a{color:var(--brand);font-weight:600}
     <!-- EXPENSES -->
     <section id="pg-exp" class="hidden">
       <h1>Property Expenses</h1>
-      <div class="card">
-        <h2>Linked accounts</h2>
-        <p class="note" style="margin-bottom:12px">Connect your business bank and credit cards once, then pull transactions in whenever you want instead of uploading statements.</p>
-        <div id="linked-list"></div>
-        <button class="primary" style="margin-top:12px" onclick="linkAccount()">🔗 Link a bank or card</button>
-        <div id="link-status" class="note" style="margin-top:10px"></div>
-      </div>
-
       <div class="card">
         <h2>Import a bank / credit card statement</h2>
         <p class="note" style="margin-bottom:10px">Upload a statement (PDF or CSV). Claude extracts every expense; you then assign each one to a property or ignore it.</p>
@@ -1368,6 +1382,10 @@ async function boot(){
     loadDash();
     wireAddressFields();          // the wizard and Settings are on the page, not in a modal
     maybeWizard().catch(()=>{});
+    // Start listening for calls. A softphone that can only dial is half a phone, and the
+    // browser has to be registered with Twilio *before* the call arrives — not when a
+    // Call button is pressed.
+    startSoftphoneListener().catch(()=>{});
   }catch{ $('v-login').classList.remove('hidden'); }
 }
 async function doLogin(){
@@ -1378,7 +1396,12 @@ async function doLogin(){
     location.reload();
   }catch(e){ $('login-err').textContent=e.message; $('login-err').classList.remove('hidden'); }
 }
-async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
+async function logout(){
+  // Tell Twilio to stop ringing this browser before the session goes away, otherwise
+  // inbound calls spend their ring window on a tab that no longer exists.
+  try{ if(VOICE_DEVICE) await VOICE_DEVICE.unregister(); }catch{}
+  await api('/api/logout',{method:'POST'}); location.reload();
+}
 
 function nav(pg){
   for(const p of ['dash','loans','loan','docs','ledger','pml','pmld','tbs','props','propd','calc','tasks','cal','contacts','reports','templates','reminders','invites','exp','msgs','slips','settings']){
@@ -1386,7 +1409,7 @@ function nav(pg){
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
   }
   if(pg==='dash'){loadDash();loadDashTasks();loadDashAgenda();} if(pg==='loans')loadLoans(); if(pg==='tbs')loadTBs();
-  if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();loadLinked();}
+  if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();}
   if(pg==='msgs')openMsgs();
   if(pg==='pml'){loadProps();loadPML();}
   if(pg==='settings'){loadSettings();loadTexting();loadEmail();loadBooks();loadNotices();loadLob();loadOrphans();wireAddressFields();}
@@ -1646,6 +1669,17 @@ async function openProp(id){
       <div id="prop-tasks"><p class="note">Loading…</p></div>
     </div>
   </div>
+  <div class="card"><h2>📡 Communications</h2>
+    <p class="note" style="margin-bottom:10px">Every call, text, and email that touched this house — buyer and
+      vendors alike, newest first.</p>
+    <div class="segbtn" style="margin-bottom:12px">
+      <button id="cx-all" class="active" onclick="loadPropComms('')">All</button>
+      <button id="cx-call" onclick="loadPropComms('call')">📞 Calls</button>
+      <button id="cx-text" onclick="loadPropComms('text')">💬 Texts</button>
+      <button id="cx-email" onclick="loadPropComms('email')">✉️ Email</button>
+    </div>
+    <div id="prop-comms"><p class="note">Loading…</p></div>
+  </div>
   <div class="card"><h2>📝 Notes</h2>
     <p class="note" style="margin-bottom:12px">Anything worth remembering about this house — a phone call,
       a handshake, a code, a warning. Internal only; a buyer never sees these.</p>
@@ -1654,8 +1688,39 @@ async function openProp(id){
   <div id="prop-books"></div>`;
   loadPropContacts(p.id);
   loadPropTasks(p.id);
+  loadPropComms('');
   loadNotes({elId:'prop-notes', property_id:p.id});
   loadPropBooks(p.id);
+}
+
+// The unified timeline. One request, one list; the filter chips just re-ask.
+async function loadPropComms(channel){
+  const el=$('prop-comms'); if(!el||!currentPropId) return;
+  for(const id of ['cx-all','cx-call','cx-text','cx-email'])
+    if($(id)) $(id).classList.toggle('active', id==='cx-'+(channel||'all'));
+  let d;
+  try{ d=await api(`/api/admin/properties/${currentPropId}/comms${channel?'?channel='+channel:''}`); }
+  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  if(!d.events.length){
+    el.innerHTML='<p class="note">Nothing yet — calls, texts, and emails will appear here as they happen.</p>';
+    return;
+  }
+  const ICON={call:'📞',voicemail:'📼',text:'💬',message:'📩',email:'✉️'};
+  const mmss=(sec)=>sec?` · ${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`:'';
+  el.innerHTML=d.events.map(ev=>`
+    <div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13.5px">
+      <span style="flex:0 0 auto">${ICON[ev.channel]||'•'}</span>
+      <span style="flex:1;min-width:0">
+        <b>${ev.direction==='in'?'⬅':'➡'} ${esc(ev.who||'')}</b>
+        ${ev.summary?` — ${esc(ev.summary)}`:''}
+        ${ev.status==='failed'||ev.status==='bounced'?` <span class="pill due">${esc(ev.status)}</span>`:''}
+        ${ev.body?`<div class="note" style="white-space:pre-wrap;overflow:hidden;text-overflow:ellipsis;max-height:60px">${esc(ev.body)}</div>`:''}
+        ${ev.transcript?`<div class="note" style="white-space:pre-wrap;max-height:60px;overflow:hidden">“${esc(ev.transcript)}”</div>`:''}
+        ${ev.recording_id?`<audio controls preload="none" style="height:28px;max-width:100%;margin-top:4px"
+          src="/api/admin/recordings/${ev.recording_id}/audio"></audio>`:''}
+      </span>
+      <span class="note" style="flex:0 0 auto;white-space:nowrap">${ago(ev.ts)}${mmss(ev.duration_sec)}</span>
+    </div>`).join('');
 }
 
 // ---------- payment methods ----------
@@ -2727,7 +2792,7 @@ function msgTab(which){
 
 async function loadTextThreads(){
   const r=await api('/api/admin/contacts');
-  CONTACTS=r.contacts; CONTACT_ROLES=r.roles; SMS_ON=r.sms_enabled;
+  CONTACTS=r.contacts; CONTACT_ROLES=r.roles; SMS_ON=r.sms_enabled; indexContactPhones(CONTACTS);
   $('msg-smsnote').textContent = SMS_ON
     ? 'Texting is connected.'
     : 'Texting is not connected yet — add your Twilio details in Settings.';
@@ -2815,6 +2880,10 @@ async function loadDashAgenda(){
 async function loadTexting(){
   const el=$('set-texting'); if(!el) return;
   const t=await api('/api/admin/texting');
+  // Remember what the dialer needs so Call buttons anywhere in the app know which
+  // device to use without asking the server again.
+  CALL_MODE=t.call_mode||null; CALL_MY_PHONE=t.my_phone||null;
+  CALL_SOFTPHONE_READY=!!t.voice_configured;
   if(t.connected){
     setTimeout(loadRecordings,0);
     el.innerHTML=`
@@ -2852,6 +2921,28 @@ async function loadTexting(){
       <div id="vs-err" class="err hidden"></div><div id="vs-ok" class="okmsg hidden"></div>
       <button class="primary" onclick="saveVoiceSettings()">Save recording &amp; voicemail</button>
       <div id="rec-list" style="margin-top:14px"><p class="note">Loading recordings…</p></div>
+
+      <h3 style="margin:18px 0 6px;font-size:14px">🔎 Is calling actually working?</h3>
+      <p class="note" style="margin-bottom:8px">Asks Twilio what it really has configured and compares it to what
+        this app expects — so a typo in the console shows up here instead of as a missed call.</p>
+      <button class="small" onclick="runVoiceCheck()">Check my calling setup</button>
+      <div id="vchk" style="margin-top:10px"></div>
+
+      <h3 style="margin:18px 0 6px;font-size:14px">📱 Where your calls happen</h3>
+      <p class="note" style="margin-bottom:8px">Both choices go out through your business number and both are
+        recorded and transcribed the same way — the only difference is what you hold while you talk. You can
+        override this on any single call.</p>
+      <div class="field"><label>Calls ring</label>
+        <select id="cm-mode">
+          <option value=""${!t.call_mode?' selected':''}>Decide by device — softphone at the desk, cell on mobile</option>
+          <option value="softphone"${t.call_mode==='softphone'?' selected':''}${t.voice_configured?'':' disabled'}>
+            This browser — the softphone${t.voice_configured?'':' (set it up below first)'}</option>
+          <option value="cell"${t.call_mode==='cell'?' selected':''}>My cell — PorchPay rings me, then connects us</option>
+        </select></div>
+      <div class="field"><label>The number that should ring <span class="note">— only used for cell calls</span></label>
+        <input id="cm-phone" placeholder="${t.my_phone?esc(t.my_phone):'(555) 555-5555'}" inputmode="tel" autocomplete="off"></div>
+      <div id="cm-err" class="err hidden"></div><div id="cm-ok" class="okmsg hidden"></div>
+      <button class="primary" onclick="saveCallMode()">Save calling preference</button>
 
       <h3 style="margin:18px 0 6px;font-size:14px">📞 Calling from inside the app</h3>
       ${t.voice_configured
@@ -3120,12 +3211,24 @@ async function restoreOrphan(stored){
     loadOrphans();
   }catch(e){ alert(e.message); }
 }
-// The dialer, two tiers. Tier one is the browser softphone: mic and speaker, the call
-// lives entirely in this window, and goes out from the business number. Tier two — when
-// the softphone is not set up or the mic is refused — is the call bridge: your own
-// phone rings, you answer, you are connected. Either way the buyer sees the business
-// number and never a personal cell.
+// The dialer, two ways to talk, one call. The softphone runs the call in this window
+// through the mic and speaker. The bridge rings your own handset and joins you. Both go
+// out through Twilio from the business number, so the buyer never sees a personal cell
+// and — this is the part worth remembering — recording and transcription are identical
+// either way. Choosing your cell does not opt out of the record.
+//
+// CALL_MODE is the saved default ('softphone' | 'cell' | null for "decide by device").
+// Every dial screen can override it for that one call without changing the default.
 let VOICE_DEVICE=null, VOICE_CALL=null, VOICE_TIMER=null;
+let CALL_MODE=null, CALL_MY_PHONE=null, CALL_SOFTPHONE_READY=false;
+
+// A phone-shaped screen almost always means the person is holding the phone, so the
+// handset is the better guess when nothing has been chosen.
+function defaultCallMode(){
+  if(CALL_MODE==='softphone'||CALL_MODE==='cell') return CALL_MODE;
+  if(!CALL_SOFTPHONE_READY) return 'cell';
+  return matchMedia('(max-width: 700px)').matches ? 'cell' : 'softphone';
+}
 function loadTwilioSdk(){
   return new Promise((ok,err)=>{
     if(window.Twilio&&window.Twilio.Device) return ok();
@@ -3135,31 +3238,43 @@ function loadTwilioSdk(){
     document.head.appendChild(s);
   });
 }
-async function callNow(phone,name,myPhone){
-  const bridgeOnly = myPhone==='use-bridge';
-  if(bridgeOnly) myPhone=undefined;
-  // Prefer the softphone when it is configured.
-  if(!myPhone && !bridgeOnly){
+// The single entry point every Call button uses. mode is optional and overrides the
+// saved default for this call only.
+async function callNow(phone,name,mode){
+  const use = (mode==='softphone'||mode==='cell') ? mode : defaultCallMode();
+  if(use==='softphone'){
     try{
       const t=await api('/api/admin/voice-token');
       return softphoneCall(phone,name,t.token);
-    }catch(e){ /* not configured — fall through to the bridge */ }
+    }catch(e){
+      // Not configured at all — no point pretending. Go straight to the handset.
+      if(/not_configured/.test(e.message)) return bridgeCall(phone,name);
+      throw e;
+    }
   }
+  return bridgeCall(phone,name);
+}
+
+// Ring my own phone, then join me to theirs.
+async function bridgeCall(phone,name,myPhone){
   try{
     const r=await api('/api/admin/call',{method:'POST',body:JSON.stringify({
       to:phone, name:name||undefined, my_phone:myPhone||undefined })});
+    CALL_MY_PHONE=r.my_phone||CALL_MY_PHONE;
     modal(`<h2>📞 Calling ${esc(name||phone)}</h2>
       <p style="margin-bottom:10px"><b>Your phone (${esc(r.my_phone)}) is ringing now.</b> Answer it and you'll be
         connected${name?' to '+esc(name):''}.</p>
-      <p class="note" style="margin-bottom:12px">They see your business number — never your personal one.</p>
+      <p class="note" style="margin-bottom:12px">They see your business number — never your personal one, and the call
+        is recorded and transcribed exactly as it would be from the softphone.</p>
+      ${CALL_SOFTPHONE_READY?`<button class="small" onclick="closeModal();callNow('${esc(phone)}','${esc(name||'')}','softphone')">Talk here instead</button>`:''}
       <button class="primary" onclick="closeModal()">Got it</button>`);
   }catch(e){
     if(/need_phone/.test(e.message)){
       modal(`<h2>One thing first — your phone number</h2>
-        <p class="note" style="margin-bottom:12px">Calls work by ringing <b>your</b> phone, then connecting you.
-          Which number should ring? Asked once; remembered after.</p>
+        <p class="note" style="margin-bottom:12px">Calling on your cell works by ringing <b>your</b> phone, then
+          connecting you. Which number should ring? Asked once; remembered after.</p>
         <div class="field"><label>Your mobile</label><input id="cn-my" placeholder="(555) 555-5555" inputmode="tel"></div>
-        <button class="primary" onclick="callNow('${esc(phone)}','${esc(name||'')}',$('cn-my').value)">Save &amp; call</button>`);
+        <button class="primary" onclick="bridgeCall('${esc(phone)}','${esc(name||'')}',$('cn-my').value)">Save &amp; call</button>`);
       return;
     }
     alert(e.message);
@@ -3173,15 +3288,18 @@ async function softphoneCall(phone,name,token){
       <button class="warn" id="sp-hang" onclick="softphoneHangup()">Hang up</button>
     </div>
     <p class="note" style="margin-top:12px">This call runs from your business number, right here in the app.
-      Keep this window open while you talk.</p>`);
+      Keep this window open while you talk.</p>
+    <p class="note" style="margin-top:6px"><a href="#" onclick="event.preventDefault();softphoneHangup();callNow('${esc(phone)}','${esc(name||'')}','cell')">Ring my cell for this one instead</a></p>`);
   const status=m=>{ const el=$('sp-status'); if(el) el.textContent=m; };
   try{
     await loadTwilioSdk();
+    // Reuse the registered device when there is one, so answering and dialing share a
+    // single connection rather than fighting over the microphone.
     if(!VOICE_DEVICE){
-      VOICE_DEVICE=new Twilio.Device(token,{ logLevel:'silent' });
-    } else {
-      VOICE_DEVICE.updateToken(token);
+      await startSoftphoneListener();
     }
+    if(!VOICE_DEVICE) VOICE_DEVICE=new Twilio.Device(token,{ logLevel:'silent' });
+    else VOICE_DEVICE.updateToken(token);
     status('Dialing…');
     VOICE_CALL=await VOICE_DEVICE.connect({ params:{ To: phone } });
     $('sp-mute').disabled=false;
@@ -3200,10 +3318,104 @@ async function softphoneCall(phone,name,token){
     modal(`<h2>Softphone couldn't start</h2>
       <p class="note" style="margin-bottom:12px">${esc(e.message||'The browser blocked the call.')}
         The microphone permission is the usual cause.</p>
-      <button class="primary" onclick="closeModal();callNow('${esc(phone)}','${esc(name||'')}','use-bridge')">Ring my phone instead</button>
+      <button class="primary" onclick="closeModal();callNow('${esc(phone)}','${esc(name||'')}','cell')">Ring my phone instead</button>
       <button class="small" onclick="closeModal()">Cancel</button>`);
   }
 }
+// ---- listening for calls ----
+// Registering the browser with Twilio is what turns the softphone from a dialer into a
+// phone. It has to happen while nothing is going on, because by the time a call is
+// ringing it is far too late to ask for a token.
+let VOICE_INCOMING=null, VOICE_RING=null;
+async function startSoftphoneListener(){
+  let t;
+  try{ t=await api('/api/admin/voice-token'); }
+  catch(e){ return; }                       // softphone not set up — nothing to listen with
+  CALL_SOFTPHONE_READY=true;
+  await loadTwilioSdk();
+  if(!VOICE_DEVICE) VOICE_DEVICE=new Twilio.Device(t.token,{ logLevel:'silent', closeProtection:true });
+  else VOICE_DEVICE.updateToken(t.token);
+
+  // Tokens last an hour. Twilio warns us shortly before expiry; fetch a fresh one so a
+  // browser left open overnight is still reachable in the morning.
+  VOICE_DEVICE.on('tokenWillExpire', async()=>{
+    try{ const n=await api('/api/admin/voice-token'); VOICE_DEVICE.updateToken(n.token); }catch{}
+  });
+  VOICE_DEVICE.on('incoming', showIncomingCall);
+  VOICE_DEVICE.on('unregistered', ()=>{ /* re-registered by the next token refresh */ });
+  try{ await VOICE_DEVICE.register(); }catch(e){ /* mic or network blocked — the cell still rings */ }
+}
+
+// A call is ringing this browser. Answer or decline; declining lets the other legs keep
+// ringing and, unanswered, the caller still lands in voicemail.
+function showIncomingCall(call){
+  VOICE_INCOMING=call;
+  const from=(call.parameters&&call.parameters.From)||'someone';
+  // Put a name to the number when we know it — a ringing phone is not the moment to be
+  // reading digits.
+  const known=(CONTACT_INDEX&&CONTACT_INDEX[String(from).replace(/\D/g,'').slice(-10)])||null;
+  modal(`<h2>📞 Incoming call</h2>
+    <p style="margin-bottom:4px;font-size:19px"><b>${esc(known||prettyPhone(from))}</b></p>
+    ${known?`<p class="note" style="margin-bottom:12px">${esc(prettyPhone(from))}</p>`:'<p class="note" style="margin-bottom:12px">Not in your contacts.</p>'}
+    <div class="actions">
+      <button class="primary" onclick="answerIncoming()">Answer here</button>
+      <button class="warn" onclick="declineIncoming()">Decline</button>
+    </div>
+    <p class="note" style="margin-top:12px">Declining doesn't hang up on them — your other
+      phones keep ringing, and unanswered goes to voicemail.</p>`);
+  // A ring you can hear, built from the audio context rather than a sound file.
+  try{
+    const ac=new (window.AudioContext||window.webkitAudioContext)();
+    VOICE_RING=setInterval(()=>{
+      const o=ac.createOscillator(), g=ac.createGain();
+      o.frequency.value=440; g.gain.value=0.06; o.connect(g); g.connect(ac.destination);
+      o.start(); o.stop(ac.currentTime+0.9);
+    },2000);
+  }catch{}
+  const stop=()=>{ clearInterval(VOICE_RING); VOICE_RING=null; };
+  call.on('cancel',()=>{ stop(); VOICE_INCOMING=null; closeModal(); toast('Missed call — check voicemail.'); });
+  call.on('disconnect',()=>{ stop(); VOICE_INCOMING=null; });
+  call.on('reject',stop);
+}
+function answerIncoming(){
+  if(!VOICE_INCOMING) return closeModal();
+  clearInterval(VOICE_RING); VOICE_RING=null;
+  const call=VOICE_INCOMING; VOICE_CALL=call; VOICE_INCOMING=null;
+  const from=(call.parameters&&call.parameters.From)||'';
+  modal(`<h2>📞 ${esc(prettyPhone(from))}</h2>
+    <p id="sp-status" class="note" style="margin-bottom:12px">Connecting…</p>
+    <div class="actions">
+      <button class="small" id="sp-mute" onclick="softphoneMute()">🎙️ Mute</button>
+      <button class="warn" id="sp-hang" onclick="softphoneHangup()">Hang up</button>
+    </div>`);
+  const started=Date.now();
+  const status=m=>{ const el=$('sp-status'); if(el) el.textContent=m; };
+  VOICE_TIMER=setInterval(()=>{
+    const sec=Math.floor((Date.now()-started)/1000);
+    status(`In call — ${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`);
+  },1000);
+  call.on('disconnect',()=>{ clearInterval(VOICE_TIMER); status('Call ended.');
+    const h=$('sp-hang'); if(h){ h.textContent='Close'; h.onclick=closeModal; } VOICE_CALL=null; });
+  call.accept();
+}
+function declineIncoming(){
+  if(VOICE_INCOMING){ try{ VOICE_INCOMING.reject(); }catch{} VOICE_INCOMING=null; }
+  clearInterval(VOICE_RING); VOICE_RING=null;
+  closeModal();
+}
+function prettyPhone(n){
+  const d=String(n||'').replace(/\D/g,'').slice(-10);
+  return d.length===10 ? `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}` : String(n||'unknown');
+}
+// Numbers we can name, filled in as contacts load. Missing is fine — the call still rings.
+let CONTACT_INDEX={};
+function indexContactPhones(list){
+  for(const c of (list||[])){
+    const d=String(c.phone||'').replace(/\D/g,'').slice(-10);
+    if(d.length===10 && c.name) CONTACT_INDEX[d]=c.name;
+  }
+}
+
 function softphoneMute(){
   if(!VOICE_CALL) return;
   const m=!VOICE_CALL.isMuted();
@@ -3231,6 +3443,36 @@ async function sendQuickText(loanId){
     await api(`/api/admin/loans/${loanId}/messages`,{method:'POST',body:JSON.stringify({ body, channels:['sms'] })});
     closeModal(); toast('Text sent from your business number.');
   }catch(e){ $('qt-err').textContent=e.message; $('qt-err').classList.remove('hidden'); }
+}
+async function runVoiceCheck(){
+  const box=$('vchk'); box.innerHTML='<p class="note">Asking Twilio…</p>';
+  try{
+    const r=await api('/api/admin/voice-check');
+    box.innerHTML =
+      `<p class="${r.ok?'okmsg':'err'}" style="margin-bottom:8px">${r.ok
+        ? 'Everything checks out — calls will reach you and go out from your business number.'
+        : 'Some things need fixing. Each one below says exactly where to fix it.'}</p>` +
+      r.checks.map(c=>`
+        <div style="padding:8px 0;border-bottom:1px solid var(--line)">
+          <div><b>${c.ok?'✅':'⚠️'} ${esc(c.name)}</b></div>
+          ${c.detail?`<div class="note">${esc(c.detail)}</div>`:''}
+          ${c.fix?`<div class="note" style="margin-top:4px"><b>Fix:</b> ${esc(c.fix)}</div>`:''}
+        </div>`).join('');
+  }catch(e){ box.innerHTML=`<p class="err">${esc(e.message)}</p>`; }
+}
+async function saveCallMode(){
+  $('cm-err').classList.add('hidden'); $('cm-ok').classList.add('hidden');
+  try{
+    const r=await api('/api/admin/call-mode',{method:'PUT',body:JSON.stringify({
+      call_mode:$('cm-mode').value||null, my_phone:$('cm-phone').value||undefined })});
+    CALL_MODE=r.call_mode||null; CALL_MY_PHONE=r.my_phone||null;
+    $('cm-ok').textContent = r.call_mode==='cell'
+      ? `Saved — Call buttons will ring ${r.my_phone||'your phone'} and connect you.`
+      : r.call_mode==='softphone'
+        ? 'Saved — Call buttons will talk through this browser.'
+        : 'Saved — the app will pick the softphone at the desk and your cell on mobile.';
+    $('cm-ok').classList.remove('hidden');
+  }catch(e){ $('cm-err').textContent=e.message; $('cm-err').classList.remove('hidden'); }
 }
 async function saveVoiceSettings(){
   $('vs-err').classList.add('hidden'); $('vs-ok').classList.add('hidden');
@@ -3555,7 +3797,7 @@ async function loadContacts(){
   $('ctf-active').classList.toggle('active',!ctArchived);
   $('ctf-arch').classList.toggle('active',ctArchived);
   const r=await api('/api/admin/contacts'+(ctArchived?'?archived=1':''));
-  CONTACT_ROLES=r.roles; CONTACTS=r.contacts; SMS_ON=r.sms_enabled;
+  CONTACT_ROLES=r.roles; CONTACTS=r.contacts; SMS_ON=r.sms_enabled; indexContactPhones(CONTACTS);
   if($('ct-role') && !$('ct-role').dataset.filled){
     $('ct-role').dataset.filled='1';
     $('ct-role').innerHTML='<option value="">All roles</option>'
@@ -4086,6 +4328,24 @@ async function sendTemplate(){
 
 // ---------- amortization calculator ----------
 let calcTimer=null, CALC_LAST=null;
+// One-time extra payments: { month_n, amount_cents }, each removable with its ✕.
+let CALC_EXTRAS=[];
+function calcAddExtra(){
+  const amt=Math.round((parseFloat($('ca-extra-amt').value)||0)*100);
+  const n=parseInt($('ca-extra-n').value)||0;
+  if(amt<=0||n<1){ toast('Give an amount and the payment number it lands on.'); return; }
+  CALC_EXTRAS.push({ month_n:n, amount_cents:amt });
+  $('ca-extra-amt').value=''; $('ca-extra-n').value='';
+  calcRenderExtras(); calcSolve();
+}
+function calcDropExtra(i){ CALC_EXTRAS.splice(i,1); calcRenderExtras(); calcSolve(); }
+function calcRenderExtras(){
+  const el=$('ca-extra-list'); if(!el) return;
+  el.innerHTML=CALC_EXTRAS.map((e,i)=>
+    `<span style="display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:16px;padding:3px 10px;margin:0 6px 6px 0;font-size:13px">
+      ${fmt(e.amount_cents)} at month ${e.month_n}
+      <button class="clr" title="Remove" onclick="calcDropExtra(${i})">✕</button></span>`).join('');
+}
 // The field the user last cleared is the one we solve for, so typing over an answer
 // hands the question to whatever is now empty.
 // The full ledger, on its own page. Rendered from the loan already in memory — the
@@ -4193,6 +4453,8 @@ function calcClear(){
   });
   if($('ca-interest')) $('ca-interest').value='';
   $('ca-out').innerHTML=''; $('ca-msg').textContent=''; CALC_LAST=null; CALC_OPEN=false;
+  CALC_EXTRAS=[]; calcRenderExtras();
+  ['ca-extra-mo','ca-extra-amt','ca-extra-n'].forEach(id=>{ if($(id)) $(id).value=''; });
   if($('ca-solving')){ $('ca-solving').className='solvebar'; $('ca-solving').textContent='Waiting on three values…'; }
   if($('ca-termyrs')) $('ca-termyrs').textContent='';
 }
@@ -4206,6 +4468,9 @@ function calcSolve(){
     if(v('ca-term')) q.set('term_months', parseInt(v('ca-term')));
     if(v('ca-payment')) q.set('payment_cents', Math.round(parseFloat(v('ca-payment'))*100));
     if(v('ca-first')) q.set('first_payment_date', v('ca-first'));
+    const exMo=Math.round((parseFloat(v('ca-extra-mo'))||0)*100);
+    if(exMo>0) q.set('extra_monthly_cents', exMo);
+    if(CALC_EXTRAS.length) q.set('extra_once', JSON.stringify(CALC_EXTRAS));
     const filled=['ca-principal','ca-rate','ca-term','ca-payment'].filter(id=>v(id)!=='').length;
     if(filled<3){ $('ca-msg').textContent='Fill in any three of the four above.'; $('ca-out').innerHTML=''; return; }
     try{
@@ -4274,6 +4539,16 @@ function calcSolve(){
           <div class="stat"><div class="n">${((r.total_interest_cents/r.principal_cents)*100).toFixed(0)}%</div><div class="l">Interest vs principal</div></div>
           <div class="stat"><div class="n" style="font-size:20px">${r.final_payment_date?fdate(r.final_payment_date):'—'}</div><div class="l">Paid off</div></div>
         </div>
+        ${r.extra?`
+        <div class="card" style="border-color:#54A32F;background:#F6FBF2">
+          <b style="display:block;margin-bottom:8px">💪 With your extra payments</b>
+          <div class="cards">
+            <div class="stat"><div class="n" style="font-size:20px">${r.extra.final_payment_date?fdate(r.extra.final_payment_date):'—'}</div><div class="l">Paid off instead</div></div>
+            <div class="stat"><div class="n">${r.extra.months_saved}</div><div class="l">Months sooner${r.extra.months_saved>=12?` (${Math.floor(r.extra.months_saved/12)}y ${r.extra.months_saved%12}m)`:''}</div></div>
+            <div class="stat"><div class="n" style="color:#3F8C24">${fmt(r.extra.interest_saved_cents)}</div><div class="l">Interest never charged</div></div>
+            <div class="stat"><div class="n">${fmt(r.extra.total_interest_cents)}</div><div class="l">Total interest paid</div></div>
+          </div>
+        </div>`:''}
         <div class="card">
           <button class="disclose" id="sched-toggle" onclick="toggleCalcSched()">
             <span class="chev">▸</span>
@@ -5052,6 +5327,11 @@ async function openLoan(id){
     <p class="note" style="margin-bottom:8px">Late and legal notices go out automatically when a payment is past grace and nothing has been confirmed received. ✓✓ = buyer opened it (read receipt).</p>
     <div id="notices-admin"></div>
   </div>
+  <div class="card"><h2>🗺️ Late-payment workflow${f.property&&f.property.state?` — ${esc(f.property.state)}`:''}</h2>
+    <p class="note" style="margin-bottom:10px">This loan's state decides the track. Every step shows here as it
+      happens — messages, emails, texts, mail — and anything needing human review creates a task and waits.</p>
+    <div id="loan-workflow"><p class="note">Loading…</p></div>
+  </div>
   ${f.property&&String(f.property.state||'').trim().toUpperCase()==='MI'?`
   <div class="card"><h2>⚖️ Michigan forfeiture track — DC 101</h2>
     <p class="note" style="margin-bottom:8px">Michigan land contracts run the statutory clock instead of the
@@ -5105,7 +5385,39 @@ async function openLoan(id){
   loadPayoff(L.id);
   loadNoticesAdmin();
   loadDc101Card();
+  loadWorkflow(L.id);
   if (f.tenant) loadTBLocation(f.tenant.id);
+}
+
+// The state's late-payment track, drawn as a stepper. Green happened, amber is waiting
+// on a person, the arrow marks what fires next, gray is still ahead.
+async function loadWorkflow(loanId){
+  const el=$('loan-workflow'); if(!el) return;
+  let w;
+  try{ w=await api(`/api/admin/loans/${loanId}/workflow`); }
+  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  const head = w.legal_hold
+    ? '<p class="note" style="margin-bottom:8px">⏸ <b>Legal hold</b> — automated notices are stopped while counsel has the file.</p>'
+    : w.is_past_due
+      ? `<p class="note" style="margin-bottom:8px"><b>${w.days_past_due} days past due</b> on ${esc(w.period||'')} — ${fmt(w.owed_now_cents)} owed now.</p>`
+      : '<p class="note" style="margin-bottom:8px">✅ Current — the track below only starts if a payment is missed.</p>';
+  const DOT={done:'🟢',skipped:'⚪',active:'🔵',waiting:'🟡',next:'➡️',upcoming:'⚪',idle:'⚪'};
+  const KIND={auto:'runs itself',review:'human review',human:'a person does this'};
+  const CHAN={app:'📩 app',email:'✉️ email',sms:'💬 text',mail:'📮 mail'};
+  el.innerHTML = head + w.steps.map(st=>`
+    <div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px;${st.state==='upcoming'||st.state==='idle'?'opacity:.55':''}">
+      <span style="flex:0 0 auto">${DOT[st.state]||'⚪'}</span>
+      <span style="flex:1;min-width:0">
+        <b>${esc(st.label)}</b>
+        ${st.day?`<span class="note"> · day ${st.day}</span>`:''}
+        <span class="pill ${st.kind==='auto'?'gray':'due'}" style="margin-left:6px">${KIND[st.kind]||st.kind}</span>
+        ${st.done_at?`<span class="note"> · ${fdate(st.done_at.slice(0,10))}</span>`:''}
+        ${(st.channels||[]).length?`<span class="note"> · went by ${st.channels.map(c=>CHAN[c]||c).join(', ')}</span>`:''}
+        ${st.detail?`<div class="note" style="margin-top:2px">${esc(st.detail)}</div>`:''}
+        ${st.task&&st.task.status!=='done'?`<div style="margin-top:5px"><button class="small" onclick="nav('tasks')">📋 ${esc(st.task.title.slice(0,60))}…</button></div>`:''}
+        ${st.key==='dc101_prep'&&st.state==='waiting'&&st.notice_id?`<div style="margin-top:5px"><button class="primary" onclick="dc101Modal(${st.notice_id})">Review & serve</button></div>`:''}
+      </span>
+    </div>`).join('');
 }
 const ago = (iso) => {
   const mins = Math.max(0, Math.round((Date.now() - new Date(iso+'Z').getTime())/60000));
@@ -5377,9 +5689,16 @@ function modal(html,{wide}={}){
   // The document viewer wants most of the screen; everything else keeps the compact
   // default. Reset each call so one wide modal doesn't stretch the next.
   $('modal-content').style.maxWidth=wide?'min(1000px,96vw)':'';
-  $('modal-content').innerHTML=html; $('modal').classList.remove('hidden');
+  // Every dialog gets a way out. The ✕ is injected here, in the shell, so no individual
+  // modal can forget it — clicking outside and pressing Escape close it too.
+  $('modal-content').innerHTML=
+    '<button class="modal-x" title="Close" aria-label="Close" onclick="closeModal()">✕</button>'+html;
+  $('modal').classList.remove('hidden');
   setTimeout(()=>{ wireInputs(); wireAddressFields(); },0);
 }
+document.addEventListener('keydown',(e)=>{
+  if(e.key==='Escape' && !$('modal').classList.contains('hidden')) closeModal();
+});
 // Most people want the year-by-year picture; the month-by-month detail is one tap away.
 let CALC_OPEN=false;
 function toggleCalcSched(){ CALC_OPEN ? closeCalcSched() : openCalcSched(); }
@@ -5969,53 +6288,8 @@ async function resetTB(id){
   $('tb-temp').innerHTML=`New temporary password: <code>${esc(r.temp_password)}</code> — share it with the buyer.`;
   $('tb-temp').classList.remove('hidden');
 }
-// ---------- linked accounts (financial sync) ----------
-async function loadLinked(){
-  const el=$('linked-list'); if(!el) return;
-  const d=await api('/api/admin/linked-accounts');
-  if(!d.stripe){ el.innerHTML='<p class="note">Connect Stripe first (set STRIPE_SECRET_KEY) to link accounts.</p>'; return; }
-  el.innerHTML = d.accounts.length ? d.accounts.map(a=>`
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px">
-      <span><b>${esc(a.institution_name||a.display_name||'Account')}</b>
-        ${a.last4?`<span class="note"> ····${esc(a.last4)}</span>`:''}
-        ${a.category?`<span class="pill gray">${esc(String(a.category).replace('_',' '))}</span>`:''}
-        ${a.status==='disconnected'?'<span class="pill due">disconnected</span>':''}
-        <br><span class="note">${a.last_synced_at?'Last synced '+new Date(a.last_synced_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'Never synced'}</span></span>
-      <span style="white-space:nowrap">
-        <button class="small" onclick="syncAccount(${a.id})">Sync now</button>
-        <button class="small warn" onclick="unlinkAccount(${a.id})">Unlink</button></span>
-    </div>`).join('') : '<p class="note">No accounts linked yet.</p>';
-}
-async function linkAccount(){
-  $('link-status').textContent='Opening your bank...';
-  try{
-    const r=await api('/api/admin/linked-accounts/session',{method:'POST',body:'{}'});
-    window.open('https://connections.stripe.com/link?client_secret='+encodeURIComponent(r.client_secret),'_blank','width=520,height=720');
-    LINK_SESSION = r.session_id;
-    $('link-status').innerHTML='Finish signing in to your bank in the popup, then <a href="#" onclick="finishLink();return false">click here</a>.';
-  }catch(e){ $('link-status').textContent='\u26A0\uFE0F '+e.message; }
-}
-let LINK_SESSION = null;
-async function finishLink(){
-  if(!LINK_SESSION) return;
-  try{
-    const r=await api('/api/admin/linked-accounts/finish',{method:'POST',body:JSON.stringify({session_id:LINK_SESSION})});
-    $('link-status').textContent = r.added ? `Linked ${r.added} account(s).` : 'No new accounts were linked.';
-    loadLinked();
-  }catch(e){ $('link-status').textContent='\u26A0\uFE0F '+e.message; }
-}
-async function syncAccount(id){
-  $('link-status').textContent='Pulling transactions...';
-  try{
-    const r=await api(`/api/admin/linked-accounts/${id}/sync`,{method:'POST',body:'{}'});
-    $('link-status').textContent=`Imported ${r.imported} transaction(s) - review them below.`;
-    loadLinked(); expFilter='unassigned'; loadExpenses(); loadDash();
-  }catch(e){ $('link-status').textContent='\u26A0\uFE0F '+e.message; }
-}
-async function unlinkAccount(id){
-  if(!confirm('Unlink this account? Transactions already imported stay put.'))return;
-  await api('/api/admin/linked-accounts/'+id,{method:'DELETE'}); loadLinked();
-}
+// Linked bank accounts (Stripe Financial Connections) were removed — the AI link
+// will not be supported. Expenses come in by statement upload instead.
 
 // ---------- expenses ----------
 async function importStatement(){

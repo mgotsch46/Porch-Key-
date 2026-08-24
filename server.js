@@ -104,7 +104,7 @@ function auth(kind) {
     const payload = verifyToken(getCookie(req, 'session'));
     if (!payload) return res.status(401).json({ error: 'Not signed in' });
     const user = get(`SELECT id, company_id, email, role, name, phone, must_change_password,
-      terms_accepted_at, terms_version, location_consent_at, deleted_at, archived_at
+      terms_accepted_at, terms_version, location_consent_at, deleted_at, archived_at, call_mode
       FROM users WHERE id=?`, payload.uid);
     if (!user || user.deleted_at) return res.status(401).json({ error: 'Not signed in' });
     if (user.archived_at) return res.status(403).json({ error: 'This account is archived. Contact your servicer.' });
@@ -212,11 +212,66 @@ app.post('/api/email/webhook', express.raw({ type: '*/*' }), (req, res) => {
 app.use(express.json({ limit: '60mb' }));
 app.use(express.urlencoded({ extended: false }));   // Twilio posts form-encoded
 
+// ---------- proving a webhook came from Twilio ----------
+// The voice and SMS webhooks cannot use a session cookie: Twilio does not have one. That
+// left them open to anyone who knew the URL — /api/voice/outgoing will place a call
+// billed to the account, and /api/voice/recording will write rows into the call log.
+// Twilio signs every request; this checks that signature.
+//
+// Behind Railway's proxy the URL Twilio signed may differ from the one Express sees, so
+// the plausible spellings are all tried before a request is refused. Set
+// TWILIO_SKIP_SIGNATURE=1 to disable the check if a proxy ever breaks it — a temporary
+// escape hatch, and it says so in the log every time it is used.
+function twilioWebhookUrls(req) {
+  const path = req.originalUrl;
+  const host = req.headers.host;
+  const fwd = req.headers['x-forwarded-host'];
+  const urls = [];
+  if (process.env.BASE_URL) urls.push(process.env.BASE_URL.replace(/\/$/, '') + path);
+  for (const h of [fwd, host]) {
+    if (!h) continue;
+    urls.push(`https://${h}${path}`);
+    urls.push(`http://${h}${path}`);
+  }
+  return [...new Set(urls)];
+}
+// Every auth token this deployment could plausibly be signed with: the host's, plus any
+// a servicer entered in the app.
+function twilioAuthTokens() {
+  const tokens = [];
+  if (process.env.TWILIO_AUTH_TOKEN) tokens.push(process.env.TWILIO_AUTH_TOKEN);
+  for (const c of all('SELECT DISTINCT twilio_token FROM companies WHERE twilio_token IS NOT NULL')) {
+    if (c.twilio_token) tokens.push(c.twilio_token);
+  }
+  return [...new Set(tokens)];
+}
+function twilioWebhook(req, res, next) {
+  if (process.env.TWILIO_SKIP_SIGNATURE === '1') {
+    console.warn('Twilio signature check skipped (TWILIO_SKIP_SIGNATURE=1) for', req.originalUrl);
+    return next();
+  }
+  const signature = req.headers['x-twilio-signature'];
+  const urls = twilioWebhookUrls(req);
+  const tokens = twilioAuthTokens();
+  if (!tokens.length) {
+    // Nothing to verify against means nothing legitimate can be arriving either: a real
+    // Twilio call requires credentials that are not configured.
+    console.warn('Twilio webhook refused — no auth token configured:', req.originalUrl);
+    return res.status(403).type('text/xml').send('<Response/>');
+  }
+  const good = tokens.some(t => sms.validateWebhook({ authToken: t, signature, urls, params: req.body || {} }));
+  if (!good) {
+    console.warn('Twilio webhook refused — bad or missing signature:', req.originalUrl);
+    return res.status(403).type('text/xml').send('<Response/>');
+  }
+  next();
+}
+
 // Twilio inbound webhook. The invitation number is send-only, so anyone who texts it
 // back gets one automatic answer pointing them into the app rather than silence.
 // Point Twilio's "A message comes in" setting at POST {your domain}/sms/incoming.
 // Twilio handles STOP/START/HELP itself, before this ever runs.
-app.post('/sms/incoming', (req, res) => {
+app.post('/sms/incoming', twilioWebhook, (req, res) => {
   const from = sms.normalizePhone(req.body && req.body.From);
   const body = String((req.body && req.body.Body) || '').trim();
   const bare = from ? from.replace(/^\+1/, '') : '';
@@ -2314,6 +2369,29 @@ app.get('/api/admin/amortize', adminOnly, (req, res) => {
     first_payment_date: q.first_payment_date,
   });
   if (r.schedule) r.schedule_yearly = loanEngine.yearlySchedule(r.schedule);
+  // Extra payments, when asked for: rerun the schedule with money on top and report
+  // what the extra buys — months shaved off and interest never charged.
+  const extraMonthly = Math.round(Number(q.extra_monthly_cents) || 0);
+  let extraOnce = [];
+  try { extraOnce = q.extra_once ? JSON.parse(q.extra_once) : []; } catch { extraOnce = []; }
+  if (r.schedule && (extraMonthly > 0 || (Array.isArray(extraOnce) && extraOnce.length))) {
+    const ex = loanEngine.scheduleWithExtras({
+      principal_cents: r.principal_cents, interest_rate_bps: r.interest_rate_bps,
+      term_months: r.term_months, payment_cents: r.payment_cents,
+      first_payment_date: r.first_payment_date || q.first_payment_date || today(),
+    }, { extra_monthly_cents: extraMonthly, extra_once: extraOnce });
+    const sum = (rows, k) => rows.reduce((t, x) => t + x[k], 0);
+    r.extra = {
+      schedule: ex,
+      schedule_yearly: loanEngine.yearlySchedule(ex),
+      months: ex.length,
+      months_saved: r.schedule.length - ex.length,
+      final_payment_date: ex.length ? ex[ex.length - 1].date : null,
+      total_interest_cents: sum(ex, 'interest_cents'),
+      interest_saved_cents: r.total_interest_cents - sum(ex, 'interest_cents'),
+      total_paid_cents: sum(ex, 'payment_cents'),
+    };
+  }
   res.json(r);
 });
 
@@ -2644,7 +2722,37 @@ app.get('/api/admin/texting', adminOnly, (req, res) => {
     forward_calls: !!co.forward_calls,
     voicemail_greeting: co.voicemail_greeting || '',
     voice_intel_set: !!co.voice_intel_sid,
+    // Where this person's own calls happen, and the handset the bridge rings. NULL
+    // call_mode means they have never chosen, so the app decides by device.
+    call_mode: req.user.call_mode || null,
+    my_phone: req.user.phone || null,
   });
+});
+
+// Which device this person's calls run on. Saved per user, not per company — two people
+// on the same portfolio can work different ways. Recording and transcription are a
+// company setting and are unaffected by this choice: both modes go through Twilio.
+app.put('/api/admin/call-mode', adminOnly, (req, res) => {
+  const b = req.body || {};
+  const mode = b.call_mode === null || b.call_mode === '' ? null : String(b.call_mode || '');
+  if (mode !== null && mode !== 'softphone' && mode !== 'cell') {
+    return res.status(400).json({ error: 'Pick either the softphone or your cell' });
+  }
+  if (b.my_phone !== undefined && b.my_phone !== null && String(b.my_phone).trim() !== '') {
+    const mine = sms.normalizePhone(b.my_phone);
+    // A handset has to be dialable. normalizePhone will happily hand back '+555', which
+    // saves fine and then fails when the call is placed — catch it here instead.
+    if (!mine || mine.replace(/\D/g, '').length < 10) {
+      return res.status(400).json({ error: 'Your own phone number does not look valid' });
+    }
+    run('UPDATE users SET phone=? WHERE id=?', mine, req.user.id);
+    req.user.phone = mine;
+  }
+  if (mode === 'cell' && !req.user.phone) {
+    return res.status(400).json({ error: 'Add the number that should ring before choosing your cell' });
+  }
+  run('UPDATE users SET call_mode=? WHERE id=?', mode, req.user.id);
+  res.json({ ok: true, call_mode: mode, my_phone: req.user.phone || null });
 });
 
 // The three values the browser softphone needs, saved separately from the main Twilio
@@ -2685,6 +2793,39 @@ app.delete('/api/admin/texting', ownerOnly, (req, res) => {
   res.json({ ok: true });
 });
 
+// Who is this phone number to this company? A buyer with a loan, a vendor contact, or
+// nobody we know. Used to file calls against the right property the moment they happen.
+function matchPhone(companyId, phone) {
+  const bare = String(phone || '').replace(/^\+1/, '').replace(/\D/g, '');
+  if (bare.length < 10) return {};
+  const digitsOf = (col) => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col},'-',''),' ',''),'(',''),')',''),'+1','')`;
+  const buyer = get(`SELECT u.id, u.name FROM users u WHERE u.role='tenant' AND u.deleted_at IS NULL
+    AND u.company_id=? AND u.phone IS NOT NULL AND ${digitsOf('u.phone')}=? LIMIT 1`, companyId, bare);
+  if (buyer) {
+    const loan = get('SELECT id, property_id FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', buyer.id);
+    return { name: buyer.name, loan_id: loan ? loan.id : null, property_id: loan ? loan.property_id : null };
+  }
+  const contact = get(`SELECT c.id, c.name FROM contacts c WHERE c.company_id=? AND c.phone IS NOT NULL
+    AND ${digitsOf('c.phone')}=? LIMIT 1`, companyId, bare);
+  if (contact) {
+    // The property last discussed with this vendor, the same rule texting uses.
+    const last = get(`SELECT property_id FROM contact_messages WHERE contact_id=? AND property_id IS NOT NULL
+      ORDER BY id DESC LIMIT 1`, contact.id);
+    return { name: contact.name, contact_id: contact.id, property_id: last ? last.property_id : null };
+  }
+  return {};
+}
+function logCall({ companyId, direction, mode, callSid, phone, userId, loan_id, contact_id, property_id, name, status }) {
+  const norm = sms.normalizePhone(phone);
+  const m = (loan_id || contact_id) ? {} : matchPhone(companyId, norm);
+  return run(`INSERT INTO call_log (company_id, direction, mode, call_sid, counterpart_phone, counterpart_name,
+      user_id, loan_id, contact_id, property_id, duration_sec, status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,NULL,?)`,
+    companyId, direction, mode, callSid || null, norm, name || m.name || null, userId || null,
+    loan_id || m.loan_id || null, contact_id || m.contact_id || null, property_id || m.property_id || null,
+    status || 'placed').lastInsertRowid;
+}
+
 // ---------- browser softphone ----------
 // Calls placed and answered entirely inside the app, going out from the business
 // number. Twilio's browser SDK needs a short-lived access token, which is just a JWT
@@ -2708,7 +2849,7 @@ app.get('/api/admin/voice-token', adminOnly, (req, res) => {
 // recording is on, the callee hears an announcement before connecting — several of
 // this portfolio's states require every party to know.
 const xesc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-app.post('/api/voice/outgoing', (req, res) => {
+app.post('/api/voice/outgoing', twilioWebhook, (req, res) => {
   const appSid = req.body && req.body.ApplicationSid;
   const co = appSid ? get('SELECT * FROM companies WHERE voice_twiml_app_sid=?', appSid) : null;
   const to = sms.normalizePhone(req.body && req.body.To);
@@ -2717,16 +2858,22 @@ app.post('/api/voice/outgoing', (req, res) => {
     return res.send('<Response><Say>This call cannot be completed.</Say></Response>');
   }
   const base = baseUrlOf(req);
+  // The browser's identity travels as admin-<user id>; file the call under that person.
+  const ident = String((req.body && req.body.From) || '');
+  const userId = /^client:admin-(\d+)$/.test(ident) ? Number(ident.match(/^client:admin-(\d+)$/)[1]) : null;
+  logCall({ companyId: co.id, direction: 'out', mode: 'softphone',
+    callSid: req.body && req.body.CallSid, phone: to, userId });
   const rec = co.record_calls
     ? ` record="record-from-answer-dual" recordingStatusCallback="${xesc(base)}/api/voice/recording?co=${co.id}&amp;kind=call"`
     : '';
   const whisper = co.record_calls ? ` url="${xesc(base)}/api/voice/announce"` : '';
-  res.send(`<Response><Dial callerId="${xesc(co.twilio_from)}" answerOnBridge="true"${rec}>` +
+  res.send(`<Response><Dial callerId="${xesc(co.twilio_from)}" answerOnBridge="true"${rec}` +
+           ` action="${xesc(base)}/api/voice/dial-done?co=${co.id}">` +
            `<Number${whisper}>${xesc(to)}</Number></Dial></Response>`);
 });
 
 // Played to the person being called, before the legs join.
-app.post('/api/voice/announce', (req, res) => {
+app.post('/api/voice/announce', twilioWebhook, (req, res) => {
   res.type('text/xml').send('<Response><Say voice="alice">This call may be recorded.</Say></Response>');
 });
 
@@ -2741,32 +2888,79 @@ function voicemailTwiml(co, base) {
     ` recordingStatusCallback="${xesc(base)}/api/voice/recording?co=${co.id}&amp;kind=voicemail"/>` +
     `<Say voice="alice">We did not receive a recording. Goodbye.</Say></Response>`;
 }
-app.post('/api/voice/incoming', (req, res) => {
+app.post('/api/voice/incoming', twilioWebhook, (req, res) => {
   const toNum = sms.normalizePhone(req.body && req.body.To);
   const co = toNum ? get(`SELECT c.* FROM companies c WHERE c.twilio_from=?`, toNum) : null;
   res.type('text/xml');
   if (!co) return res.send('<Response><Say>This number is not in service.</Say></Response>');
   const base = baseUrlOf(req);
-  const owner = get(`SELECT phone FROM users WHERE company_id=? AND role='owner' AND phone IS NOT NULL AND deleted_at IS NULL LIMIT 1`, co.id);
-  if (co.forward_calls && owner && owner.phone) {
-    // Ring the owner briefly; unanswered rolls to voicemail via the action URL.
-    return res.send(`<Response><Dial timeout="18" callerId="${xesc(co.twilio_from)}"` +
-      ` action="${xesc(base)}/api/voice/vm-fallback?co=${co.id}">` +
-      `<Number>${xesc(sms.normalizePhone(owner.phone))}</Number></Dial></Response>`);
+
+  // Everyone who is allowed to pick up: owners and admins alike. The old version asked
+  // only for the owner, so an admin-only login meant the phone never rang.
+  logCall({ companyId: co.id, direction: 'in', mode: 'inbound',
+    callSid: req.body && req.body.CallSid, phone: req.body && req.body.From, status: 'placed' });
+
+  const staff = all(`SELECT id, phone FROM users WHERE company_id=? AND role IN ('owner','admin')
+                     AND deleted_at IS NULL ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, id`, co.id);
+
+  // Two kinds of leg, rung at the same time. <Client> reaches a browser with the app
+  // open; <Number> reaches a real handset. Whoever answers first wins and the others
+  // stop ringing — so being at the desk or out at a property both work without
+  // choosing in advance. Unanswered falls through to voicemail via the action URL.
+  const legs = [];
+  if (co.voice_twiml_app_sid) {
+    for (const u of staff) legs.push(`<Client>admin-${u.id}</Client>`);
   }
-  res.send(voicemailTwiml(co, base));
+  if (co.forward_calls) {
+    for (const u of staff) {
+      const n = sms.normalizePhone(u.phone);
+      if (n) legs.push(`<Number>${xesc(n)}</Number>`);
+    }
+  }
+  if (!legs.length) return res.send(voicemailTwiml(co, base));
+
+  // Recording an inbound call needs the caller told, and they are already on the line,
+  // so it is said up front rather than whispered to a callee.
+  const notice = co.record_calls
+    ? '<Say voice="alice">This call may be recorded.</Say>'
+    : '';
+  const rec = co.record_calls
+    ? ` record="record-from-answer-dual" recordingStatusCallback="${xesc(base)}/api/voice/recording?co=${co.id}&amp;kind=call&amp;dir=in"`
+    : '';
+  res.send(`<Response>${notice}` +
+    `<Dial timeout="25" answerOnBridge="true" callerId="${xesc(sms.normalizePhone(req.body && req.body.From) || co.twilio_from)}"` +
+    `${rec} action="${xesc(base)}/api/voice/vm-fallback?co=${co.id}">` +
+    legs.join('') + `</Dial></Response>`);
 });
-app.post('/api/voice/vm-fallback', (req, res) => {
+// A <Dial> finished — Twilio reports how it went and for how long. That is the moment a
+// call_log row learns its outcome.
+app.post('/api/voice/dial-done', twilioWebhook, (req, res) => {
+  const b = req.body || {};
+  if (b.CallSid) {
+    const done = b.DialCallStatus === 'completed';
+    run(`UPDATE call_log SET status=?, duration_sec=COALESCE(?, duration_sec) WHERE call_sid=?`,
+      done ? 'completed' : 'missed', Number(b.DialCallDuration) || null, b.CallSid);
+  }
+  res.type('text/xml').send('<Response/>');
+});
+
+app.post('/api/voice/vm-fallback', twilioWebhook, (req, res) => {
   const co = get('SELECT * FROM companies WHERE id=?', Number(req.query.co));
   res.type('text/xml');
   if (!co) return res.send('<Response/>');
-  if ((req.body && req.body.DialCallStatus) === 'completed') return res.send('<Response/>');
+  const b = req.body || {};
+  const answered = b.DialCallStatus === 'completed';
+  if (b.CallSid) {
+    run(`UPDATE call_log SET status=?, duration_sec=COALESCE(?, duration_sec) WHERE call_sid=?`,
+      answered ? 'completed' : 'voicemail', Number(b.DialCallDuration) || null, b.CallSid);
+  }
+  if (answered) return res.send('<Response/>');
   res.send(voicemailTwiml(co, baseUrlOf(req)));
 });
 
 // A recording finished — a call's or a voicemail's. Remember it, and hang it on the
 // loan whose buyer was on the other end when there is one.
-app.post('/api/voice/recording', (req, res) => {
+app.post('/api/voice/recording', twilioWebhook, (req, res) => {
   const coId = Number(req.query.co);
   const kind = req.query.kind === 'voicemail' ? 'voicemail' : 'call';
   const b = req.body || {};
@@ -2775,7 +2969,10 @@ app.post('/api/voice/recording', (req, res) => {
     const toN = sms.normalizePhone(b.To) || b.To || null;
     const bare = (n) => (n || '').replace(/^\+1/, '');
     const digitsOf = (col) => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col},'-',''),' ',''),'(',''),')',''),'+1','')`;
-    const counterpart = kind === 'voicemail' ? bare(fromN) : bare(toN);
+    // Which end of the call is the buyer? On anything we dialled out it is the To;
+    // on a voicemail or an inbound call it is the From, because To is our own number.
+    const inbound = kind === 'voicemail' || req.query.dir === 'in';
+    const counterpart = inbound ? bare(fromN) : bare(toN);
     const buyer = counterpart ? get(`SELECT id FROM users WHERE role='tenant' AND deleted_at IS NULL
       AND phone IS NOT NULL AND ${digitsOf('phone')}=? LIMIT 1`, counterpart) : null;
     const loan = buyer ? get('SELECT id FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', buyer.id) : null;
@@ -2784,6 +2981,10 @@ app.post('/api/voice/recording', (req, res) => {
          ON CONFLICT(recording_sid) DO UPDATE SET duration_sec=excluded.duration_sec`,
       coId, kind, b.CallSid || null, b.RecordingSid, fromN, toN,
       Number(b.RecordingDuration) || null, loan ? loan.id : null);
+    if (b.CallSid && kind === 'call') {
+      run(`UPDATE call_log SET status='completed', duration_sec=COALESCE(duration_sec, ?) WHERE call_sid=?`,
+        Number(b.RecordingDuration) || null, b.CallSid);
+    }
     if (kind === 'voicemail') {
       for (const u of all(`SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL`, coId)) {
         notify.notify(u.id, { kind: 'message', title: '📞 New voicemail',
@@ -2795,7 +2996,7 @@ app.post('/api/voice/recording', (req, res) => {
 });
 
 // Twilio's built-in transcription for voicemails (recordings under two minutes).
-app.post('/api/voice/vm-transcript', (req, res) => {
+app.post('/api/voice/vm-transcript', twilioWebhook, (req, res) => {
   const b = req.body || {};
   if (b.RecordingSid) {
     run(`UPDATE call_recordings SET transcript=?, transcript_status=? WHERE recording_sid=?`,
@@ -2872,6 +3073,295 @@ app.post('/api/admin/recordings/:id/transcribe', adminOnly, async (req, res, nex
     res.json({ status: 'pending' });
   } catch (e) { next(e); }
 });
+// ---------- does calling actually work? ----------
+// Half of setting up voice happens in the Twilio console, where a typo is invisible
+// until a call goes missing. Rather than telling someone to go and look, ask Twilio what
+// it actually has configured and compare it to what this app expects.
+app.get('/api/admin/voice-check', adminOnly, async (req, res, next) => {
+  try {
+    const co = myCompany(req);
+    const c = sms.creds(co);
+    const base = baseUrlOf(req);
+    const want = { incoming: base + '/api/voice/incoming', outgoing: base + '/api/voice/outgoing',
+                   sms: base + '/sms/incoming' };
+    const checks = [];
+    const add = (name, ok, detail, fix) => checks.push({ name, ok, detail, fix: ok ? null : fix });
+
+    if (!c) {
+      add('Twilio connected', false, 'No account SID or auth token saved.',
+        'Add your Twilio details under Settings → Texting.');
+      return res.json({ ok: false, checks, expected: want });
+    }
+    add('Twilio connected', true, 'Account ' + '…' + c.sid.slice(-4) + ', number ' + c.from);
+
+    const authHeader = { Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64') };
+    const norm = (u) => String(u || '').replace(/\/$/, '').toLowerCase();
+
+    // The number itself: what does Twilio do when a call or a text arrives?
+    let number = null;
+    try {
+      const q = new URLSearchParams({ PhoneNumber: c.from });
+      const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/IncomingPhoneNumbers.json?${q}`,
+        { headers: authHeader });
+      const j = await r.json();
+      number = (j.incoming_phone_numbers || [])[0] || null;
+    } catch (e) { /* reported as a failed check below */ }
+
+    if (!number) {
+      add('Your number is in this account', false, `Twilio has no number ${c.from} on account …${c.sid.slice(-4)}.`,
+        'Check the number is the one you own, digits and all, under Settings → Texting.');
+    } else {
+      add('Your number is in this account', true, number.friendly_name || c.from);
+      add('Incoming calls point at PorchPay', norm(number.voice_url) === norm(want.incoming),
+        number.voice_url ? `Twilio currently calls ${number.voice_url}` : 'No voice URL is set on the number.',
+        `Twilio Console → Phone Numbers → ${c.from} → Voice → "A call comes in" → Webhook, POST, ${want.incoming}`);
+      add('Incoming texts point at PorchPay', norm(number.sms_url) === norm(want.sms),
+        number.sms_url ? `Twilio currently calls ${number.sms_url}` : 'No messaging URL is set on the number.',
+        `Twilio Console → Phone Numbers → ${c.from} → Messaging → "A message comes in" → Webhook, POST, ${want.sms}`);
+      add('Voice webhook uses POST', String(number.voice_method || 'POST').toUpperCase() === 'POST',
+        `Currently ${number.voice_method || 'unset'}.`,
+        'Set the method beside the voice webhook URL to HTTP POST.');
+    }
+
+    // The softphone's TwiML app: the thing that answers "the browser wants to dial out".
+    if (!co.voice_twiml_app_sid) {
+      add('Softphone app configured', false, 'No TwiML App SID saved.',
+        'Follow the softphone setup under Settings → Texting → Calling from inside the app.');
+    } else {
+      let twapp = null;
+      try {
+        const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/Applications/${co.voice_twiml_app_sid}.json`,
+          { headers: authHeader });
+        twapp = r.ok ? await r.json() : null;
+      } catch (e) { /* reported below */ }
+      if (!twapp) {
+        add('Softphone app configured', false, 'Twilio does not recognise that TwiML App SID.',
+          'Re-copy the SID from Twilio Console → Voice → TwiML Apps.');
+      } else {
+        add('Softphone app configured', true, twapp.friendly_name || co.voice_twiml_app_sid);
+        add('Softphone app points at PorchPay', norm(twapp.voice_url) === norm(want.outgoing),
+          twapp.voice_url ? `Twilio currently calls ${twapp.voice_url}` : 'No request URL is set on the app.',
+          `Twilio Console → Voice → TwiML Apps → ${twapp.friendly_name || 'your app'} → Voice Request URL, POST, ${want.outgoing}`);
+      }
+      add('Softphone keys saved', !!(co.voice_api_key_sid && co.voice_api_key_secret),
+        co.voice_api_key_sid ? 'API key ' + co.voice_api_key_sid.slice(0, 6) + '…' : 'No API key saved.',
+        'Create an API key in Twilio and paste both halves under the softphone setup.');
+    }
+
+    // Things that are settings here rather than at Twilio, but change what a call does.
+    add('Recording', !!co.record_calls,
+      co.record_calls ? 'On — both parties are told, and calls transcribe.' : 'Off — calls are not recorded.',
+      'Turn on "Record calls" above if you want a record of what was said.');
+    add('Signature checking', process.env.TWILIO_SKIP_SIGNATURE !== '1',
+      process.env.TWILIO_SKIP_SIGNATURE === '1'
+        ? 'Disabled by TWILIO_SKIP_SIGNATURE — anyone who knows your webhook URLs can reach them.'
+        : 'On — webhooks Twilio did not sign are refused.',
+      'Remove TWILIO_SKIP_SIGNATURE from the environment.');
+
+    res.json({ ok: checks.every(x => x.ok), checks, expected: want });
+  } catch (e) { next(e); }
+});
+
+// ---------- the default workflow, as a timeline ----------
+// Where is this loan in its state's late-payment process, what has already happened,
+// and what happens next? Michigan gets its statutory track; every other state gets the
+// company's notice ladder. Each step says whether it ran on its own or is waiting for a
+// person — and when a step needs human review before anything executes, the task that
+// asks for that review is linked right here.
+app.get('/api/admin/loans/:id/workflow', adminOnly, (req, res, next) => {
+  try {
+    const loan = get('SELECT * FROM loans WHERE id=? AND company_id=?', req.params.id, req.companyId);
+    if (!loan) return res.status(404).json({ error: 'Not found' });
+    const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+    const ledger = all('SELECT * FROM ledger WHERE loan_id=?', loan.id);
+    const status = loanEngine.loanStatus(loan, ledger, today());
+
+    // Days past due on the oldest unpaid payment — the same arithmetic the sweep uses.
+    let daysPast = 0, period = null;
+    if (status.is_past_due) {
+      const first = new Date(loan.first_payment_date + 'T00:00:00Z');
+      const dueObj = loanEngine.addMonthsUTC(first, status.payments_made_equiv);
+      period = dueObj.toISOString().slice(0, 7);
+      daysPast = Math.floor((new Date(today() + 'T00:00:00Z') - dueObj) / 86400000);
+    }
+    const grace = Number(loan.grace_days) || 0;
+    const mi = noticeRules.isMichigan(property);
+    const sent = all(`SELECT * FROM notices WHERE loan_id=? AND stage IS NOT NULL ORDER BY id`, loan.id);
+    // The current missed payment's cycle when it has activity; otherwise the most
+    // recent cycle that does. A rung fired in June is still history worth seeing in
+    // August — the period it belonged to rides along in the payload.
+    const latest = (stage) => {
+      const rows = sent.filter(n => n.stage === stage);
+      return rows.filter(n => !period || n.period === period).pop() || rows.pop() || null;
+    };
+    const channelsOf = (n) => {
+      try { return Object.entries(JSON.parse(n.delivery_json || '{}'))
+        .filter(([k, v]) => v && v.ok !== false && k !== 'skipped').map(([k]) => k); }
+      catch { return []; }
+    };
+    const openTask = (like) => get(`SELECT id, title, status FROM tasks WHERE loan_id=? AND source_key LIKE ?
+      ORDER BY id DESC LIMIT 1`, loan.id, like);
+
+    const steps = [];
+    const push = (st) => steps.push(st);
+
+    if (mi) {
+      // ---- the Michigan statutory track ----
+      push({ key: 'grace', label: `Grace period — ${grace} day${grace === 1 ? '' : 's'}`, day: 0, kind: 'auto',
+        state: !status.is_past_due ? 'idle' : daysPast <= grace ? 'active' : 'done',
+        detail: 'Nothing is sent while the agreement\'s own grace days are running.' });
+      const n5 = latest('late_5');
+      push({ key: 'late_5', label: '5-day late notice + late fee', day: 6, kind: 'auto',
+        state: n5 ? 'done' : (status.is_past_due && daysPast > grace ? 'next' : 'upcoming'),
+        done_at: n5 ? n5.sent_at : null, channels: n5 ? channelsOf(n5) : [],
+        detail: n5 ? 'Sent with non-waiver language; the notice and its certificate of delivery are in Documents.'
+                   : 'Sends itself on day 6 — app message, email, and text, with the contractual late fee charged once.' });
+      const dc = latest('mi_dc101');
+      const prepTask = openTask('dc101-prep-%');
+      push({ key: 'dc101_prep', label: 'DC 101 drafted for your review', day: 10, kind: 'review',
+        state: dc ? (dc.served_at ? 'done' : 'waiting') : (daysPast >= 10 ? 'next' : 'upcoming'),
+        done_at: dc && dc.served_at ? dc.created_at : null,
+        task: dc && !dc.served_at && prepTask ? prepTask : null, notice_id: dc ? dc.id : null,
+        detail: dc && !dc.served_at
+          ? 'The filled SCAO form is waiting — check the amounts and court details, then serve it. Nothing mails without you.'
+          : 'On day 10 the official form fills itself out and a review task appears. It is never served automatically.' });
+      push({ key: 'dc101_serve', label: 'DC 101 served by certified mail', day: null, kind: 'human',
+        state: dc && dc.served_at ? 'done' : dc ? 'waiting' : 'upcoming',
+        done_at: dc ? dc.served_at : null,
+        detail: dc && dc.served_at
+          ? `Served ${dc.served_at.slice(0, 10)}; tracking ${dc.lob_tracking || '—'} (${dc.lob_status || 'created'}).`
+          : 'One click on the review screen mails it certified through Lob and starts the cure clock.' });
+      const cureLeft = dc && dc.cure_deadline
+        ? Math.ceil((new Date(dc.cure_deadline + 'T00:00:00Z') - new Date(today() + 'T00:00:00Z')) / 86400000) : null;
+      push({ key: 'cure', label: 'Cure period — at least 15 days', day: null, kind: 'auto',
+        state: !dc || !dc.served_at ? 'upcoming'
+          : !status.is_past_due ? 'done'
+          : (cureLeft !== null && cureLeft >= 0 ? 'active' : 'done'),
+        detail: dc && dc.cure_deadline
+          ? (!status.is_past_due ? 'Cured — the account came current.'
+             : cureLeft >= 0 ? `${cureLeft} day${cureLeft === 1 ? '' : 's'} left to pay (deadline ${dc.cure_deadline}).`
+             : `Expired ${dc.cure_deadline} unpaid.`)
+          : 'Starts the day the DC 101 is served (MCL 600.5728: 15 days minimum).' });
+      const fileTask = openTask('dc102-%');
+      push({ key: 'dc102', label: 'File DC 102 with the district court', day: null, kind: 'human',
+        state: fileTask ? (fileTask.status === 'done' ? 'done' : 'waiting')
+          : (dc && dc.cure_deadline && dc.cure_deadline < today() && status.is_past_due ? 'next' : 'upcoming'),
+        task: fileTask || null,
+        detail: fileTask
+          ? 'The filing task carries your district court\'s own checklist. A person files it; the app never does.'
+          : 'If the cure deadline passes unpaid, a filing task appears with the court\'s checklist.' });
+    } else {
+      // ---- the generic ladder, from this company's own rules ----
+      noticeRules.seedLadder(req.companyId);
+      push({ key: 'grace', label: `Grace period — ${grace} day${grace === 1 ? '' : 's'}`, day: 0, kind: 'auto',
+        state: !status.is_past_due ? 'idle' : daysPast <= grace ? 'active' : 'done',
+        detail: 'Nothing is sent while the agreement\'s own grace days are running.' });
+      for (const rule of noticeRules.rulesFor(req.companyId)) {
+        const n = latest(rule.stage);
+        const skipped = n && (() => { try { return JSON.parse(n.delivery_json || '{}').skipped; } catch { return false; } })();
+        push({ key: rule.stage, label: rule.label, day: rule.trigger_day, kind: 'auto',
+          identity: rule.identity,
+          state: n ? (skipped ? 'skipped' : 'done')
+            : (status.is_past_due && daysPast >= rule.trigger_day ? 'next'
+               : status.is_past_due ? 'upcoming' : 'idle'),
+          period: n ? n.period : null,
+          done_at: n ? n.sent_at : null, channels: n && !skipped ? channelsOf(n) : [],
+          certified: rule.stage === 'late_30',
+          detail: skipped ? 'Recorded but not sent — a higher rung had already been reached.'
+            : n ? null
+            : `Sends itself on day ${rule.trigger_day} from the ${rule.identity} address` +
+              (rule.stage === 'late_30' ? ', and by certified mail when Lob is connected.' : '.') });
+      }
+    }
+
+    res.json({
+      regime: mi ? 'michigan' : 'generic',
+      state: property ? property.state : null,
+      is_past_due: !!status.is_past_due,
+      days_past_due: daysPast, period, grace_days: grace,
+      legal_hold: !!loan.legal_hold_at,
+      owed_now_cents: status.owed_now_cents,
+      steps,
+    });
+  } catch (e) { next(e); }
+});
+
+// ---------- the unified communication log ----------
+// One property, one timeline: every call, text, and email that touched it, newest
+// first, whoever it was with. Calls come from call_log (with the recording and
+// transcript attached when one exists), buyer texts and messages from the loan threads,
+// vendor texts from contact_messages, and email from email_log. This is the page to
+// open before a difficult conversation, and the record to print after one.
+app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
+  try {
+    const prop = get('SELECT * FROM properties WHERE id=? AND company_id=?', req.params.id, req.companyId);
+    if (!prop) return res.status(404).json({ error: 'Not found' });
+    const limit = Math.min(500, Number(req.query.limit) || 200);
+    const loans = all('SELECT id, tenant_user_id FROM loans WHERE property_id=?', prop.id);
+    const loanIds = loans.map(l => l.id);
+    const tenantIds = loans.map(l => l.tenant_user_id).filter(Boolean);
+    const inList = (ids) => ids.length ? `(${ids.map(() => '?').join(',')})` : '(NULL)';
+    const events = [];
+
+    // Calls — matched to the property directly, or through any of its loans.
+    for (const c of all(`SELECT cl.*, r.id AS recording_id, r.transcript_status
+        FROM call_log cl LEFT JOIN call_recordings r ON r.call_sid=cl.call_sid AND r.kind='call'
+        WHERE cl.company_id=? AND (cl.property_id=? OR cl.loan_id IN ${inList(loanIds)})
+        ORDER BY cl.id DESC LIMIT ?`, req.companyId, prop.id, ...loanIds, limit)) {
+      events.push({ ts: c.created_at, channel: 'call', direction: c.direction,
+        who: c.counterpart_name || c.counterpart_phone || 'unknown',
+        summary: (c.direction === 'in' ? 'Incoming call' : `Called${c.mode === 'cell' ? ' (from your cell)' : ''}`) +
+          (c.status === 'voicemail' ? ' — went to voicemail' : c.status === 'missed' ? ' — not answered' : ''),
+        duration_sec: c.duration_sec, status: c.status,
+        recording_id: c.recording_id || null, transcript_status: c.transcript_status || null });
+    }
+    // Voicemails land without a call_log match when the caller is unknown — show them too.
+    for (const v of all(`SELECT * FROM call_recordings WHERE company_id=? AND kind='voicemail'
+        AND loan_id IN ${inList(loanIds)} ORDER BY id DESC LIMIT ?`, req.companyId, ...loanIds, limit)) {
+      events.push({ ts: v.created_at, channel: 'voicemail', direction: 'in',
+        who: v.from_number || 'unknown', summary: 'Voicemail' + (v.duration_sec ? ` — ${v.duration_sec}s` : ''),
+        recording_id: v.id, transcript_status: v.transcript_status || null, transcript: v.transcript || null });
+    }
+    // Buyer messages — the loan threads, each channel it went out on.
+    if (loanIds.length) {
+      for (const m of all(`SELECT m.*, u.name AS sender_name, u.role AS sender_role FROM messages m
+          JOIN users u ON u.id=m.sender_user_id
+          WHERE m.loan_id IN ${inList(loanIds)} ORDER BY m.id DESC LIMIT ?`, ...loanIds, limit)) {
+        const chans = String(m.channels || 'app');
+        events.push({ ts: m.created_at, channel: chans.includes('sms') ? 'text' : 'message',
+          direction: m.sender_role === 'tenant' ? 'in' : 'out',
+          who: m.sender_name, summary: m.subject || null,
+          body: String(m.body || '').slice(0, 500), channels: chans });
+      }
+    }
+    // Vendor texts, filed against this property.
+    for (const t of all(`SELECT cm.*, c.name AS contact_name FROM contact_messages cm
+        LEFT JOIN contacts c ON c.id=cm.contact_id
+        WHERE cm.company_id=? AND cm.property_id=? ORDER BY cm.id DESC LIMIT ?`, req.companyId, prop.id, limit)) {
+      events.push({ ts: t.created_at, channel: 'text', direction: t.direction,
+        who: t.contact_name || t.phone, body: String(t.body || '').slice(0, 500),
+        status: t.status });
+    }
+    // Email — through the loan, or filed directly against the property.
+    for (const e of all(`SELECT * FROM email_log WHERE company_id=? AND
+        (property_id=? OR loan_id IN ${inList(loanIds)}) ORDER BY id DESC LIMIT ?`,
+        req.companyId, prop.id, ...loanIds, limit)) {
+      events.push({ ts: e.created_at, channel: 'email', direction: 'out',
+        who: e.to_address, summary: e.subject || e.kind || 'Email',
+        status: e.status === 'failed' ? 'failed' : (e.bounced_at ? 'bounced' : e.status),
+        identity: e.identity });
+    }
+
+    events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+    const want = String(req.query.channel || '');
+    const filtered = want ? events.filter(ev =>
+      want === 'call' ? (ev.channel === 'call' || ev.channel === 'voicemail')
+      : want === 'text' ? (ev.channel === 'text' || ev.channel === 'message')
+      : ev.channel === want) : events;
+    res.json({ property_id: prop.id, address: prop.address, events: filtered.slice(0, limit) });
+  } catch (e) { next(e); }
+});
+
 // Recording / voicemail / transcript configuration.
 app.put('/api/admin/voice-settings', ownerOnly, (req, res) => {
   const b = req.body || {};
@@ -3864,6 +4354,10 @@ app.post('/api/admin/call', adminOnly, async (req, res, next) => {
     const co = myCompany(req);
     const r = await sms.placeCall(to, req.user.phone, co,
       { announce: b.name, record: !!co.record_calls, baseUrl: baseUrlOf(req) });
+    logCall({ companyId: req.companyId, direction: 'out', mode: 'cell', callSid: r.sid,
+      phone: to, userId: req.user.id, name: b.name,
+      loan_id: Number(b.loan_id) || null, contact_id: Number(b.contact_id) || null,
+      property_id: Number(b.property_id) || null });
     res.json({ ok: true, my_phone: r.my_phone });
   } catch (e) { next(e); }
 });
@@ -4066,6 +4560,15 @@ app.post('/api/admin/loans', adminOnly, (req, res) => {
     b.escrow_cents || 0, b.late_fee_cents || 0, b.grace_days ?? 5, b.first_payment_date,
     b.due_day || Number(b.first_payment_date.slice(8, 10)), b.principal_cents, b.beneficial_interest_pct || null,
     b.escrow_structure === 'pit' ? 'pit' : 'piti');
+  // A buyer already in the app gets this loan's welcome guide now — city from the
+  // property, PIT or PITI from the loan just written. A buyer who has not accepted
+  // terms yet gets it at that moment instead; either way it sends itself exactly once.
+  if (b.tenant_user_id) {
+    const t = get('SELECT terms_accepted_at FROM users WHERE id=?', b.tenant_user_id);
+    if (t && t.terms_accepted_at) {
+      try { sendHomebuyerGuide(b.tenant_user_id); } catch (e) { console.error('Welcome guide:', e.message); }
+    }
+  }
   res.json(loanFull(get('SELECT * FROM loans WHERE id=?', r.lastInsertRowid)));
 });
 
@@ -4105,6 +4608,8 @@ app.put('/api/admin/loans/:id', adminOnly, (req, res) => {
     'monthly_servicing_cents', 'monthly_misc_cents', 'misc_label'];
   const b = req.body || {};
   if (b.escrow_structure !== undefined) b.escrow_structure = b.escrow_structure === 'pit' ? 'pit' : 'piti';
+  const structureChanged = b.escrow_structure !== undefined &&
+    b.escrow_structure !== (loan.escrow_structure || 'piti');
   const sets = [], vals = [];
   for (const k of allowed) if (b[k] !== undefined) { sets.push(`${k}=?`); vals.push(b[k]); }
 
@@ -4135,6 +4640,12 @@ app.put('/api/admin/loans/:id', adminOnly, (req, res) => {
     const taxChanged = (after.monthly_taxes_cents || 0) !== (loan.monthly_taxes_cents || 0);
     const insChanged = (after.monthly_insurance_cents || 0) !== (loan.monthly_insurance_cents || 0);
     if ((taxChanged || insChanged) && after.tenant_user_id) escrowUpdateStatement(loan, after);
+    // Flipping PIT ↔ PITI changes what the welcome guide says about insurance — the
+    // one already in the buyer's documents is now wrong, so a corrected copy goes out.
+    if (structureChanged && after.tenant_user_id) {
+      const t = get('SELECT terms_accepted_at FROM users WHERE id=?', after.tenant_user_id);
+      if (t && t.terms_accepted_at) sendHomebuyerGuide(after.tenant_user_id, { force: true });
+    }
   } catch (e) { console.error('Escrow update statement:', e.message); }
   res.json(loanFull(get('SELECT * FROM loans WHERE id=?', loan.id)));
 });

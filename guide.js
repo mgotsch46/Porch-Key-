@@ -167,20 +167,24 @@ function render({ company, loan, property, tenant, logo }) {
   // ---- 72 hours ----
   H('COMPLETE WITHIN 72 HOURS OF CLOSING');
   if (piti) {
-    check(`Confirm your homeowners insurance. Your loan is structured as PITI — your insurance premium is ` +
-      `included in your monthly loan payment and paid from your escrow account by ${servicer}. You are still ` +
-      `responsible for placing full replacement cost coverage with your agent and keeping the policy active, ` +
-      `with the loss payee below on your declarations page.`);
+    check(`Know how your insurance works. Your loan is structured as PITI — the homeowners policy on the ` +
+      `property is provided by the seller, and you pay your share of the premium as part of your monthly loan ` +
+      `payment. There is nothing you need to place or renew for the home itself.`);
+    check(`Strongly consider personal property coverage. The seller's policy covers the home — the structure ` +
+      `itself. Your furniture, electronics, clothing, and valuables are NOT covered. A personal property (renters-` +
+      `style) policy is inexpensive and strongly encouraged — talk to any insurance agent.`);
   } else {
     check(`Obtain full replacement cost homeowners insurance on your property. Your loan is structured as PIT — ` +
       `insurance is NOT included in your monthly loan payment. You pay your insurance premiums directly to your ` +
       `agent, and a lapse in coverage violates your loan agreement.`);
   }
   d.space(3);
-  sub('LOSS PAYEE — ADD EXACTLY AS WRITTEN');
-  p(trust, { bold: true });
-  for (const line of lossAddr.length ? [lossAddr.slice(0, 1).join(''), lossAddr.slice(1).join(', ')] : []) if (line) p(line);
-  d.space(4);
+  if (!piti) {
+    sub('LOSS PAYEE — ADD EXACTLY AS WRITTEN');
+    p(trust, { bold: true });
+    for (const line of lossAddr.length ? [lossAddr.slice(0, 1).join(''), lossAddr.slice(1).join(', ')] : []) if (line) p(line);
+    d.space(4);
+  }
   check('Transfer all utility accounts into your name — gas, electric, water, and any others currently in the seller\'s name.');
   check(`Sign into the ${servicer} mobile app and confirm your first payment due date and amount. All payments are made in the app.`);
   check('Update your mailing address with the post office, your employer, and your bank.');
@@ -220,19 +224,23 @@ function render({ company, loan, property, tenant, logo }) {
   d.space(3);
   step(1, `Your loan servicer is ${servicer}. We collect your payments and manage your account.`);
   step(2, `All payments are made through the ${servicer} mobile app — card, bank transfer, or Cash App Pay. ` +
-    'Payments are not accepted by mail, in person, or anywhere outside the app.');
+    'Payments are not accepted by mail, in person, or anywhere outside the app. Processing fees apply to ' +
+    'payments made by credit or debit card and by ACH bank transfer — the app shows the fee before you confirm.');
   step(3, 'Enroll in autopay. It is the single best habit you can form as a new homeowner — and when you enroll ' +
     'in autopay, your $50.00 servicing fee is removed.');
   step(4, `Your payment is due on the ${ord(dueDay)} of each month` +
-    (grace ? `, with a grace period of ${grace} days. After the grace period a late fee of ${money(loan.late_fee_cents || 0)} ` +
-      'is charged and late notices begin.' : '. After the due date a late fee may be charged and late notices begin.'));
+    (grace ? `, with a grace period of ${grace} days. After the grace period, according to your loan paperwork, ` +
+      'your late fee is 10% of your payment, and late notices begin.'
+      : '. After the due date, according to your loan paperwork, your late fee is 10% of your payment, and late notices begin.'));
   step(5, 'If you ever know a payment will be late, message us in the app before the due date. There are options — ' +
     'but only if you reach out first.');
   d.space(4);
   sub(`WHAT YOUR PAYMENT COVERS — ${structureName}`);
   if (piti) {
     p('Principal, interest, property taxes, and homeowners insurance — called PITI. The tax and insurance ' +
-      `portions are held in escrow and paid on your behalf by ${servicer}.`);
+      `portions are held in escrow and paid on your behalf by ${servicer}. The insurance is the seller's policy ` +
+      'on the home itself — you pay your share monthly as part of this payment. It does not cover your personal ' +
+      'belongings; see the insurance section below.');
   } else {
     p('Principal, interest, and property taxes — called PIT. The tax portion is held in escrow and paid on your ' +
       `behalf by ${servicer}. Homeowners insurance is NOT included — you pay your insurance directly to your agent.`);
@@ -252,22 +260,30 @@ function render({ company, loan, property, tenant, logo }) {
 
   // ---- insurance ----
   H('YOUR HOMEOWNERS INSURANCE');
-  step(1, 'Full replacement cost coverage means your policy must pay to rebuild your home completely if it is ' +
-    'destroyed — not just its current market value. Confirm this with your agent.');
-  step(2, `Add ${trust} as loss payee${lossAddr.length ? ` at ${lossAddr.join(', ')}` : ''}. This is required — ` +
-    'verify it appears correctly on your declarations page.');
   if (piti) {
-    step(3, `Your premium is paid from escrow by ${servicer} as part of your monthly loan payment. Keep the ` +
-      'policy itself active and in your name.');
+    step(1, 'The homeowners policy on the property is provided by the seller. You pay your share of the ' +
+      'premium monthly as part of your loan payment — there is no policy for you to place, renew, or keep active ' +
+      'on the home itself.');
+    step(2, 'That policy covers the home — the structure. It does NOT cover your personal belongings: furniture, ' +
+      'electronics, clothing, tools, and valuables are yours to insure.');
+    step(3, 'Get personal property coverage. It is strongly encouraged, it is inexpensive, and any insurance ' +
+      'agent can set it up in a single call. If the worst happens, this is the difference between replacing ' +
+      'your things and losing them.');
+    step(4, 'Create a home inventory: walk through your home and video record your belongings, then store the ' +
+      'video in the cloud. It makes any claim faster and easier.');
   } else {
+    step(1, 'Full replacement cost coverage means your policy must pay to rebuild your home completely if it is ' +
+      'destroyed — not just its current market value. Confirm this with your agent.');
+    step(2, `Add ${trust} as loss payee${lossAddr.length ? ` at ${lossAddr.join(', ')}` : ''}. This is required — ` +
+      'verify it appears correctly on your declarations page.');
     step(3, 'You pay your premiums directly. Set a reminder — a missed premium can cancel your coverage.');
+    step(4, 'Personal belongings are separate. The policy covers the structure; furniture, electronics, and ' +
+      'valuables need personal property coverage. Ask your agent.');
+    step(5, 'Create a home inventory: walk through your home and video record your belongings, then store the ' +
+      'video in the cloud.');
+    step(6, 'Keep your policy active. A lapse violates your loan agreement and can result in force-placed ' +
+      'insurance — far more expensive, and it protects only the lender.');
   }
-  step(4, 'Personal belongings are separate. The policy covers the structure; furniture, electronics, and ' +
-    'valuables need personal property coverage. Ask your agent.');
-  step(5, 'Create a home inventory: walk through your home and video record your belongings, then store the ' +
-    'video in the cloud.');
-  step(6, 'Keep your policy active. A lapse violates your loan agreement and can result in force-placed ' +
-    'insurance — far more expensive, and it protects only the lender.');
 
   // ---- contractors ----
   H('FIND CONTRACTORS BEFORE YOU NEED THEM');

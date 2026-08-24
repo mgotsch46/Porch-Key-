@@ -293,5 +293,40 @@ function yearlySchedule(schedule) {
   return [...years.values()];
 }
 
-module.exports = { calcPayment, calcPrincipal, calcTerm, calcRate, solveLoan, yearlySchedule,
+
+// The same schedule, with money added on top of the required payment. Extra money goes
+// straight to principal — there is no interest owed beyond what the balance accrues —
+// so the note pays off early and the interest that would have accrued on the retired
+// balance is never charged. extra_monthly_cents rides on every payment; extra_once is a
+// list of { month_n, amount_cents } one-time payments applied with that month's payment.
+function scheduleWithExtras(loan, { extra_monthly_cents = 0, extra_once = [] } = {}) {
+  const onceBy = {};
+  for (const e of extra_once || []) {
+    const n = Number(e.month_n), amt = Math.round(Number(e.amount_cents) || 0);
+    if (n >= 1 && amt > 0) onceBy[n] = (onceBy[n] || 0) + amt;
+  }
+  const extraMonthly = Math.max(0, Math.round(Number(extra_monthly_cents) || 0));
+  const r = monthlyRate(loan.interest_rate_bps);
+  let bal = loan.principal_cents;
+  const rows = [];
+  let date = new Date(loan.first_payment_date + 'T00:00:00Z');
+  for (let n = 1; n <= loan.term_months && bal > 0; n++) {
+    const interest = Math.round(bal * r);
+    let principal = loan.payment_cents - interest + extraMonthly + (onceBy[n] || 0);
+    if (principal > bal || n === loan.term_months) principal = bal;
+    bal -= principal;
+    rows.push({
+      n,
+      date: date.toISOString().slice(0, 10),
+      payment_cents: interest + principal,
+      interest_cents: interest,
+      principal_cents: principal,
+      balance_cents: bal,
+    });
+    date = addMonthsUTC(date, 1);
+  }
+  return rows;
+}
+
+module.exports = { calcPayment, calcPrincipal, calcTerm, calcRate, solveLoan, yearlySchedule, scheduleWithExtras,
   finalPaymentDate, termFromDates, amortizationSchedule, paymentsDue, nextDueDate, loanStatus, allocatePayment, payoffQuote, addMonthsUTC };

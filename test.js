@@ -10,6 +10,27 @@ let adminCookie = '', tbCookie = '';
 let pass = 0, fail = 0;
 function ok(cond, name) { if (cond) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗ FAIL:', name); } }
 
+// Twilio signs its webhooks and the app now insists on it, so the tests have to sign
+// too. TEST_AUTH_TOKEN is planted on the company so there is something to sign with.
+const TEST_AUTH_TOKEN = 'test-auth-token-for-signatures';
+function signedForm(path, data, { token = TEST_AUTH_TOKEN, tamper = false, omit = false } = {}) {
+  const url = BASE + path;
+  const params = {};
+  for (const [k, v] of Object.entries(data)) params[k] = String(v);
+  const body = Object.keys(params).sort().map(k => k + params[k]).join('');
+  let sig = require('node:crypto').createHmac('sha1', token)
+    .update(Buffer.from(url + body, 'utf-8')).digest('base64');
+  if (tamper) sig = 'AAAA' + sig.slice(4);
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  if (!omit) headers['X-Twilio-Signature'] = sig;
+  return fetch(url, { method: 'POST', headers, body: new URLSearchParams(params).toString() });
+}
+// Make sure there is a company auth token for the signature check to verify against.
+function plantAuthToken() {
+  require('./db.js').db.prepare(
+    `UPDATE companies SET twilio_token=? WHERE id=(SELECT MIN(id) FROM companies)`).run(TEST_AUTH_TOKEN);
+}
+
 async function req(path, opts = {}, cookie = adminCookie) {
   const res = await fetch(BASE + path, {
     headers: { 'Content-Type': 'application/json', Cookie: cookie }, ...opts,
@@ -523,22 +544,18 @@ async function main() {
   }
   // The TwiML answer for an outgoing browser call.
   {
-    const resp = await fetch(`${BASE}/api/voice/outgoing`, { method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ ApplicationSid: 'AP' + 'b'.repeat(32), To: '555-555-0142' }).toString() });
+    plantAuthToken();
+    const resp = await signedForm('/api/voice/outgoing', { ApplicationSid: 'AP' + 'b'.repeat(32), To: '555-555-0142' });
     const xml = await resp.text();
     ok(/<Dial callerId=/.test(xml) && /<Number>\+15555550142<\/Number>/.test(xml), 'TwiML dials the target from the business number');
-    const bad = await fetch(`${BASE}/api/voice/outgoing`, { method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ ApplicationSid: 'AP' + 'z'.repeat(32), To: '555-555-0142' }).toString() });
+    const bad = await signedForm('/api/voice/outgoing', { ApplicationSid: 'AP' + 'z'.repeat(32), To: '555-555-0142' });
     ok(/cannot be completed/.test(await bad.text()), 'unknown TwiML app gets refused, not connected');
   }
 
   console.log('— voicemail, recording callbacks, and texted-in messages');
   {
-    const form = (path, data) => fetch(`${BASE}${path}`, { method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(data).toString() });
+    plantAuthToken();
+    const form = (path, data) => signedForm(path, data);
     // Voice settings save; greeting round-trips.
     r = await req('/api/admin/voice-settings', { method: 'PUT', body: JSON.stringify({
       record_calls: true, forward_calls: false, voicemail_greeting: 'Leave it after the beep.' }) });
@@ -581,6 +598,231 @@ async function main() {
     ok((texted.channels || '') === 'sms', 'and is tagged as having arrived by text');
     // Reset recording flag so nothing else in the suite is affected.
     await req('/api/admin/voice-settings', { method: 'PUT', body: JSON.stringify({ record_calls: false }) });
+  }
+
+  console.log('— the unified communication log');
+  {
+    plantAuthToken();
+    const db2 = require('./db.js').db;
+    const co = db2.prepare('SELECT id FROM companies ORDER BY id LIMIT 1').get();
+    db2.prepare(`UPDATE companies SET twilio_from='+15550009999',
+      voice_twiml_app_sid='AP' || substr(hex(randomblob(16)),1,32), record_calls=0, forward_calls=1 WHERE id=?`).run(co.id);
+
+    // A call placed from the cell bridge leaves a row even with recording OFF — that is
+    // the whole point of the call log.
+    // (Twilio is not connected in tests, so write through the same helper path the
+    // bridge uses: the inbound webhook, which needs nothing but a signed request.)
+    const sig = await signedForm('/api/voice/incoming', { To: '+15550009999', From: '+15557778888',
+      CallSid: 'CA' + '1'.repeat(32) });
+    ok(sig.status === 200, 'an inbound call is answered');
+    let row = db2.prepare('SELECT * FROM call_log WHERE call_sid=?').get('CA' + '1'.repeat(32));
+    ok(!!row && row.direction === 'in' && row.status === 'placed',
+      'and leaves a call_log row immediately, before any recording exists');
+    ok(row.loan_id === loanId, 'the caller was recognized as the buyer and filed on their loan');
+    ok(!!row.property_id, 'and against the property');
+    const commsPropId = row.property_id;
+
+    // The dial outcome arrives and the row learns how the call went.
+    await signedForm('/api/voice/vm-fallback?co=' + co.id, {
+      CallSid: 'CA' + '1'.repeat(32), DialCallStatus: 'completed', DialCallDuration: '184' });
+    row = db2.prepare('SELECT * FROM call_log WHERE call_sid=?').get('CA' + '1'.repeat(32));
+    ok(row.status === 'completed' && row.duration_sec === 184, 'answered: status and duration recorded');
+
+    // An unanswered one is marked as voicemail, not left as "placed" forever.
+    await signedForm('/api/voice/incoming', { To: '+15550009999', From: '+15557778888', CallSid: 'CA' + '2'.repeat(32) });
+    await signedForm('/api/voice/vm-fallback?co=' + co.id, { CallSid: 'CA' + '2'.repeat(32), DialCallStatus: 'no-answer' });
+    row = db2.prepare('SELECT * FROM call_log WHERE call_sid=?').get('CA' + '2'.repeat(32));
+    ok(row.status === 'voicemail', 'unanswered: the row says it went to voicemail');
+
+    // A softphone outgoing call logs under the person whose browser dialled.
+    await signedForm('/api/voice/outgoing', { ApplicationSid: db2.prepare('SELECT voice_twiml_app_sid v FROM companies WHERE id=?').get(co.id).v,
+      To: '+15557778888', From: 'client:admin-1', CallSid: 'CA' + '3'.repeat(32) });
+    row = db2.prepare('SELECT * FROM call_log WHERE call_sid=?').get('CA' + '3'.repeat(32));
+    ok(!!row && row.direction === 'out' && row.mode === 'softphone' && row.user_id === 1,
+      'a softphone call is logged as outbound under its caller');
+
+    // The unified endpoint merges calls, buyer texts, vendor texts, and email.
+    r = await req(`/api/admin/properties/${commsPropId}/comms`);
+    ok(r.status === 200 && r.json.events.length > 0, 'the property timeline answers');
+    const chans = new Set(r.json.events.map(e => e.channel));
+    ok(chans.has('call'), 'calls are in the timeline');
+    ok(r.json.events.some(e => e.channel === 'call' && e.duration_sec === 184), 'with their durations');
+    const tss = r.json.events.map(e => e.ts);
+    ok(tss.every((t, i) => !i || t <= tss[i - 1]), 'newest first, throughout');
+    // Channel filter narrows without losing the call/voicemail pairing.
+    r = await req(`/api/admin/properties/${commsPropId}/comms?channel=call`);
+    ok(r.json.events.every(e => e.channel === 'call' || e.channel === 'voicemail'), 'the call filter shows only calls');
+
+    // Another company's admin must see nothing here.
+    ok((await req(`/api/admin/properties/${commsPropId}/comms`, {}, tbCookie)).status !== 200,
+      'a buyer cannot read the admin timeline');
+
+    db2.prepare('UPDATE companies SET twilio_from=NULL, forward_calls=0 WHERE id=?').run(co.id);
+  }
+
+  console.log('— extra payments on the calculator');
+  {
+    const q = 'principal_cents=10000000&interest_rate_bps=950&term_months=360&first_payment_date=2026-06-01';
+    const base = (await req('/api/admin/amortize?' + q)).json;
+    ok(!base.extra, 'no extras asked for, none reported');
+    r = await req('/api/admin/amortize?' + q + '&extra_monthly_cents=10000');
+    ok(r.json.extra && r.json.extra.months < 360, 'an extra $100 a month pays off early');
+    ok(r.json.extra.months_saved === 360 - r.json.extra.months, 'months saved is the difference');
+    ok(r.json.extra.interest_saved_cents > 0, 'and interest is saved, not just moved');
+    const repaid = r.json.extra.schedule.reduce((t, x) => t + x.principal_cents, 0);
+    ok(repaid === 10000000, 'every cent of principal is still repaid exactly once');
+    r = await req('/api/admin/amortize?' + q + '&extra_once=' +
+      encodeURIComponent(JSON.stringify([{ month_n: 12, amount_cents: 1000000 }])));
+    ok(r.json.extra && r.json.extra.months_saved > 0, 'a one-time extra also shortens the loan');
+    r = await req('/api/admin/amortize?' + q + '&extra_once=not-json');
+    ok(r.status === 200 && !r.json.extra, 'garbage extras are ignored, not fatal');
+  }
+
+  console.log('— the calling self-check');
+  {
+    // Nothing connected: the check says so plainly instead of erroring.
+    require('./db.js').db.prepare(
+      `UPDATE companies SET twilio_sid=NULL, twilio_token=NULL, twilio_from=NULL WHERE id=(SELECT MIN(id) FROM companies)`).run();
+    r = await req('/api/admin/voice-check');
+    ok(r.status === 200 && r.json.ok === false, 'the self-check runs even with nothing connected');
+    const first = r.json.checks[0];
+    ok(first.name === 'Twilio connected' && first.ok === false, 'it leads with the missing Twilio account');
+    ok(/Settings/.test(first.fix || ''), 'and says where to go and fix it');
+    ok(r.json.expected.incoming.endsWith('/api/voice/incoming'), 'it reports the URL Twilio should be calling');
+    ok(r.json.expected.outgoing.endsWith('/api/voice/outgoing'), 'and the one the softphone app should use');
+
+    // Connected but pointed at a Twilio account that will not answer: the check must
+    // report failures rather than throwing, because the network is not to be trusted.
+    require('./db.js').db.prepare(
+      `UPDATE companies SET twilio_sid=?, twilio_token=?, twilio_from='+15550009999' WHERE id=(SELECT MIN(id) FROM companies)`)
+      .run('AC' + '9'.repeat(32), TEST_AUTH_TOKEN);
+    r = await req('/api/admin/voice-check');
+    ok(r.status === 200, 'the self-check survives Twilio refusing to answer');
+    ok(r.json.checks.some(c => c.name === 'Signature checking' && c.ok === true),
+      'it confirms webhook signature checking is switched on');
+    ok(r.json.checks.every(c => typeof c.ok === 'boolean' && c.name),
+      'every check reports a name and a verdict');
+    ok(r.json.checks.filter(c => !c.ok).every(c => c.fix), 'and every failure carries a fix');
+  }
+
+  console.log('— webhooks refuse anything Twilio did not sign');
+  {
+    plantAuthToken();
+    const co = require('./db.js').db.prepare('SELECT id FROM companies ORDER BY id LIMIT 1').get();
+    require('./db.js').db.prepare(`UPDATE companies SET twilio_from='+15550009999',
+      voice_twiml_app_sid='AP' || substr(hex(randomblob(16)),1,32) WHERE id=?`).run(co.id);
+    const payload = { To: '+15550009999', From: '+15558887777' };
+
+    // The signed request works — the baseline for everything below.
+    let resp = await signedForm('/api/voice/incoming', payload);
+    ok(resp.status === 200, 'a properly signed call is answered');
+
+    // Anyone who knows the URL must not be able to make the app do anything. This is the
+    // endpoint that places calls billed to the account.
+    resp = await signedForm('/api/voice/incoming', payload, { omit: true });
+    ok(resp.status === 403, 'a webhook with no signature at all is refused');
+    resp = await signedForm('/api/voice/incoming', payload, { tamper: true });
+    ok(resp.status === 403, 'a forged signature is refused');
+    resp = await signedForm('/api/voice/incoming', payload, { token: 'not-the-real-token' });
+    ok(resp.status === 403, 'a signature from the wrong auth token is refused');
+
+    // Changing even one field after signing invalidates it — a replayed signature cannot
+    // be pointed at a different number.
+    const url = BASE + '/api/voice/incoming';
+    const body = Object.keys(payload).sort().map(k => k + payload[k]).join('');
+    const sig = require('node:crypto').createHmac('sha1', TEST_AUTH_TOKEN)
+      .update(Buffer.from(url + body, 'utf-8')).digest('base64');
+    resp = await fetch(url, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Twilio-Signature': sig },
+      body: new URLSearchParams({ ...payload, From: '+19998887777' }).toString() });
+    ok(resp.status === 403, 'a signature cannot be reused for different call details');
+
+    // Every Twilio-facing route is covered, not just the one that was easy to test.
+    for (const path of ['/api/voice/outgoing', '/api/voice/announce', '/api/voice/recording?co=1&kind=call',
+                        '/api/voice/vm-transcript?co=1', '/api/voice/vm-fallback?co=1', '/sms/incoming']) {
+      const r2 = await signedForm(path, { Body: 'x' }, { omit: true });
+      ok(r2.status === 403, `${path} refuses an unsigned request`);
+    }
+
+    // A forged recording callback must not be able to write into the call log.
+    const before = (await req('/api/admin/recordings')).json.recordings.length;
+    await signedForm('/api/voice/recording?co=' + co.id + '&kind=call',
+      { RecordingSid: 'RE' + 'f'.repeat(32), RecordingDuration: '99' }, { tamper: true });
+    const after = (await req('/api/admin/recordings')).json.recordings.length;
+    ok(before === after, 'a forged recording callback writes nothing to the call log');
+
+    require('./db.js').db.prepare('UPDATE companies SET twilio_from=NULL WHERE id=?').run(co.id);
+  }
+
+  console.log('— choosing the softphone or the cell');
+  {
+    plantAuthToken();
+    const form = (path, data) => signedForm(path, data);
+
+    // Nothing chosen to begin with; the browser decides by device.
+    r = await req('/api/admin/texting');
+    ok(r.json.call_mode === null, 'no calling preference until one is chosen');
+
+    // Only the two real modes are accepted.
+    r = await req('/api/admin/call-mode', { method: 'PUT', body: JSON.stringify({ call_mode: 'carrier-pigeon' }) });
+    ok(r.status === 400, 'an invented call mode is refused');
+
+    // The cell needs a number to ring, and says so rather than failing at dial time.
+    r = await req('/api/admin/call-mode', { method: 'PUT', body: JSON.stringify({ call_mode: 'cell', my_phone: '555' }) });
+    ok(r.status === 400 && /does not look valid/.test(r.json.error), 'a junk handset number is caught before saving');
+
+    r = await req('/api/admin/call-mode', { method: 'PUT', body: JSON.stringify({ call_mode: 'cell', my_phone: '810-555-0142' }) });
+    ok(r.status === 200 && r.json.call_mode === 'cell' && r.json.my_phone === '+18105550142',
+      'the cell is saved with the number that should ring');
+    r = await req('/api/admin/texting');
+    ok(r.json.call_mode === 'cell' && r.json.my_phone === '+18105550142', 'the preference round-trips to the dialer');
+
+    r = await req('/api/admin/call-mode', { method: 'PUT', body: JSON.stringify({ call_mode: 'softphone' }) });
+    ok(r.status === 200 && r.json.call_mode === 'softphone', 'switching to the softphone keeps the saved handset');
+    r = await req('/api/admin/texting');
+    ok(r.json.my_phone === '+18105550142', 'and the handset number survives the switch');
+
+    r = await req('/api/admin/call-mode', { method: 'PUT', body: JSON.stringify({ call_mode: null }) });
+    ok(r.status === 200 && r.json.call_mode === null, 'the preference can be cleared back to by-device');
+
+    // The token now lets the browser answer, not only dial — this is what makes an
+    // inbound call reachable at the desk.
+    const smsMod = require('./sms.js');
+    const tok = smsMod.voiceToken({ accountSid: 'AC' + '1'.repeat(32), keySid: 'SK' + 'a'.repeat(32),
+      keySecret: 'shh', appSid: 'AP' + 'b'.repeat(32), identity: 'admin-1' });
+    const grants = JSON.parse(Buffer.from(tok.split('.')[1], 'base64url').toString()).grants;
+    ok(grants.voice.incoming && grants.voice.incoming.allow === true, 'the voice grant allows incoming calls');
+    ok(!!grants.voice.outgoing.application_sid, 'and still allows outgoing ones');
+
+    // Inbound rings the browser and the handset at once, and records when asked to.
+    const co = require('./db.js').db.prepare('SELECT id FROM companies LIMIT 1').get();
+    require('./db.js').db.prepare(`UPDATE companies SET twilio_from='+15550009999',
+      voice_twiml_app_sid='AP' || substr(hex(randomblob(16)),1,32), record_calls=1, forward_calls=1 WHERE id=?`).run(co.id);
+    let xml = await (await form('/api/voice/incoming', { To: '+15550009999', From: '+15558887777' })).text();
+    ok(/<Client>admin-\d+<\/Client>/.test(xml), 'an inbound call rings the browser softphone');
+    ok(/<Number>\+1\d{10}<\/Number>/.test(xml), 'and rings a real handset in the same Dial');
+    ok(/record="record-from-answer-dual"/.test(xml), 'an answered inbound call is recorded on both channels');
+    ok(/dir=in/.test(xml), 'the recording callback knows the call came in');
+    ok(/vm-fallback/.test(xml), 'unanswered still rolls to voicemail');
+
+    // With recording off there is no announcement and no recording attribute.
+    require('./db.js').db.prepare('UPDATE companies SET record_calls=0 WHERE id=?').run(co.id);
+    xml = await (await form('/api/voice/incoming', { To: '+15550009999', From: '+15558887777' })).text();
+    ok(!/record=/.test(xml) && !/may be recorded/.test(xml), 'recording off means no recording and no announcement');
+
+    // An inbound recording matches the buyer by the caller's number, not ours.
+    require('./db.js').db.prepare('UPDATE companies SET record_calls=1 WHERE id=?').run(co.id);
+    await form('/api/voice/recording?co=' + co.id + '&kind=call&dir=in', {
+      RecordingSid: 'RE' + 'e'.repeat(32), CallSid: 'CA' + 'e'.repeat(32),
+      From: '+15557778888', To: '+15550009999', RecordingDuration: '61' });
+    r = await req('/api/admin/recordings');
+    const inb = r.json.recordings.find(x => x.recording_sid === 'RE' + 'e'.repeat(32));
+    ok(!!inb && inb.loan_id === loanId, 'an inbound recording is matched to the buyer who called');
+
+    // Put the company — and this admin's own handset — back the way the rest of the
+    // suite expects to find them.
+    require('./db.js').db.prepare(`UPDATE companies SET twilio_from=NULL, record_calls=0, forward_calls=0 WHERE id=?`).run(co.id);
+    require('./db.js').db.prepare(`UPDATE users SET phone=NULL, call_mode=NULL WHERE email='admin@test.com'`).run();
   }
 
   console.log('— mail cost is computed, not typed');
@@ -1036,9 +1278,8 @@ async function main() {
   ok(r.status === 400 && /mobile number/.test(r.json.error), 'texting somebody with no mobile is refused clearly');
 
   console.log('— a vendor texts back');
-  let inbound = await fetch(BASE + '/sms/incoming', { method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'From=%2B15135551234&Body=' + encodeURIComponent('On my way, back door is fine') });
+  plantAuthToken();
+  let inbound = await signedForm('/sms/incoming', { From: '+15135551234', Body: 'On my way, back door is fine' });
   let xml = await inbound.text();
   ok(!/<Message>/.test(xml), 'a known vendor does NOT get the automatic brush-off');
   r = await req(`/api/admin/contacts/${rayId}/messages`);
@@ -1046,9 +1287,7 @@ async function main() {
     'their reply lands in the thread');
   ok(r.json.messages[1].body === 'On my way, back door is fine', 'the reply is stored as sent');
   ok(r.json.messages[1].property_id === propId, 'the reply is filed against the property last discussed');
-  inbound = await fetch(BASE + '/sms/incoming', { method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'From=%2B19995550000&Body=who+is+this' });
+  inbound = await signedForm('/sms/incoming', { From: '+19995550000', Body: 'who is this' });
   xml = await inbound.text();
   ok(/<Message>/.test(xml) && /Porch Pay app/.test(xml), 'an unknown number still gets the app auto-reply');
   r = await req('/api/admin/contact-inbox');
@@ -1171,14 +1410,11 @@ async function main() {
   ok(/STOP/.test(r.json.text), 'invite carries the STOP opt-out carriers require');
   // A buyer with a loan who texts back gets THREADED now, not auto-replied — their
   // words land in Messages. Only a stranger still gets the automatic pointer.
-  const twiml = await fetch(BASE + '/sms/incoming', { method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'From=%2B15558675309&Body=hello' });
+  plantAuthToken();
+  const twiml = await signedForm('/sms/incoming', { From: '+15558675309', Body: 'hello' });
   const buyerXml = await twiml.text();
   ok(twiml.status === 200 && !/<Message>/.test(buyerXml), 'a known buyer’s text is threaded, not auto-replied');
-  const strangerXml = await (await fetch(BASE + '/sms/incoming', { method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'From=%2B15550009999&Body=hello' })).text();
+  const strangerXml = await (await signedForm('/sms/incoming', { From: '+15550009999', Body: 'hello' })).text();
   ok(/<Response><Message>/.test(strangerXml) && /Porch Pay app/.test(strangerXml), 'a stranger still gets the automatic pointer into the app');
 
   console.log('— correspondence carries the management company name');
@@ -1706,7 +1942,14 @@ async function main() {
   const miEvidence = JSON.stringify((await req(`/api/admin/loans/${miLoanId}/documents`)).json);
   ok(/Notice as sent — 5-day late notice/.test(miEvidence), 'MI: the notice as sent files itself as a PDF');
   ok(/Certificate of delivery — 5-day notice/.test(miEvidence), 'MI: certificate of delivery files itself');
-  ok(!r.json.some(n => ['late_15', 'late_30'].includes(n.stage)), 'MI: generic ladder rungs suppressed');
+  ok(!r.json.some(n => ['late_15', 'late_30', 'late_45', 'late_60'].includes(n.stage)),
+    'MI: every generic ladder rung is suppressed — the 60-day timeline never applies in Michigan');
+  // And the other side of that carve-out: a loan in any other state walks the generic
+  // ladder, all the way to its 60-day backstop when it is that far gone.
+  r = await req(`/api/admin/loans/${loanId}/notices`);
+  const ohStages = r.json.map(n => n.stage);
+  ok(ohStages.includes('late_60'), 'non-MI (Ohio): the 60-day rung of the generic ladder fires');
+  ok(!ohStages.includes('mi_dc101'), 'non-MI: no DC 101 is ever drafted outside Michigan');
   ok(!!miDraft && miDraft.prepared === 1 && !miDraft.served_at, 'MI: DC 101 drafted, not served');
   r = await req('/api/admin/loans/' + miLoanId);
   ok(r.json.ledger.some(l => l.type === 'late_fee'), 'MI: late fee posted with the 5-day notice');
@@ -1818,14 +2061,58 @@ async function main() {
     .split('Partial payment non-waiver receipt').length;
   ok(docsAfter === docsBefore, 'MI: a payment in full generates no non-waiver receipt');
 
+  console.log('— the workflow timeline knows each state\'s track');
+  {
+    // Ohio: the generic ladder, every rung visible, fired ones marked with channels.
+    r = await req(`/api/admin/loans/${loanId}/workflow`);
+    ok(r.status === 200 && r.json.regime === 'generic' && r.json.state === 'OH',
+      'an Ohio loan shows the generic regime');
+    const stages = r.json.steps.map(x => x.key);
+    for (const st of ['late_5', 'late_15', 'late_30', 'late_45', 'late_60'])
+      ok(stages.includes(st), `Ohio track lists ${st}`);
+    ok(!stages.some(k => /dc101|dc102|cure/.test(k)), 'and none of Michigan\'s statutory steps');
+    const fired = r.json.steps.find(x => x.key === 'late_60');
+    ok(fired && fired.state === 'done' && fired.done_at, 'the 60-day rung shows as done with its date');
+    const skipped = r.json.steps.find(x => x.key === 'late_15');
+    ok(skipped && skipped.state === 'skipped', 'superseded rungs show as skipped, not silently missing');
+    ok(r.json.steps.every(x => x.kind === 'auto'), 'the generic ladder is fully automated — no human gates');
+
+    // Michigan: the statutory track with its human-review gates.
+    r = await req(`/api/admin/loans/${miLoanId}/workflow`);
+    ok(r.json.regime === 'michigan', 'a Michigan loan shows the statutory regime');
+    const mk = r.json.steps.map(x => x.key);
+    ok(['grace', 'late_5', 'dc101_prep', 'dc101_serve', 'cure', 'dc102'].every(k => mk.includes(k)),
+      'the full statutory sequence is laid out');
+    ok(!mk.some(k => /late_15|late_30|late_45|late_60/.test(k)), 'no generic rungs leak into Michigan');
+    const prep = r.json.steps.find(x => x.key === 'dc101_prep');
+    ok(prep.kind === 'review', 'the DC 101 draft is marked as needing human review');
+    ok(['waiting', 'done'].includes(prep.state), 'and it is waiting on a person (or already handled)');
+    const serve = r.json.steps.find(x => x.key === 'dc101_serve');
+    ok(serve.kind === 'human' && serve.state === 'done', 'service shows done — this loan\'s DC 101 was served');
+    const five = r.json.steps.find(x => x.key === 'late_5');
+    ok(five.state === 'done' && Array.isArray(five.channels), 'the 5-day notice shows sent, with its channels');
+
+    // A buyer cannot see the machinery pointed at them.
+    ok((await req(`/api/admin/loans/${miLoanId}/workflow`, {}, tbCookie)).status !== 200,
+      'the workflow is admin-only');
+  }
+
+
   console.log('— welcome guide, escrow update, payoff delivery');
   // The loan defaults to PITI; flipping it to PIT changes the guide it produces.
   r = await req('/api/admin/loans/' + miLoanId);
   ok(r.json.loan.escrow_structure === 'piti', 'loan carries its PIT/PITI designation (default PITI)');
   r = await req(`/api/admin/loans/${miLoanId}/homebuyer-guide`, { method: 'POST', body: '{}' });
   ok(r.status === 200 && r.json.city === 'Flint' && r.json.structure === 'PITI', 'welcome guide sent for Flint, PITI');
+  // Flipping the designation re-sends the corrected guide on its own — the buyer here
+  // has accepted terms, so the moment the loan changes, the wrong guide is replaced.
+  const guidesBefore = JSON.stringify((await req(`/api/admin/loans/${miLoanId}/documents`)).json);
+  ok(!/\(Flint, PIT\)/.test(guidesBefore), 'no PIT guide exists before the switch');
   r = await req('/api/admin/loans/' + miLoanId, { method: 'PUT', body: JSON.stringify({ escrow_structure: 'pit' }) });
   ok(r.json.loan.escrow_structure === 'pit', 'designation switches to PIT');
+  const guidesAfter = JSON.stringify((await req(`/api/admin/loans/${miLoanId}/documents`)).json);
+  ok(/Welcome guide — your new home \(Flint, PIT\)/.test(guidesAfter),
+    'the PIT guide files itself automatically when the designation changes');
   r = await req(`/api/admin/loans/${miLoanId}/homebuyer-guide`, { method: 'POST', body: '{}' });
   ok(r.json.structure === 'PIT', 'guide re-sends as PIT after the switch');
   let miDocs2 = JSON.stringify((await req(`/api/admin/loans/${miLoanId}/documents`)).json);
