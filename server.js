@@ -2888,7 +2888,10 @@ app.post('/api/voice/outgoing', twilioWebhook, (req, res) => {
     ? ` record="record-from-answer-dual" recordingStatusCallback="${xesc(base)}/api/voice/recording?co=${co.id}&amp;kind=call"`
     : '';
   const whisper = co.record_calls ? ` url="${xesc(base)}/api/voice/announce"` : '';
-  res.send(`<Response><Dial callerId="${xesc(co.twilio_from)}" answerOnBridge="true"${rec}` +
+  // ringTone matters: answerOnBridge holds the far end's audio until they answer,
+  // which without it means the caller hears pure silence while the phone rings —
+  // indistinguishable from a dead line, and people hang up on it.
+  res.send(`<Response><Dial callerId="${xesc(co.twilio_from)}" answerOnBridge="true" ringTone="us"${rec}` +
            ` action="${xesc(base)}/api/voice/dial-done?co=${co.id}">` +
            `<Number${whisper}>${xesc(to)}</Number></Dial></Response>`);
 });
@@ -2949,7 +2952,7 @@ app.post('/api/voice/incoming', twilioWebhook, (req, res) => {
     ? ` record="record-from-answer-dual" recordingStatusCallback="${xesc(base)}/api/voice/recording?co=${co.id}&amp;kind=call&amp;dir=in"`
     : '';
   res.send(`<Response>${notice}` +
-    `<Dial timeout="25" answerOnBridge="true" callerId="${xesc(sms.normalizePhone(req.body && req.body.From) || co.twilio_from)}"` +
+    `<Dial timeout="25" answerOnBridge="true" ringTone="us" callerId="${xesc(sms.normalizePhone(req.body && req.body.From) || co.twilio_from)}"` +
     `${rec} action="${xesc(base)}/api/voice/vm-fallback?co=${co.id}">` +
     legs.join('') + `</Dial></Response>`);
 });
@@ -3179,7 +3182,21 @@ app.get('/api/admin/voice-check', adminOnly, async (req, res, next) => {
         : 'On — webhooks Twilio did not sign are refused.',
       'Remove TWILIO_SKIP_SIGNATURE from the environment.');
 
-    res.json({ ok: checks.every(x => x.ok), checks, expected: want });
+    // The last few calls as Twilio saw them — status, duration, and the two ends.
+    // When someone says "the call didn't work", this is the difference between
+    // guessing and knowing.
+    let recent = [];
+    try {
+      const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/Calls.json?PageSize=8`,
+        { headers: authHeader });
+      const j = await r.json();
+      recent = (j.calls || []).map(x => ({
+        when: x.start_time, from: x.from_formatted || x.from, to: x.to_formatted || x.to,
+        status: x.status, duration_sec: Number(x.duration) || 0, direction: x.direction,
+      }));
+    } catch (e) { /* diagnostics only */ }
+
+    res.json({ ok: checks.every(x => x.ok), checks, expected: want, recent_calls: recent });
   } catch (e) { next(e); }
 });
 

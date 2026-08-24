@@ -3490,7 +3490,15 @@ async function runVoiceCheck(){
           <div><b>${c.ok?'✅':'⚠️'} ${esc(c.name)}</b></div>
           ${c.detail?`<div class="note">${esc(c.detail)}</div>`:''}
           ${c.fix?`<div class="note" style="margin-top:4px"><b>Fix:</b> ${esc(c.fix)}</div>`:''}
-        </div>`).join('');
+        </div>`).join('') +
+      ((r.recent_calls||[]).length?`
+        <div style="margin-top:12px"><b style="font-size:13.5px">Twilio's last ${r.recent_calls.length} calls</b>
+        ${r.recent_calls.map(x=>`
+          <div class="note" style="padding:5px 0;border-bottom:1px solid var(--line)">
+            ${x.direction==='inbound'?'⬅':'➡'} ${esc(x.from||'')} → ${esc(x.to||'')} ·
+            <b>${esc(x.status)}</b>${x.duration_sec?` · ${x.duration_sec}s`:''}
+            ${x.when?` · ${esc(String(x.when))}`:''}
+          </div>`).join('')}</div>`:'');
   }catch(e){ box.innerHTML=`<p class="err">${esc(e.message)}</p>`; }
 }
 async function saveCallMode(){
