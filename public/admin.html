@@ -1060,7 +1060,7 @@ a{color:var(--brand);font-weight:600}
         <div id="set-texting"><p class="note">Loading…</p></div></div>
 
       <div class="card">
-        <h2>&#128210; Books</h2>
+        <h2>&#128210; Ledger</h2>
         <div id="set-books"><p class="note">Loading…</p></div></div>
 
       <div class="card">
@@ -2147,13 +2147,13 @@ async function loadPropBooks(pid){
   const el=$('prop-books'); if(!el) return;
   let d;
   try{ d=await api(`/api/admin/properties/${pid}/ledger`); }
-  catch(e){ el.innerHTML=`<div class="card"><h2>Books</h2><p class="note">Could not load: ${esc(e.message)}</p></div>`; return; }
+  catch(e){ el.innerHTML=`<div class="card"><h2>Ledger</h2><p class="note">Could not load: ${esc(e.message)}</p></div>`; return; }
   const s=d.summary, rows=d.rows||[];
   const sign=(c)=>c<0?'var(--red)':'var(--brand)';
 
   el.innerHTML=`
   <div class="card">
-    <h2>📒 Books — buyer and lender together</h2>
+    <h2>📒 Ledger — buyer and lender together</h2>
     <div class="cards" style="margin-bottom:14px">
       <div class="stat"><div class="n">${fmt(s.tb_principal_cents)}</div><div class="l">Buyer still owes you</div></div>
       <div class="stat"><div class="n">${fmt(s.pml_principal_cents)}</div><div class="l">You still owe your lender</div></div>
