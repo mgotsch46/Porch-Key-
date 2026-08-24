@@ -775,6 +775,10 @@ function miPartialReceipt({ loan, alloc, amountCents, method, entryDate, owedBef
   const remaining = owedBefore - amountCents;
   const dc = get(`SELECT * FROM notices WHERE loan_id=? AND stage='mi_dc101' AND served_at IS NOT NULL
                   ORDER BY id DESC LIMIT 1`, loan.id);
+  // Which address signs the email: the 5-day courtesy phase belongs to servicing@,
+  // but once a DC 101 exists — drafted or served — the conversation has moved to
+  // legal@, and every message about the default follows it there.
+  const anyDc = dc || get(`SELECT id FROM notices WHERE loan_id=? AND stage='mi_dc101' LIMIT 1`, loan.id);
   const body = miReceiptText({ co, property, loan, tenant, amountCents, entryDate, method, owedBefore, alloc, dc });
 
   const buf = pdfDoc.letter({
@@ -806,7 +810,7 @@ function miPartialReceipt({ loan, alloc, amountCents, method, entryDate, owedBef
       `All rights are expressly reserved.\n\n` +
       `To resolve the default, the full past-due balance of ${money(remaining)} must be received. If you want ` +
       `to discuss a written arrangement, message us here.`,
-    emailKind: 'late_notice',
+    emailKind: anyDc ? 'forfeiture_notice' : 'late_notice',
   });
   if (tenant) {
     notify.notify(tenant.id, {
@@ -3796,6 +3800,24 @@ app.post('/api/admin/notices/:id/serve-dc101', adminOnly, async (req, res, next)
       run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', sent.cost_cents, loan.id);
     }
     run(`UPDATE tasks SET status='done', completed_at=datetime('now') WHERE source_key=? AND status='open'`, `dc101-prep-${n.id}`);
+
+    // A courtesy copy of the news, in the thread and by email — from the legal
+    // address, because from this point the conversation has changed. The certified
+    // letter is the statutory service; this is transparency, not service.
+    try {
+      deliverToBuyer({
+        key: null, co, loan, tenant,
+        subject: `Forfeiture Notice (DC 101) served — ${property.address}`,
+        intro: `A statutory Notice of Forfeiture (SCAO Form DC 101) was served today by USPS certified mail ` +
+          `regarding ${property.address}.`,
+        details: `Certified mail tracking: ${sent.tracking_number || sent.id}\n` +
+          `Cure deadline: ${cureDeadline} — the total amount demanded in the notice must be received by this date.\n\n` +
+          `If the amount is not paid in full by the cure deadline, a complaint for possession may be filed in the ` +
+          `district court without further notice. If you have questions or want to discuss resolving this, ` +
+          `contact us immediately.`,
+        emailKind: 'forfeiture_notice',
+      });
+    } catch (e) { console.error('DC 101 served notification:', e.message); }
 
     res.json({ ok: true, tracking: sent.tracking_number, cost_cents: sent.cost_cents,
       cure_deadline: cureDeadline, test: sent.test });

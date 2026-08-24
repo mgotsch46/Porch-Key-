@@ -3376,8 +3376,15 @@ async function loadEmail(){
                                   : '<span style="color:var(--warn,#b60)">not set up</span>'}</b></div>
       ${bounced ? `<p class="err" style="margin:12px 0">${bounced} message(s) bounced. A bounced notice never
         reached the buyer — check the address before relying on it as having been served.</p>` : ''}
-      ${!t.webhook_secret_set ? `<p class="note" style="margin:12px 0">Add the webhook in Resend and paste its
-        signing secret here to get delivery confirmation. Worth doing before you rely on an emailed notice.</p>` : ''}` : ''}
+      ${!t.webhook_secret_set ? `<div style="margin:12px 0">
+        <p class="note" style="margin-bottom:6px">Add the webhook in Resend (endpoint <code style="font-size:11px">${esc(t.webhook_url||'')}</code>,
+          events <code>email.delivered</code>, <code>email.bounced</code>, <code>email.complained</code>) and paste its
+          signing secret here — then every notice gets a delivery record.</p>
+        <div style="display:flex;gap:8px">
+          <input id="em-hook-quick" type="password" placeholder="whsec_..." autocomplete="off" style="flex:1">
+          <button class="small" onclick="saveWebhookSecret()">Turn on delivery reporting</button>
+        </div>
+        <div id="em-hook-err" class="err hidden" style="margin-top:6px"></div></div>` : ''}` : ''}
       ${t.from_legal && t.from_legal!==t.from_servicing && !t.legal_has_own_login ? `
       <p class="note" style="margin:12px 0"><b>One thing to check in Gmail.</b> Because both addresses share one login,
         ${esc(t.from_legal)} has to be added under Settings → Accounts → <i>Send mail as</i> and verified, or Google
@@ -3475,6 +3482,20 @@ function emProviderChanged(){
   $('em-smtp').classList.toggle('hidden',!smtp);
   $('em-smtp2').classList.toggle('hidden',!smtp);
   $('em-api').classList.toggle('hidden',smtp);
+}
+// Delivery reporting can be switched on after connecting — the saved key and
+// addresses stay as they are; only the webhook secret is added.
+async function saveWebhookSecret(){
+  const err=$('em-hook-err'); err.classList.add('hidden');
+  const secret=$('em-hook-quick').value.trim();
+  if(!secret.startsWith('whsec_')){ err.textContent='That does not look like a signing secret — it starts whsec_'; err.classList.remove('hidden'); return; }
+  try{
+    const cur=await api('/api/admin/email');
+    await api('/api/admin/email',{method:'PUT',body:JSON.stringify({ provider:'resend',
+      from_servicing:cur.from_servicing, from_legal:cur.from_legal, reply_to:cur.reply_to||'',
+      webhook_secret:secret })});
+    loadEmail();
+  }catch(e){ err.textContent=e.message; err.classList.remove('hidden'); }
 }
 async function saveEmail(){
   const btn=event&&event.target;
