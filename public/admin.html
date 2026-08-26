@@ -3318,8 +3318,10 @@ async function softphoneCall(phone,name,token){
     <p id="sp-status" class="note" style="margin-bottom:12px">Starting the call…</p>
     <div class="actions">
       <button class="small" id="sp-mute" onclick="softphoneMute()" disabled>🎙️ Mute</button>
+      <button class="small" id="sp-pad" onclick="softphoneKeypad()" disabled>🔢 Keypad</button>
       <button class="warn" id="sp-hang" onclick="softphoneHangup()">Hang up</button>
     </div>
+    <div id="sp-keypad" class="hidden" style="margin-top:10px"></div>
     <p class="note" style="margin-top:12px">This call runs from your business number, right here in the app.
       Keep this window open while you talk.</p>
     <p class="note" style="margin-top:6px"><a href="#" onclick="event.preventDefault();softphoneHangup();callNow('${esc(phone)}','${esc(name||'')}','cell')">Ring my cell for this one instead</a></p>`);
@@ -3335,7 +3337,7 @@ async function softphoneCall(phone,name,token){
     else VOICE_DEVICE.updateToken(token);
     status('Dialing…');
     VOICE_CALL=await VOICE_DEVICE.connect({ params:{ To: phone } });
-    $('sp-mute').disabled=false;
+    $('sp-mute').disabled=false; if($('sp-pad')) $('sp-pad').disabled=false;
     const started=Date.now();
     VOICE_CALL.on('accept',()=>{
       clearInterval(VOICE_TIMER);
@@ -3419,8 +3421,10 @@ function answerIncoming(){
     <p id="sp-status" class="note" style="margin-bottom:12px">Connecting…</p>
     <div class="actions">
       <button class="small" id="sp-mute" onclick="softphoneMute()">🎙️ Mute</button>
+      <button class="small" id="sp-pad" onclick="softphoneKeypad()">🔢 Keypad</button>
       <button class="warn" id="sp-hang" onclick="softphoneHangup()">Hang up</button>
-    </div>`);
+    </div>
+    <div id="sp-keypad" class="hidden" style="margin-top:10px"></div>`);
   const started=Date.now();
   const status=m=>{ const el=$('sp-status'); if(el) el.textContent=m; };
   VOICE_TIMER=setInterval(()=>{
@@ -3448,6 +3452,35 @@ function indexContactPhones(list){
     if(d.length===10 && c.name) CONTACT_INDEX[d]=c.name;
   }
 }
+
+// The keypad: extensions, phone menus, conference PINs. Each press plays its tone into
+// the live call exactly as a handset would. Typing works too — the keyboard is faster
+// than clicking when the menu says "enter your five digit account number".
+function softphoneKeypad(){
+  const pad=$('sp-keypad'); if(!pad) return;
+  if(!pad.classList.contains('hidden')){ pad.classList.add('hidden'); return; }
+  pad.innerHTML=`
+    <input id="sp-digits" readonly placeholder="digits sent show here"
+      style="width:100%;text-align:center;font-size:16px;letter-spacing:3px;margin-bottom:8px;background:var(--bg)">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-width:240px;margin:0 auto">
+      ${['1','2','3','4','5','6','7','8','9','*','0','#'].map(d=>
+        `<button class="small" style="font-size:17px;padding:10px 0" onclick="softphoneDigit('${d==='*'?'\u002a':d}')">${d}</button>`).join('')}
+    </div>
+    <p class="note" style="text-align:center;margin-top:6px">You can also just type on your keyboard.</p>`;
+  pad.classList.remove('hidden');
+}
+function softphoneDigit(d){
+  if(!VOICE_CALL) return;
+  try{ VOICE_CALL.sendDigits(d); }catch(e){ return; }
+  const box=$('sp-digits'); if(box) box.value=(box.value+d).slice(-24);
+}
+// Keyboard passthrough while a call is up and the keypad is open.
+document.addEventListener('keydown',(e)=>{
+  if(!VOICE_CALL) return;
+  const pad=$('sp-keypad');
+  if(!pad||pad.classList.contains('hidden')) return;
+  if(/^[0-9*#]$/.test(e.key)){ e.preventDefault(); softphoneDigit(e.key); }
+});
 
 function softphoneMute(){
   if(!VOICE_CALL) return;
