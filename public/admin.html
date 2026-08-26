@@ -1532,7 +1532,7 @@ function renderProps(){
                 : `${PROPS.length} propert${PROPS.length===1?'y':'ies'}`;
 
   el.innerHTML=list.map(p=>
-    `<tr class="click" onclick="openProp(${p.id})"><td><span class="addr-link">${esc(p.address)}</span>${p.city?', '+esc(p.city):''}</td>
+    `<tr class="click" onclick="openProp(${p.id})"><td><span class="addr-link">${esc(p.address)}</span>${[p.city,p.state,p.zip].some(Boolean)?`<br><span class="note">${esc([p.city,p.state].filter(Boolean).join(', '))}${p.zip?' '+esc(p.zip):''}</span>`:''}</td>
      <td>${p.status==='sold'?'<span class="pill ok">sold</span>':p.status==='listed'?'<span class="pill amber">listed</span>':'<span class="pill gray">owned</span>'}</td>
      <td class="right">${fmt(p.all_in_cents||0)}</td>
      <td class="right">${fmt(0)}</td>
