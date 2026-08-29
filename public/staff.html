@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16220D">
+<link rel="manifest" href="/staff-manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<title>PorchPay Staff</title>
+<style>
+/* The staff phone app: communication and money, organized by house. Deliberately
+   simpler than the desktop — this is the tool for the truck, not the desk. */
+:root{
+  --brand:#54A32F; --ink:#16220D; --mut:#6B7A5F; --line:#E6EEDD; --bg:#F7FBF3;
+  --card:#FFFFFF; --red:#D64545; --amber:#B8860B; --pale:#EFF8E7;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:'Space Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:var(--bg);color:var(--ink);font-size:15px;
+  padding-bottom:calc(64px + env(safe-area-inset-bottom))}
+h1{font-size:19px;padding:14px 16px 6px}
+h2{font-size:15px;margin-bottom:8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:0 12px 12px}
+.note{color:var(--mut);font-size:12.5px}
+button{font-family:inherit;font-size:14px;border:0;border-radius:10px;cursor:pointer;background:var(--pale);padding:9px 13px;color:var(--ink)}
+button.primary{background:var(--brand);color:#fff;font-weight:700}
+button.warn{background:#FBEAEA;color:var(--red)}
+button:disabled{opacity:.45}
+input,textarea{font-family:inherit;font-size:15px;width:100%;border:1.5px solid var(--line);border-radius:10px;padding:10px;background:#fff}
+.hidden{display:none!important}
+.pill{display:inline-block;font-size:11px;font-weight:700;border-radius:9px;padding:1px 8px;vertical-align:1px}
+.pill.due{background:#FBEAEA;color:var(--red)}
+.pill.ok{background:var(--pale);color:var(--brand)}
+.badge{display:inline-flex;align-items:center;justify-content:center;min-width:19px;height:19px;
+  border-radius:10px;background:var(--red);color:#fff;font-size:11px;font-weight:700;padding:0 5px}
+/* nav */
+.nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:#fff;border-top:1px solid var(--line);
+  padding-bottom:env(safe-area-inset-bottom);z-index:5}
+.nav button{flex:1;background:none;border-radius:0;padding:9px 0 7px;font-size:11px;color:var(--mut);position:relative}
+.nav button .ico{display:block;font-size:20px;margin-bottom:1px}
+.nav button.active{color:var(--brand);font-weight:700}
+.nav .nbadge{position:absolute;top:4px;right:50%;margin-right:-22px}
+/* rows */
+.row{display:flex;justify-content:space-between;gap:8px;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px;align-items:center}
+.row:last-child{border-bottom:0}
+.click{cursor:pointer}
+/* chat */
+.thread{display:flex;flex-direction:column;gap:8px;padding:4px 0}
+.msg{max-width:82%;padding:9px 12px;border-radius:15px;font-size:14.5px;line-height:1.45;white-space:pre-wrap;word-break:break-word}
+.msg.me{align-self:flex-end;background:var(--brand);color:#fff;border-bottom-right-radius:5px}
+.msg.them{align-self:flex-start;background:#fff;border:1px solid var(--line);border-bottom-left-radius:5px}
+.msg .t{font-size:10.5px;opacity:.75;margin-top:4px}
+.msg.me .t{text-align:right}
+/* composer */
+.composer{display:flex;gap:8px;align-items:flex-end;margin-top:10px}
+.composer textarea{flex:1;resize:none;max-height:120px}
+/* keypad */
+.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:270px;margin:14px auto}
+.pad button{font-size:22px;padding:16px 0;border-radius:14px;background:#fff;border:1px solid var(--line)}
+.err{color:var(--red);font-size:13px;margin:8px 0}
+.ok{color:var(--brand);font-size:13px;margin:8px 0}
+.back{background:none;color:var(--brand);font-weight:700;padding:12px 16px 2px;font-size:14px}
+.seg{display:flex;gap:6px;margin:0 12px 10px}
+.seg button{flex:1}
+.seg button.active{background:var(--ink);color:#fff}
+audio{width:100%;height:30px;margin-top:6px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:84px;background:var(--ink);color:#fff;
+  padding:9px 16px;border-radius:11px;font-size:13.5px;opacity:0;transition:opacity .25s;z-index:9;pointer-events:none}
+.toast.show{opacity:.95}
+</style>
+</head>
+<body>
+
+<!-- ── login ── -->
+<div id="v-login" class="hidden">
+  <h1>PorchPay Staff</h1>
+  <div class="card">
+    <p class="note" style="margin-bottom:10px">Sign in with your admin account.</p>
+    <div style="display:grid;gap:8px">
+      <input id="li-email" type="email" placeholder="Email" autocomplete="username">
+      <input id="li-pw" type="password" placeholder="Password" autocomplete="current-password">
+      <div id="li-err" class="err hidden"></div>
+      <button class="primary" onclick="doLogin()">Sign in</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── app ── -->
+<div id="v-app" class="hidden">
+
+  <!-- HOME: properties -->
+  <section id="tab-home">
+    <h1 id="h-title">Properties</h1>
+    <div id="home-list"><div class="card"><p class="note">Loading…</p></div></div>
+  </section>
+
+  <!-- PROPERTY: thread + actions -->
+  <section id="tab-prop" class="hidden">
+    <button class="back" onclick="go('home')">← Properties</button>
+    <h1 id="p-title" style="padding-top:2px"></h1>
+    <div style="padding:0 16px 10px" class="note" id="p-sub"></div>
+    <div style="display:flex;gap:8px;padding:0 12px 12px">
+      <button class="primary" id="p-call" onclick="callBuyer()">📞 Call</button>
+      <button id="p-text" onclick="composeMode='sms';composeFocus()">💬 Text</button>
+      <button onclick="composeMode='app';composeFocus()">📩 Message</button>
+      <button id="p-email" onclick="composeMode='email';composeFocus()">✉️</button>
+    </div>
+    <div class="card">
+      <div id="p-thread" class="thread"><p class="note">Loading…</p></div>
+      <div class="composer">
+        <textarea id="p-input" rows="1" placeholder="Message the buyer…" oninput="growBox(this)"></textarea>
+        <button class="primary" onclick="sendToBuyer()">Send</button>
+      </div>
+      <p class="note" id="p-mode-note" style="margin-top:6px"></p>
+    </div>
+    <div class="card">
+      <h2>💵 Payments on this house</h2>
+      <div id="p-pays"><p class="note">Loading…</p></div>
+    </div>
+  </section>
+
+  <!-- BOG / vendors -->
+  <section id="tab-bog" class="hidden">
+    <h1>Boots on the ground</h1>
+    <div id="bog-list"><div class="card"><p class="note">Loading…</p></div></div>
+  </section>
+  <section id="tab-vendor" class="hidden">
+    <button class="back" onclick="go('bog')">← Contacts</button>
+    <h1 id="v-title"></h1>
+    <div style="display:flex;gap:8px;padding:0 12px 12px">
+      <button class="primary" onclick="callVendor()">📞 Call</button>
+    </div>
+    <div class="card">
+      <div id="v-thread" class="thread"><p class="note">Loading…</p></div>
+      <div class="composer">
+        <textarea id="v-input" rows="1" placeholder="Text this contact…" oninput="growBox(this)"></textarea>
+        <button class="primary" onclick="sendToVendor()">Send</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- DIALER -->
+  <section id="tab-dial" class="hidden">
+    <h1>Dialer</h1>
+    <div class="card" style="text-align:center">
+      <input id="d-num" inputmode="tel" placeholder="(555) 555-5555" style="text-align:center;font-size:22px;letter-spacing:1px" oninput="dialFmt()">
+      <div class="pad">
+        <button onclick="dialKey('1')">1</button><button onclick="dialKey('2')">2</button><button onclick="dialKey('3')">3</button>
+        <button onclick="dialKey('4')">4</button><button onclick="dialKey('5')">5</button><button onclick="dialKey('6')">6</button>
+        <button onclick="dialKey('7')">7</button><button onclick="dialKey('8')">8</button><button onclick="dialKey('9')">9</button>
+        <button onclick="dialKey('*')">*</button><button onclick="dialKey('0')">0</button><button onclick="dialKey('#')">#</button>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:center">
+        <button class="primary" style="font-size:17px;padding:13px 34px" onclick="dialGo()">📞 Call</button>
+        <button onclick="dialBack()">⌫</button>
+      </div>
+      <p class="note" style="margin-top:10px">PorchPay rings your cell, then connects you. They see the business
+        number, and the call is recorded and transcribed like every other.</p>
+      <div id="d-status" class="ok hidden"></div>
+    </div>
+  </section>
+
+  <!-- MONEY -->
+  <section id="tab-money" class="hidden">
+    <h1>Payments</h1>
+    <div class="card"><div id="money-list"><p class="note">Loading…</p></div></div>
+  </section>
+
+  <!-- nav -->
+  <nav class="nav">
+    <button id="nb-home" class="active" onclick="go('home')"><span class="ico">🏠</span>Homes<span id="b-home" class="badge nbadge hidden"></span></button>
+    <button id="nb-bog" onclick="go('bog')"><span class="ico">👷</span>BOG<span id="b-bog" class="badge nbadge hidden"></span></button>
+    <button id="nb-dial" onclick="go('dial')"><span class="ico">🔢</span>Dial</button>
+    <button id="nb-money" onclick="go('money')"><span class="ico">💵</span>Money<span id="b-money" class="badge nbadge hidden"></span></button>
+    <button id="nb-out" onclick="logout()"><span class="ico">🚪</span>Out</button>
+  </nav>
+</div>
+
+<div id="pp-toast" class="toast"></div>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=c=>'$'+((c||0)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const when=ts=>new Date(String(ts).replace(' ','T')+(String(ts).includes('Z')?'':'Z'))
+  .toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+async function api(path,opts={}){
+  const r=await fetch(path,{headers:{'Content-Type':'application/json'},...opts});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+  return j;
+}
+function toast(m){const t=$('pp-toast');t.textContent=m;t.classList.add('show');
+  clearTimeout(t._x);t._x=setTimeout(()=>t.classList.remove('show'),2600);}
+function growBox(t){t.style.height='auto';t.style.height=Math.min(t.scrollHeight,120)+'px';}
+
+// ---------- boot ----------
+let OV=null, tab='home', CUR=null, CURV=null, composeMode='sms';
+async function boot(){
+  try{
+    const me=await api('/api/me');
+    if(!['owner','admin','super_admin'].includes(me.role)){ location.href='/'; return; }
+    $('v-login').classList.add('hidden'); $('v-app').classList.remove('hidden');
+    await refresh();
+    registerPush().catch(()=>{});
+    setInterval(refresh, 30000);
+  }catch{ $('v-login').classList.remove('hidden'); }
+}
+async function doLogin(){
+  $('li-err').classList.add('hidden');
+  try{
+    const me=await api('/api/login',{method:'POST',body:JSON.stringify({email:$('li-email').value,password:$('li-pw').value})});
+    if(!['owner','admin','super_admin'].includes(me.role)) throw new Error('This app is for servicer staff.');
+    location.reload();
+  }catch(e){ $('li-err').textContent=e.message; $('li-err').classList.remove('hidden'); }
+}
+async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
+
+function go(t){
+  tab=t;
+  for(const k of ['home','prop','bog','vendor','dial','money']){
+    const el=$('tab-'+k); if(el) el.classList.toggle('hidden',k!==t);
+    const nb=$('nb-'+k); if(nb) nb.classList.toggle('active',k===t);
+  }
+  if(t==='home'||t==='bog'||t==='money') refresh();
+  window.scrollTo(0,0);
+}
+
+// ---------- overview: home, badges, money, bog ----------
+async function refresh(){
+  try{ OV=await api('/api/admin/staff/overview'); }catch{ return; }
+  // badges
+  const homeUnread=OV.properties.reduce((t,p)=>t+p.unread_buyer,0);
+  const bogUnread=OV.vendors.reduce((t,v)=>t+v.unread,0);
+  setBadge('b-home',homeUnread); setBadge('b-bog',bogUnread);
+  const today=new Date().toISOString().slice(0,10);
+  setBadge('b-money',OV.payments.filter(p=>p.entry_date===today).length);
+  try{ navigator.setAppBadge && (OV.total_unread?navigator.setAppBadge(OV.total_unread):navigator.clearAppBadge()); }catch{}
+
+  // home list
+  $('home-list').innerHTML=OV.properties.map(p=>`
+    <div class="card click" onclick="openProp(${p.id})">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b>${esc(p.address)}</b>
+        ${p.unread?`<span class="badge">${p.unread}</span>`:''}
+      </div>
+      <div class="note">${esc([p.city,p.state].filter(Boolean).join(', '))}${p.zip?' '+esc(p.zip):''}</div>
+      <div class="row" style="border:0;padding:6px 0 0">
+        <span class="note">${p.buyer?esc(p.buyer.name):'no buyer'}</span>
+        <span>${p.past_due?`<span class="pill due">${fmt(p.owed_now_cents)} past due</span>`
+          :p.loan_id?'<span class="pill ok">current</span>':''}</span>
+      </div>
+      ${p.last_payment?`<div class="note">Last payment ${fmt(p.last_payment.amount_cents)} on ${esc(p.last_payment.entry_date)}</div>`:''}
+    </div>`).join('')||'<div class="card"><p class="note">No properties.</p></div>';
+
+  // bog list
+  $('bog-list').innerHTML=OV.vendors.map(v=>`
+    <div class="card click" onclick="openVendor(${v.id},'${esc(v.name)}','${esc(v.phone||'')}')">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b>${esc(v.name)}</b>${v.unread?`<span class="badge">${v.unread}</span>`:''}
+      </div>
+      <div class="note">${esc(v.role||'')} · ${esc(v.phone||'')}</div>
+    </div>`).join('')||'<div class="card"><p class="note">No contacts with phones yet.</p></div>';
+
+  // money list
+  $('money-list').innerHTML=OV.payments.map(p=>`
+    <div class="row">
+      <span><b style="color:var(--brand)">${fmt(p.amount_cents)}</b>
+        <span class="note"> ${esc(p.buyer_name||'')}</span>
+        <div class="note">${esc(p.address||'')}</div></span>
+      <span class="note">${esc(p.entry_date)}${p.method?'<br>'+esc(String(p.method).replace('stripe_','')):''}</span>
+    </div>`).join('')||'<p class="note">No payments yet.</p>';
+}
+function setBadge(id,n){ const el=$(id); if(!el) return; el.classList.toggle('hidden',!n); el.textContent=n>99?'99+':n; }
+
+// ---------- property thread ----------
+async function openProp(id){
+  CUR=OV.properties.find(p=>p.id===id); if(!CUR) return;
+  go('prop');
+  $('p-title').textContent=CUR.address;
+  $('p-sub').textContent=[CUR.buyer&&CUR.buyer.name,[CUR.city,CUR.state].filter(Boolean).join(', ')+(CUR.zip?' '+CUR.zip:'')].filter(Boolean).join(' · ');
+  $('p-call').disabled=!(CUR.buyer&&CUR.buyer.phone);
+  $('p-text').disabled=!(CUR.loan_id&&CUR.buyer&&CUR.buyer.phone);
+  $('p-email').disabled=!(CUR.loan_id&&CUR.buyer&&CUR.buyer.email);
+  composeMode='sms'; modeNote();
+  loadPropThread(); loadPropPays();
+}
+function modeNote(){
+  $('p-mode-note').textContent = composeMode==='sms'
+    ? 'Sends as a real text from the business number, and files in the thread.'
+    : composeMode==='email' ? 'Sends as a branded email, and files in the thread.'
+    : 'In-app message — the buyer sees it in their PorchPay app.';
+}
+function composeFocus(){ modeNote(); $('p-input').focus(); }
+async function loadPropThread(){
+  const el=$('p-thread');
+  if(!CUR.loan_id){ el.innerHTML='<p class="note">No active loan on this house.</p>'; return; }
+  let msgs; try{ msgs=await api(`/api/admin/loans/${CUR.loan_id}/messages`); }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  el.innerHTML=msgs.map(m=>{
+    const mine=m.sender_role!=='tenant';
+    const viaSms=(m.channels||'').split(',').includes('sms');
+    return `<div class="msg ${mine?'me':'them'}">${esc(m.subject?m.subject+'\n':'')}${esc(m.body)}
+      <div class="t">${mine?'You':esc(m.sender_name)} · ${when(m.created_at)}${viaSms?' · 📲':''}</div></div>`;
+  }).join('')||'<p class="note">No messages yet — say hello.</p>';
+  el.scrollTop=el.scrollHeight;
+  refresh();
+}
+async function loadPropPays(){
+  if(!CUR.loan_id){ $('p-pays').innerHTML='<p class="note">No loan.</p>'; return; }
+  try{
+    const h=await api(`/api/admin/loans/${CUR.loan_id}/payment-history`);
+    $('p-pays').innerHTML=
+      `<div class="row"><span><b>Next due</b></span><span><b>${h.next_due?esc(h.next_due):'—'} · ${fmt(h.next_due_cents)}</b></span></div>`
+      +(h.is_past_due?`<div class="row"><span style="color:var(--red)"><b>Past due</b></span><span style="color:var(--red)"><b>${fmt(h.owed_now_cents)}</b></span></div>`:'')
+      +h.rows.slice(0,6).map(r=>`<div class="row">
+        <span class="note">${esc(r.due_date)}</span>
+        <span>${r.status==='paid'?'<span style="color:var(--brand)">✓ paid'+(r.paid_date?' '+esc(r.paid_date):'')+'</span>'
+          :r.status==='partial'?`<span style="color:var(--amber)">${fmt(r.paid_cents)} of ${fmt(r.due_cents)}</span>`
+          :'<span style="color:var(--red)">unpaid</span>'}</span></div>`).join('');
+  }catch(e){ $('p-pays').innerHTML=`<p class="note">${esc(e.message)}</p>`; }
+}
+async function sendToBuyer(){
+  const t=$('p-input'); const body=t.value.trim(); if(!body||!CUR.loan_id) return;
+  try{
+    await api(`/api/admin/loans/${CUR.loan_id}/messages`,{method:'POST',
+      body:JSON.stringify({ body, channels: composeMode==='app'?[]:[composeMode] })});
+    t.value=''; growBox(t); loadPropThread();
+    toast(composeMode==='sms'?'Text sent.':composeMode==='email'?'Email sent.':'Message sent.');
+  }catch(e){ toast(e.message); }
+}
+function callBuyer(){ if(CUR&&CUR.buyer&&CUR.buyer.phone) bridgeCall(CUR.buyer.phone, CUR.buyer.name); }
+
+// ---------- vendors (BOG) ----------
+async function openVendor(id,name,phone){
+  CURV={id,name,phone};
+  go('vendor');
+  $('v-title').textContent=name;
+  const el=$('v-thread');
+  try{
+    const d=await api(`/api/admin/contacts/${id}/messages`);
+    el.innerHTML=d.messages.map(m=>`
+      <div class="msg ${m.direction==='out'?'me':'them'}">${esc(m.body)}
+        <div class="t">${m.direction==='out'?(m.sent_by_name?esc(m.sent_by_name):'You'):esc(name)} · ${when(m.created_at)}${m.property_address?' · '+esc(m.property_address):''}</div></div>`
+    ).join('')||'<p class="note">No texts yet.</p>';
+    el.scrollTop=el.scrollHeight;
+    refresh();
+  }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; }
+}
+async function sendToVendor(){
+  const t=$('v-input'); const body=t.value.trim(); if(!body||!CURV) return;
+  try{
+    await api(`/api/admin/contacts/${CURV.id}/messages`,{method:'POST',body:JSON.stringify({body})});
+    t.value=''; growBox(t); openVendor(CURV.id,CURV.name,CURV.phone); toast('Text sent.');
+  }catch(e){ toast(e.message); }
+}
+function callVendor(){ if(CURV&&CURV.phone) bridgeCall(CURV.phone, CURV.name); }
+
+// ---------- calling: the bridge (your cell rings, then connects) ----------
+async function bridgeCall(phone,name){
+  try{
+    const r=await api('/api/admin/call',{method:'POST',body:JSON.stringify({to:phone,name:name||undefined})});
+    toast(`Your phone (${r.my_phone}) is ringing — answer to connect.`);
+  }catch(e){
+    if(/need_phone/.test(e.message)){
+      const mine=prompt('Which number should ring? (your cell)');
+      if(mine) try{
+        const r=await api('/api/admin/call',{method:'POST',body:JSON.stringify({to:phone,name:name||undefined,my_phone:mine})});
+        toast(`Your phone (${r.my_phone}) is ringing — answer to connect.`);
+      }catch(e2){ toast(e2.message); }
+      return;
+    }
+    toast(e.message);
+  }
+}
+
+// ---------- dialer ----------
+function dialKey(d){ const i=$('d-num'); i.value+=d; dialFmt(); }
+function dialBack(){ const i=$('d-num'); i.value=i.value.slice(0,-1); dialFmt(); }
+function dialFmt(){
+  const i=$('d-num'); const d=i.value.replace(/[^\d*#]/g,'');
+  if(/[*#]/.test(d)){ i.value=d; return; }
+  i.value = d.length>10 ? d : d.replace(/^(\d{3})(\d{1,3})?(\d{1,4})?$/, (m,a,b,c)=>c?`(${a}) ${b}-${c}`:b?`(${a}) ${b}`:a);
+}
+function dialGo(){
+  const raw=$('d-num').value.replace(/[^\d]/g,'');
+  if(raw.length<10){ toast('Type the full number.'); return; }
+  bridgeCall(raw,'');
+  $('d-status').textContent='Calling — answer your cell to connect.';
+  $('d-status').classList.remove('hidden');
+  setTimeout(()=>$('d-status').classList.add('hidden'),6000);
+}
+
+// ---------- push ----------
+async function registerPush(){
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)) return;
+  const reg=await navigator.serviceWorker.register('/sw.js');
+  if(Notification.permission==='default') await Notification.requestPermission();
+  if(Notification.permission!=='granted') return;
+  const {key}=await api('/api/push/public-key');
+  const sub=await reg.pushManager.subscribe({userVisibleOnly:true,
+    applicationServerKey:Uint8Array.from(atob(key.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0))});
+  await api('/api/push/subscribe',{method:'POST',body:JSON.stringify({subscription:sub})});
+}
+
+document.addEventListener('DOMContentLoaded',boot);
+$('li-pw')&&$('li-pw').addEventListener('keydown',e=>{ if(e.key==='Enter') doLogin(); });
+</script>
+</body>
+</html>

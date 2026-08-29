@@ -3523,6 +3523,9 @@ async function runVoiceCheck(){
           <div><b>${c.ok?'✅':'⚠️'} ${esc(c.name)}</b></div>
           ${c.detail?`<div class="note">${esc(c.detail)}</div>`:''}
           ${c.fix?`<div class="note" style="margin-top:4px"><b>Fix:</b> ${esc(c.fix)}</div>`:''}
+          ${!c.ok&&c.name==='Incoming calls point at PorchPay'?`<div style="margin-top:6px">
+            <button class="primary" onclick="fixInbound(this)">Point it at PorchPay for me</button>
+            <span class="note"> — the old system stops receiving calls the moment this runs.</span></div>`:''}
         </div>`).join('') +
       ((r.recent_calls||[]).length?`
         <div style="margin-top:12px"><b style="font-size:13.5px">Twilio's last ${r.recent_calls.length} calls</b>
@@ -3533,6 +3536,15 @@ async function runVoiceCheck(){
             ${x.when?` · ${esc(String(x.when))}`:''}
           </div>`).join('')}</div>`:'');
   }catch(e){ box.innerHTML=`<p class="err">${esc(e.message)}</p>`; }
+}
+async function fixInbound(btn){
+  if(!confirm('Point incoming calls at PorchPay? Whatever answered them before stops receiving them immediately.')) return;
+  btn.disabled=true; btn.textContent='Asking Twilio…';
+  try{
+    const r=await api('/api/admin/voice-check/fix-inbound',{method:'POST',body:'{}'});
+    toast('Done — incoming calls now ring PorchPay. (Was: '+r.was+')');
+    runVoiceCheck();
+  }catch(e){ btn.disabled=false; btn.textContent='Point it at PorchPay for me'; alert(e.message); }
 }
 async function saveCallMode(){
   $('cm-err').classList.add('hidden'); $('cm-ok').classList.add('hidden');
@@ -5387,6 +5399,12 @@ async function openLoan(id){
     <div class="card"><h2>Payoff (10-day est.)</h2>
       ${[['Principal',fmt(f.payoff.principal_cents)],['Interest',fmt(f.payoff.interest_cents)],['Fees',fmt(f.payoff.fees_cents)],['Escrow credit','-'+fmt(f.payoff.escrow_credit_cents)],['<b>Total</b>','<b>'+fmt(f.payoff.total_cents)+'</b>']].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13.5px"><span class="note">${k}</span><span>${v}</span></div>`).join('')}
     </div>
+    <div class="card">
+      <button class="disclose" id="ph-toggle" onclick="togglePayHistory(${L.id})">
+        <span class="chev">▸</span><span class="t">💵 Payment history — due vs. paid</span>
+      </button>
+      <div id="ph-panel" class="hidden"><div id="ph-list" style="margin-top:10px"><p class="note">Loading…</p></div></div>
+    </div>
     <div class="card"><h2>Recurring & one-time charges</h2>
       ${f.charges.length?f.charges.map(c=>`<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13.5px"><span>${esc(c.description)} ${c.recurring?'<span class="pill amber">monthly</span>':'<span class="pill gray">one-time</span>'}</span><span>${fmt(c.amount_cents)} <button class="small warn" onclick="delCharge(${c.id})">✕</button></span></div>`).join(''):'<p class="note">None.</p>'}
       <div class="note" style="margin-top:6px">Escrow balance: ${fmt(L.escrow_balance_cents)} · Fees due: ${fmt(L.fees_due_cents)}</div>
@@ -5400,6 +5418,23 @@ async function openLoan(id){
   <div class="card"><h2>Notices <button class="small" onclick="customNoticeModal()">Send custom notice</button></h2>
     <p class="note" style="margin-bottom:8px">Late and legal notices go out automatically when a payment is past grace and nothing has been confirmed received. ✓✓ = buyer opened it (read receipt).</p>
     <div id="notices-admin"></div>
+  </div>
+  <div class="card">
+    <button class="disclose" id="act-toggle" onclick="toggleActivity(${f.property?f.property.id:0})">
+      <span class="chev">▸</span>
+      <span class="t">📜 Activity — messages, calls, emails, notices &amp; payments</span>
+    </button>
+    <div id="act-panel" class="hidden">
+      <div class="segbtn" style="margin:10px 0 12px">
+        <button id="af-all" class="active" onclick="loadActivity(0,'')">All</button>
+        <button id="af-call" onclick="loadActivity(0,'call')">📞</button>
+        <button id="af-text" onclick="loadActivity(0,'text')">💬</button>
+        <button id="af-email" onclick="loadActivity(0,'email')">✉️</button>
+        <button id="af-notice" onclick="loadActivity(0,'notice')">⚖️</button>
+        <button id="af-payment" onclick="loadActivity(0,'payment')">💵</button>
+      </div>
+      <div id="act-list"><p class="note">Loading…</p></div>
+    </div>
   </div>
   <div class="card"><h2>🗺️ Late-payment workflow${f.property&&f.property.state?` — ${esc(f.property.state)}`:''}</h2>
     <p class="note" style="margin-bottom:10px">This loan's state decides the track. Every step shows here as it
@@ -5460,7 +5495,70 @@ async function openLoan(id){
   loadNoticesAdmin();
   loadDc101Card();
   loadWorkflow(L.id);
+  ACT_OPEN=false; ACT_PROP=f.property?f.property.id:0;
   if (f.tenant) loadTBLocation(f.tenant.id);
+}
+
+// Payment history: the statement view. Each month that has come due, what it asked
+// for, what actually arrived, and when.
+let PH_OPEN=false;
+function togglePayHistory(loanId){
+  PH_OPEN=!PH_OPEN;
+  $('ph-panel').classList.toggle('hidden',!PH_OPEN);
+  $('ph-toggle').querySelector('.chev').textContent=PH_OPEN?'▾':'▸';
+  if(PH_OPEN) loadPayHistory(loanId);
+}
+async function loadPayHistory(loanId){
+  const el=$('ph-list'); if(!el) return;
+  let h; try{ h=await api(`/api/admin/loans/${loanId}/payment-history`); }
+  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  el.innerHTML =
+    `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:2px solid var(--ink,#16220D);font-size:13.5px">
+       <span><b>Next due ${h.next_due?fdate(h.next_due):'—'}</b> · ${fmt(h.next_due_cents)}</span>
+       <span>${h.is_past_due?`<b style="color:var(--red)">${fmt(h.owed_now_cents)} past due</b>`:'<b style="color:var(--brand)">Current ✓</b>'}</span></div>`
+    + h.rows.map(r=>`
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:13.5px">
+        <span>#${r.n} · due ${fdate(r.due_date)}</span>
+        <span class="note">${fmt(r.due_cents)}</span>
+        <span style="text-align:right;min-width:130px">${
+          r.status==='paid'?`<b style="color:var(--brand)">paid</b>${r.paid_date?` <span class="note">${fdate(r.paid_date)}${r.method?' · '+esc(String(r.method).replace('stripe_','')):''}</span>`:''}`
+          :r.status==='partial'?`<b style="color:var(--amber,#B8860B)">partial</b> <span class="note">${fmt(r.paid_cents)} of ${fmt(r.due_cents)}</span>`
+          :`<b style="color:var(--red)">unpaid</b>`}</span>
+      </div>`).join('');
+}
+
+// The Activity feed: everything that ever happened on this house, one list,
+// expanded when you want the story and collapsed when you don't.
+let ACT_PROP=0, ACT_OPEN=false;
+function toggleActivity(pid){
+  ACT_PROP=pid||ACT_PROP;
+  ACT_OPEN=!ACT_OPEN;
+  $('act-panel').classList.toggle('hidden',!ACT_OPEN);
+  $('act-toggle').querySelector('.chev').textContent=ACT_OPEN?'▾':'▸';
+  if(ACT_OPEN) loadActivity(ACT_PROP,'');
+}
+async function loadActivity(pid,channel){
+  pid=pid||ACT_PROP; if(!pid) return;
+  for(const k of ['all','call','text','email','notice','payment'])
+    if($('af-'+k)) $('af-'+k).classList.toggle('active',(channel||'all')===k);
+  const el=$('act-list'); if(!el) return;
+  let d;
+  try{ d=await api(`/api/admin/properties/${pid}/comms${channel?'?channel='+channel:''}`); }
+  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  if(!d.events.length){ el.innerHTML='<p class="note">Nothing yet.</p>'; return; }
+  const ICON={call:'📞',voicemail:'📼',text:'💬',message:'📩',email:'✉️',notice:'⚖️',payment:'💵'};
+  const when=(ts)=>new Date(String(ts).replace(' ','T')+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  el.innerHTML=d.events.map(ev=>`
+    <div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px">
+      <span style="flex:0 0 auto">${ICON[ev.channel]||'•'}</span>
+      <span style="flex:1;min-width:0">
+        ${ev.channel==='payment'?`<b style="color:${/Late fee/.test(ev.summary)?'var(--red)':'var(--brand)'}">${esc(ev.summary)}</b>`
+         :ev.channel==='notice'?`<b>${esc(ev.summary||'Notice')}</b>${ev.tracking?` <span class="note">· certified ${esc(ev.tracking)}</span>`:''}`
+         :`<b>${ev.direction==='in'?'⬅':'➡'} ${esc(ev.who||'')}</b>${ev.summary?` — ${esc(ev.summary)}`:''}`}
+        ${ev.body?`<div class="note" style="white-space:pre-wrap;max-height:48px;overflow:hidden">${esc(ev.body)}</div>`:''}
+      </span>
+      <span class="note" style="flex:0 0 auto;white-space:nowrap">${when(ev.ts)}</span>
+    </div>`).join('');
 }
 
 // The state's late-payment track, drawn as a stepper. Green happened, amber is waiting
@@ -6467,7 +6565,10 @@ async function openThread(loanId,title){
       <div class="note" style="text-align:right;margin-top:4px">Sent by ${esc(m.sender_name)} · ${when}
         · <a href="/api/admin/messages/${m.id}/pdf">PDF</a>${deliveryNote(m)}</div></div>`;
     const viaSms=(m.channels||'').split(',').includes('sms');
-    return `<div class="msg ${m.sender_role==='admin'?'me':'them'}">${esc(m.body)}<div class="t">${m.sender_role==='admin'?'You':esc(m.sender_name)} · ${when}${viaSms?(m.sender_role==='admin'?' · sent as 📲 text':' · 📲 arrived by text'):''}</div></div>`;
+    // Staff messages sit on the right like your own texts do — owner and admin alike.
+    // (sender_role==='admin' alone put the owner's messages on the wrong side.)
+    const mine=m.sender_role!=='tenant';
+    return `<div class="msg ${mine?'me':'them'}">${esc(m.body)}<div class="t">${mine?'You':esc(m.sender_name)} · ${when}${viaSms?(mine?' · sent as 📲 text':' · 📲 arrived by text'):''}</div></div>`;
   }).join('')||'<p class="note">No messages yet.</p>';
   pinThread($('mt-list'));
   if($('mt-input')){ $('mt-input').style.height=''; growComposer(); }

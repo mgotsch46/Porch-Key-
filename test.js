@@ -547,7 +547,8 @@ async function main() {
     plantAuthToken();
     const resp = await signedForm('/api/voice/outgoing', { ApplicationSid: 'AP' + 'b'.repeat(32), To: '555-555-0142' });
     const xml = await resp.text();
-    ok(/<Dial callerId=/.test(xml) && /<Number>\+15555550142<\/Number>/.test(xml), 'TwiML dials the target from the business number');
+    // Recording is on by default now, so the callee's Number carries the whisper URL.
+    ok(/<Dial callerId=/.test(xml) && /<Number[^>]*>\+15555550142<\/Number>/.test(xml), 'TwiML dials the target from the business number');
     const bad = await signedForm('/api/voice/outgoing', { ApplicationSid: 'AP' + 'z'.repeat(32), To: '555-555-0142' });
     ok(/cannot be completed/.test(await bad.text()), 'unknown TwiML app gets refused, not connected');
   }
@@ -589,7 +590,9 @@ async function main() {
     r = await req('/api/admin/recordings');
     const bare = r.json.recordings.find(x => x.recording_sid === 'RE' + 'd'.repeat(32));
     r = await req('/api/admin/recordings/' + bare.id + '/transcribe', { method: 'POST', body: '{}' });
-    ok(r.status === 400 && /Intelligence/.test(r.json.error), 'call transcription names the missing Twilio service');
+    // The service is created by API now — no console visit is ever demanded. With the
+    // test's fake credentials Twilio refuses, and the refusal is passed through.
+    ok(r.status >= 400 && !/console/i.test(r.json.error || ''), 'transcription tries to create the service itself instead of sending you to the console');
     // A buyer texting in lands in their message thread, tagged sms — not swallowed.
     await form('/sms/incoming', { From: '555-777-8888', Body: 'Got the notice, can we talk?' });
     r = await req(`/api/admin/loans/${loanId}/messages`);
@@ -658,6 +661,48 @@ async function main() {
       'a buyer cannot read the admin timeline');
 
     db2.prepare('UPDATE companies SET twilio_from=NULL, forward_calls=0 WHERE id=?').run(co.id);
+  }
+
+  console.log('— payment history: due vs paid, both sides of the counter');
+  {
+    r = await req(`/api/admin/loans/${loanId}/payment-history`);
+    ok(r.status === 200 && Array.isArray(r.json.rows) && r.json.rows.length > 0, 'the admin sees the statement');
+    ok(r.json.next_due && /^\d{4}-\d{2}-\d{2}$/.test(r.json.next_due), 'with the next due date');
+    ok(r.json.rows.every(x => ['paid','partial','due'].includes(x.status)), 'every month carries a verdict');
+    const paid = r.json.rows.filter(x => x.status === 'paid');
+    ok(paid.every(x => x.paid_date), 'paid months say when they were paid');
+    const dueSum = r.json.rows.reduce((t, x) => t + x.due_cents, 0);
+    const paidSum = r.json.rows.reduce((t, x) => t + x.paid_cents, 0);
+    ok(paidSum <= dueSum, 'no month is credited with more than it asked for');
+    r = await req('/api/tenant/payment-history', {}, tbCookie);
+    ok(r.status === 200 && r.json.rows.length > 0, 'the buyer sees the same statement');
+    ok((await req('/api/tenant/payment-history', {}, '')).status !== 200, 'and nobody sees it without signing in');
+  }
+
+  console.log('— the staff app has a home');
+  {
+    const page = await fetch(BASE + '/staff');
+    ok(page.status === 200 && /PorchPay Staff/.test(await page.text()), 'the staff app is served at /staff');
+    const man = await fetch(BASE + '/staff-manifest.json');
+    ok(man.status === 200 && (await man.json()).start_url === '/staff', 'with its own installable manifest');
+    r = await req('/api/admin/staff/overview');
+    ok(r.status === 200 && Array.isArray(r.json.properties) && r.json.properties.length > 0, 'the overview answers in one call');
+    const withLoan = r.json.properties.find(x => x.loan_id);
+    ok(!!withLoan && withLoan.buyer && typeof withLoan.unread === 'number', 'each house carries its buyer and unread count');
+    ok(Array.isArray(r.json.vendors) && Array.isArray(r.json.payments), 'vendors and the money feed ride along');
+    ok(r.json.payments.every(x => x.amount_cents > 0 && x.entry_date), 'payments carry amount and date');
+    ok((await req('/api/admin/staff/overview', {}, tbCookie)).status !== 200, 'a buyer cannot open the staff overview');
+  }
+
+  console.log('— the activity feed carries notices and payments too');
+  {
+    const prop = require('./db.js').get('SELECT property_id FROM loans WHERE id=?', loanId);
+    r = await req(`/api/admin/properties/${prop.property_id}/comms`);
+    const chans = new Set(r.json.events.map(e => e.channel));
+    ok(chans.has('payment'), 'payments appear in the activity feed');
+    ok(chans.has('notice'), 'notices appear in the activity feed');
+    r = await req(`/api/admin/properties/${prop.property_id}/comms?channel=payment`);
+    ok(r.json.events.length > 0 && r.json.events.every(e => e.channel === 'payment'), 'and the payment filter isolates the money');
   }
 
   console.log('— bird dog / wholesale fees are a cost of the deal');

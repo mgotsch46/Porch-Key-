@@ -397,6 +397,16 @@ function postPayment(loanId, amountCents, method, entryDate, externalId, memo, c
       url: '/?tab=activity',
     }).catch(() => {});
   }
+  // The servicer hears about money the moment it lands — on every device.
+  try {
+    const propAddr = get('SELECT address FROM properties WHERE id=?', loan.property_id);
+    const payer = loan.tenant_user_id ? get('SELECT name FROM users WHERE id=?', loan.tenant_user_id) : null;
+    notifyAdmins(loan.company_id, {
+      kind: 'payment_received', title: `💵 $${(amountCents / 100).toFixed(2)} received`,
+      body: `${payer ? payer.name + ' — ' : ''}${propAddr ? propAddr.address : 'loan #' + loanId}`,
+      url: '/staff', dedupeKey: `pay-${loanId}-${externalId || Date.now()}`,
+    });
+  } catch (e) { /* notification only */ }
   run(`UPDATE loans SET principal_balance_cents=?, escrow_balance_cents=?, fees_due_cents=?,
         interest_due_cents=?, status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
     newPrincipal, newEscrow, newFees, newInterestDue, newPrincipal, loanId);
@@ -1126,6 +1136,17 @@ try {
     WHERE status<>'accepted' AND user_id IN (SELECT id FROM users WHERE terms_accepted_at IS NOT NULL AND deleted_at IS NULL)`);
   if (healed.changes > 0) console.log(`Healed ${healed.changes} stale invitation status(es) for buyers already in the app`);
 } catch (e) { console.error('Invitation heal:', e.message); }
+
+// One-time: recording and transcripts became the default. Marisa asked for every call
+// recorded and transcribed; companies created from here on start that way, and this
+// flips existing ones once — the marker means turning it off later sticks.
+try {
+  if (!get("SELECT value FROM settings WHERE key='record_calls_default_applied'")) {
+    const r = run('UPDATE companies SET record_calls=1 WHERE record_calls=0');
+    run("INSERT INTO settings (key,value) VALUES ('record_calls_default_applied','1')");
+    if (r.changes) console.log(`Recording turned on for ${r.changes} compan${r.changes === 1 ? 'y' : 'ies'} (one-time default change)`);
+  }
+} catch (e) { console.error('Recording default:', e.message); }
 
 // ---------- admin: summary ----------
 app.get('/api/admin/summary', adminOnly, (req, res) => {
@@ -3009,6 +3030,13 @@ app.post('/api/voice/recording', twilioWebhook, (req, res) => {
       run(`UPDATE call_log SET status='completed', duration_sec=COALESCE(duration_sec, ?) WHERE call_sid=?`,
         Number(b.RecordingDuration) || null, b.CallSid);
     }
+    // Transcription starts itself. Recording without a transcript is a tape nobody
+    // has time to listen to; with one, it is searchable history.
+    if (kind === 'call' && Number(b.RecordingDuration) >= 5) {
+      const rec = get('SELECT * FROM call_recordings WHERE recording_sid=?', b.RecordingSid);
+      const co2 = get('SELECT * FROM companies WHERE id=?', coId);
+      if (rec && co2) startTranscript(rec, co2).catch(e => console.error('Auto-transcribe:', e.message));
+    }
     if (kind === 'voicemail') {
       for (const u of all(`SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL`, coId)) {
         notify.notify(u.id, { kind: 'message', title: '📞 New voicemail',
@@ -3055,6 +3083,69 @@ app.get('/api/admin/recordings/:id/audio', adminOnly, async (req, res, next) => 
 });
 // Call transcripts go through Twilio Intelligence, which needs a one-time service
 // (its SID pasted in Settings). Create on demand, poll for sentences.
+// A Voice Intelligence service can be created by API — nobody should have to find the
+// right console page to get transcripts. Created once per company, remembered forever.
+async function ensureIntelService(co) {
+  if (co.voice_intel_sid) return co.voice_intel_sid;
+  const c = sms.creds(co);
+  if (!c) return null;
+  const r = await fetch('https://intelligence.twilio.com/v2/Services', {
+    method: 'POST',
+    headers: { Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64'),
+               'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ UniqueName: `porchpay-${co.id}-${Date.now()}` }).toString(),
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error((j && j.message) || 'Twilio would not create the transcription service');
+  run('UPDATE companies SET voice_intel_sid=? WHERE id=?', j.sid, co.id);
+  console.log(`Created Voice Intelligence service ${j.sid} for company ${co.id}`);
+  return j.sid;
+}
+
+// Start a transcript for a recording — used by the button below and by the automatic
+// kick-off when a recording callback lands. Safe to call twice; the sid gate holds.
+async function startTranscript(rec, co) {
+  if (rec.transcript_sid || rec.transcript_status === 'done') return;
+  const intelSid = await ensureIntelService(co);
+  if (!intelSid) return;
+  const c = sms.creds(co);
+  const params = new URLSearchParams({
+    ServiceSid: intelSid,
+    Channel: JSON.stringify({ media_properties: { source_sid: rec.recording_sid } }),
+  });
+  const tw = await fetch('https://intelligence.twilio.com/v2/Transcripts', {
+    method: 'POST',
+    headers: { Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64'),
+               'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  const json = await tw.json();
+  if (!tw.ok) throw new Error((json && json.message) || 'Twilio refused to start the transcript');
+  run('UPDATE call_recordings SET transcript_sid=?, transcript_status=? WHERE id=?', json.sid, 'pending', rec.id);
+}
+
+// Pending transcripts finish on Twilio's clock, not ours — collect them periodically so
+// the words appear without anyone pressing anything.
+async function collectTranscripts() {
+  const pending = all(`SELECT r.*, r.company_id AS co_id FROM call_recordings r
+    WHERE r.transcript_status='pending' AND r.transcript_sid IS NOT NULL LIMIT 20`);
+  for (const rec of pending) {
+    try {
+      const co = get('SELECT * FROM companies WHERE id=?', rec.co_id);
+      const c = sms.creds(co);
+      if (!c) continue;
+      const tw = await fetch(`https://intelligence.twilio.com/v2/Transcripts/${rec.transcript_sid}/Sentences?PageSize=500`,
+        { headers: { Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64') } });
+      const json = await tw.json();
+      if (!tw.ok) continue;
+      const sentences = (json.sentences || []).map(x => `${x.media_channel === 1 ? 'You' : 'Them'}: ${x.transcript}`).join('\n');
+      if (sentences) run("UPDATE call_recordings SET transcript=?, transcript_status='done' WHERE id=?", sentences, rec.id);
+    } catch (e) { /* next sweep */ }
+  }
+}
+setInterval(() => { collectTranscripts().catch(() => {}); }, 10 * 60 * 1000);
+setTimeout(() => { collectTranscripts().catch(() => {}); }, 20000);
+
 app.post('/api/admin/recordings/:id/transcribe', adminOnly, async (req, res, next) => {
   try {
     const r = get('SELECT * FROM call_recordings WHERE id=? AND company_id=?', req.params.id, req.companyId);
@@ -3062,8 +3153,8 @@ app.post('/api/admin/recordings/:id/transcribe', adminOnly, async (req, res, nex
     if (r.transcript_status === 'done') return res.json({ status: 'done', transcript: r.transcript });
     const co = myCompany(req);
     if (!co.voice_intel_sid) {
-      return res.status(400).json({ error: 'Call transcripts need a Twilio Intelligence service — create one in the ' +
-        'Twilio console under AI & Machine Learning → Voice Intelligence, and paste its GA-prefixed SID in Settings.' });
+      try { await ensureIntelService(co); co.voice_intel_sid = get('SELECT voice_intel_sid v FROM companies WHERE id=?', co.id).v; }
+      catch (e) { return res.status(502).json({ error: e.message }); }
     }
     const c = sms.creds(co);
     if (!c) return res.status(400).json({ error: 'Twilio is not connected' });
@@ -3324,6 +3415,150 @@ app.get('/api/admin/loans/:id/workflow', adminOnly, (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---------- the staff app's one-call overview ----------
+// The phone app opens to this: every property with its buyer, what's unread, what's
+// owed, and the latest heartbeat — one request, so the home screen is instant and the
+// badge numbers are honest.
+app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
+  try {
+    const props = all(`SELECT p.id, p.address, p.city, p.state, p.zip FROM properties p
+      WHERE p.company_id=? ORDER BY p.address`, req.companyId);
+    const out = [];
+    let totalUnread = 0;
+    for (const p of props) {
+      const loan = get(`SELECT l.id, l.tenant_user_id, l.payment_cents, l.escrow_cents FROM loans l
+        WHERE l.property_id=? AND l.status='active' ORDER BY l.id DESC LIMIT 1`, p.id);
+      const buyer = loan && loan.tenant_user_id
+        ? get('SELECT id, name, phone, email FROM users WHERE id=?', loan.tenant_user_id) : null;
+      const unreadBuyer = loan ? get(`SELECT COUNT(*) c FROM messages m JOIN users u ON u.id=m.sender_user_id
+        WHERE m.loan_id=? AND u.role='tenant' AND m.read_by_admin=0`, loan.id).c : 0;
+      const unreadVendor = get(`SELECT COUNT(*) c FROM contact_messages
+        WHERE company_id=? AND property_id=? AND direction='in' AND read_at IS NULL`, req.companyId, p.id).c;
+      const lastPay = loan ? get(`SELECT entry_date, amount_cents FROM ledger
+        WHERE loan_id=? AND type='payment' ORDER BY id DESC LIMIT 1`, loan.id) : null;
+      let owed = null, pastDue = false;
+      if (loan) {
+        const full = get('SELECT * FROM loans WHERE id=?', loan.id);
+        const st = loanEngine.loanStatus(full, all('SELECT * FROM ledger WHERE loan_id=?', loan.id), today());
+        owed = st.owed_now_cents; pastDue = !!st.is_past_due;
+      }
+      totalUnread += unreadBuyer + unreadVendor;
+      out.push({
+        id: p.id, address: p.address, city: p.city, state: p.state, zip: p.zip,
+        loan_id: loan ? loan.id : null,
+        buyer: buyer ? { id: buyer.id, name: buyer.name, phone: buyer.phone, email: buyer.email } : null,
+        unread: unreadBuyer + unreadVendor, unread_buyer: unreadBuyer, unread_vendor: unreadVendor,
+        owed_now_cents: owed, past_due: pastDue,
+        last_payment: lastPay || null,
+      });
+    }
+    // Vendors who work on this portfolio, with their property, for the BOG side.
+    const vendors = all(`SELECT c.id, c.name, c.phone, c.role,
+        (SELECT COUNT(*) FROM contact_messages cm WHERE cm.contact_id=c.id AND cm.direction='in' AND cm.read_at IS NULL) unread
+      FROM contacts c WHERE c.company_id=? AND c.archived_at IS NULL AND c.phone IS NOT NULL
+      ORDER BY unread DESC, c.name`, req.companyId);
+    // The money feed: latest payments across every property.
+    const payments = all(`SELECT l.entry_date, l.amount_cents, l.method, l.created_at,
+        p.address, u.name AS buyer_name
+      FROM ledger l JOIN loans lo ON lo.id=l.loan_id
+      LEFT JOIN properties p ON p.id=lo.property_id
+      LEFT JOIN users u ON u.id=lo.tenant_user_id
+      WHERE lo.company_id=? AND l.type='payment' ORDER BY l.id DESC LIMIT 30`, req.companyId);
+    res.json({ properties: out, vendors, payments, total_unread: totalUnread });
+  } catch (e) { next(e); }
+});
+
+// One click instead of a console walk: point the Twilio number's inbound voice
+// webhook at PorchPay. The old URL is reported back, because pointing a number away
+// from another system is the kind of thing someone should see happen.
+app.post('/api/admin/voice-check/fix-inbound', ownerOnly, async (req, res, next) => {
+  try {
+    const co = myCompany(req);
+    const c = sms.creds(co);
+    if (!c) return res.status(400).json({ error: 'Twilio is not connected' });
+    const base = baseUrlOf(req);
+    const authHeader = { Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64') };
+    const q = new URLSearchParams({ PhoneNumber: c.from });
+    const list = await (await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/IncomingPhoneNumbers.json?${q}`,
+      { headers: authHeader })).json();
+    const num = (list.incoming_phone_numbers || [])[0];
+    if (!num) return res.status(404).json({ error: `Twilio has no number ${c.from} on this account` });
+    const was = num.voice_url || '(nothing)';
+    const upd = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/IncomingPhoneNumbers/${num.sid}.json`, {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ VoiceUrl: `${base}/api/voice/incoming`, VoiceMethod: 'POST' }).toString(),
+    });
+    const j = await upd.json();
+    if (!upd.ok) return res.status(502).json({ error: (j && j.message) || 'Twilio refused the change' });
+    console.log(`Inbound voice webhook repointed to PorchPay (was: ${was})`);
+    res.json({ ok: true, was, now: `${base}/api/voice/incoming` });
+  } catch (e) { next(e); }
+});
+
+// The staff app itself.
+app.get('/staff', (req, res) => res.sendFile(path.join(__dirname, 'public', 'staff.html')));
+
+// ---------- payment history: what was due, what was paid, when ----------
+// Every scheduled due date that has arrived, in order, with the payments applied
+// against the loan. Dues and payments are matched oldest-first, the way the money
+// itself is applied, so a partial month shows exactly how partial it is.
+function paymentHistoryFor(loan) {
+  const ledger = all(`SELECT * FROM ledger WHERE loan_id=? ORDER BY entry_date, id`, loan.id);
+  const status = loanEngine.loanStatus(loan, ledger, today());
+  const payments = ledger.filter(l => l.type === 'payment');
+  const first = new Date(loan.first_payment_date + 'T00:00:00Z');
+  const now = new Date(today() + 'T00:00:00Z');
+  // A month's bill is P&I plus escrow — the same figure the status math uses.
+  const monthly = (loan.payment_cents || 0) + (loan.escrow_cents || 0);
+
+  // Pool payments and pour them into dues oldest-first.
+  let pool = payments.reduce((t, x) => t + x.amount_cents, 0);
+  const rows = [];
+  for (let i = 0; ; i++) {
+    const due = loanEngine.addMonthsUTC(first, i);
+    if (due > now || i >= loan.term_months) break;
+    const applied = Math.max(0, Math.min(monthly, pool));
+    pool -= applied;
+    // The payment(s) that covered this due, for the dates people remember.
+    rows.push({
+      n: i + 1,
+      due_date: due.toISOString().slice(0, 10),
+      due_cents: monthly,
+      paid_cents: applied,
+      status: applied >= monthly ? 'paid' : applied > 0 ? 'partial' : 'due',
+    });
+  }
+  // Walk again to attach paid dates: cumulative payment totals vs cumulative dues.
+  let cum = 0; const marks = payments.map(x => ({ date: x.entry_date, cum: (cum += x.amount_cents), method: x.method }));
+  let needed = 0;
+  for (const r of rows) {
+    needed += r.due_cents;
+    const m = marks.find(x => x.cum >= needed);
+    if (r.status === 'paid' && m) { r.paid_date = m.date; r.method = m.method; }
+  }
+  const next = loanEngine.addMonthsUTC(first, rows.length);
+  return {
+    rows: rows.reverse(),                     // newest first, like a statement
+    next_due: rows.length < loan.term_months ? next.toISOString().slice(0, 10) : null,
+    next_due_cents: monthly,
+    owed_now_cents: status.owed_now_cents,
+    is_past_due: status.is_past_due,
+    payments: payments.slice(-60).reverse().map(x => ({
+      date: x.entry_date, amount_cents: x.amount_cents, method: x.method, memo: x.memo })),
+  };
+}
+app.get('/api/admin/loans/:id/payment-history', adminOnly, (req, res) => {
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Not found' });
+  res.json(paymentHistoryFor(loan));
+});
+app.get('/api/tenant/payment-history', tenantReady, (req, res) => {
+  const loan = tenantLoan(req);
+  if (!loan) return res.status(404).json({ error: 'No loan' });
+  res.json(paymentHistoryFor(loan));
+});
+
 // ---------- the unified communication log ----------
 // One property, one timeline: every call, text, and email that touched it, newest
 // first, whoever it was with. Calls come from call_log (with the recording and
@@ -3389,13 +3624,33 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
         status: e.status === 'failed' ? 'failed' : (e.bounced_at ? 'bounced' : e.status),
         identity: e.identity });
     }
+    // Notices — the formal record: late notices, legal notices, the DC 101.
+    if (loanIds.length && String(req.query.include || 'all') !== 'comms') {
+      for (const n of all(`SELECT * FROM notices WHERE loan_id IN ${inList(loanIds)}
+          ORDER BY id DESC LIMIT ?`, ...loanIds, limit)) {
+        let skipped = false; try { skipped = !!JSON.parse(n.delivery_json || '{}').skipped; } catch {}
+        if (skipped) continue;
+        events.push({ ts: n.sent_at || n.created_at, channel: 'notice', direction: 'out',
+          who: null, summary: n.subject, stage: n.stage || null,
+          served: !!n.served_at, tracking: n.lob_tracking || null });
+      }
+      // Payments — money is activity too.
+      for (const l of all(`SELECT * FROM ledger WHERE loan_id IN ${inList(loanIds)}
+          AND type IN ('payment','late_fee') ORDER BY id DESC LIMIT ?`, ...loanIds, limit)) {
+        events.push({ ts: l.created_at || (l.entry_date + ' 00:00:00'), channel: 'payment', direction: 'in',
+          who: null, summary: l.type === 'late_fee'
+            ? `Late fee charged — $${(Math.abs(l.amount_cents) / 100).toFixed(2)}`
+            : `Payment received — $${(l.amount_cents / 100).toFixed(2)}${l.method ? ' (' + String(l.method).replace('stripe_', '') + ')' : ''}`,
+          amount_cents: l.amount_cents });
+      }
+    }
 
     events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
     const want = String(req.query.channel || '');
     const filtered = want ? events.filter(ev =>
       want === 'call' ? (ev.channel === 'call' || ev.channel === 'voicemail')
       : want === 'text' ? (ev.channel === 'text' || ev.channel === 'message')
-      : ev.channel === want) : events;
+      : ev.channel === want) : events;   // 'notice' and 'payment' filter by their own names
     res.json({ property_id: prop.id, address: prop.address, events: filtered.slice(0, limit) });
   } catch (e) { next(e); }
 });

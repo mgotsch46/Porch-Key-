@@ -474,7 +474,11 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
     <!-- ───── HISTORY ───── -->
     <section id="tab-activity" class="hidden">
       <div class="card">
-        <h2>Payment history</h2>
+        <h2>Your payments, month by month</h2>
+        <div id="a-due"></div>
+      </div>
+      <div class="card">
+        <h2>Every transaction</h2>
         <div id="a-list"></div>
       </div>
     </section>
@@ -765,6 +769,7 @@ function render(){
     `<tr><td>${r.n}</td><td>${fdate(r.date)}</td><td class="right">${fmt(r.payment_cents)}</td><td class="right">${fmt(r.balance_cents)}</td></tr>`).join('');
 
   // history
+  loadDueHistory();
   $('a-list').innerHTML = ledger.length ? ledger.slice().reverse().map(p=>{
     if(p.type==='payment') return `<div class="row"><span class="k">${fdate(p.entry_date)} · ${methodName(p.method)}
       <small>Interest ${fmt(p.to_interest_cents)} · Principal ${fmt(p.to_principal_cents)}${p.to_escrow_cents?' · Escrow '+fmt(p.to_escrow_cents):''}${p.to_fees_cents?' · Fees '+fmt(p.to_fees_cents):''}</small></span>
@@ -1019,6 +1024,25 @@ async function loadDocs(){
         <a href="/api/documents/${d.id}/download" title="Download" style="text-decoration:none">⬇</a></span></div>`).join('')
       :'<p class="note">Nothing here yet. New documents your servicer shares will show up in this folder.</p>'}
     </div>`).join('');
+}
+
+// The statement view: each month that has come due, what it asked for, what arrived.
+// The next due date leads, so "when is my payment due" never needs a phone call.
+async function loadDueHistory(){
+  const el=$('a-due'); if(!el) return;
+  let h; try{ h=await api('/api/tenant/payment-history'); }catch{ el.innerHTML=''; return; }
+  el.innerHTML =
+    `<div class="row" style="border-bottom:2px solid var(--ink,#16220D)">
+       <span class="k"><b>Next payment due</b></span>
+       <span class="v"><b>${h.next_due?fdate(h.next_due):'—'} · ${fmt(h.next_due_cents)}</b></span></div>`
+    + (h.is_past_due?`<div class="row"><span class="k" style="color:var(--red)"><b>Past due</b></span>
+       <span class="v" style="color:var(--red)"><b>${fmt(h.owed_now_cents)}</b></span></div>`:'')
+    + h.rows.map(r=>`<div class="row">
+       <span class="k">${fdate(r.due_date)} <small>${fmt(r.due_cents)} due</small></span>
+       <span class="v">${r.status==='paid'
+          ?`<span style="color:var(--brand)">✓ paid${r.paid_date?' '+fdate(r.paid_date):''}</span>`
+          :r.status==='partial'?`<span style="color:#B8860B">${fmt(r.paid_cents)} of ${fmt(r.due_cents)}</span>`
+          :'<span style="color:var(--red)">unpaid</span>'}</span></div>`).join('');
 }
 
 // ---------- messages ----------

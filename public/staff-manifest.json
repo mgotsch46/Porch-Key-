@@ -1,0 +1,17 @@
+{
+  "name": "PorchPay Staff",
+  "short_name": "PP Staff",
+  "description": "Message, text, and call your buyers and boots-on-the-ground; track payments by property.",
+  "start_url": "/staff",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#16220D",
+  "theme_color": "#16220D",
+  "categories": ["business", "finance"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
