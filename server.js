@@ -3499,6 +3499,25 @@ app.post('/api/admin/voice-check/fix-inbound', ownerOnly, async (req, res, next)
 // The staff app itself.
 app.get('/staff', (req, res) => res.sendFile(path.join(__dirname, 'public', 'staff.html')));
 
+// Store plumbing. Google Play's trusted-web check and Apple's universal links both ask
+// the site to vouch for the apps. Fingerprint/team values arrive via env once the
+// signing keys exist; until then the routes answer with empty relations, which is valid.
+app.get('/.well-known/assetlinks.json', (req, res) => {
+  const prints = String(process.env.ANDROID_CERT_FINGERPRINTS || '').split(',').map(x => x.trim()).filter(Boolean);
+  res.json([
+    ...['com.porchpay.app', 'com.porchpay.admin'].map(pkg => ({
+      relation: ['delegate_permission/common.handle_all_urls'],
+      target: { namespace: 'android_app', package_name: pkg, sha256_cert_fingerprints: prints },
+    })),
+  ]);
+});
+app.get('/.well-known/apple-app-site-association', (req, res) => {
+  const team = process.env.APPLE_TEAM_ID || '';
+  res.json({ applinks: { apps: [], details: team
+    ? [{ appID: `${team}.com.porchpay.app`, paths: ['*'] },
+       { appID: `${team}.com.porchpay.admin`, paths: ['/staff', '/staff/*'] }] : [] } });
+});
+
 // ---------- payment history: what was due, what was paid, when ----------
 // Every scheduled due date that has arrived, in order, with the payments applied
 // against the loan. Dues and payments are matched oldest-first, the way the money

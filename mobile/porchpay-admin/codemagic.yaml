@@ -1,0 +1,16 @@
+workflows:
+  ios-testflight:
+    name: porchpay-admin iOS → TestFlight
+    environment:
+      xcode: latest
+      node: 20
+      groups: [appstore]   # holds APP_STORE_CONNECT_* API key vars
+    scripts:
+      - cd mobile/porchpay-admin && npm install
+      - cd mobile/porchpay-admin && npx cap add ios && npx cap sync ios
+      - cd mobile/porchpay-admin/ios/App && xcode-project use-profiles
+      - cd mobile/porchpay-admin/ios/App && xcode-project build-ipa --workspace App.xcworkspace --scheme App
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true

@@ -1,0 +1,12 @@
+{
+  "appId": "com.porchpay.app",
+  "appName": "PorchPay",
+  "webDir": "www",
+  "server": {
+    "url": "https://porchpay-production.up.railway.app/",
+    "allowNavigation": ["porchpay-production.up.railway.app", "checkout.stripe.com", "*.stripe.com"]
+  },
+  "backgroundColor": "#F7FBF3",
+  "ios": { "contentInset": "always" },
+  "android": { "allowMixedContent": false }
+}
