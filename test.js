@@ -682,7 +682,7 @@ async function main() {
   console.log('— the staff app has a home');
   {
     const page = await fetch(BASE + '/staff');
-    ok(page.status === 200 && /PorchPay Staff/.test(await page.text()), 'the staff app is served at /staff');
+    ok(page.status === 200 && /PorchPay Admin/.test(await page.text()), 'the staff app is served at /staff');
     const man = await fetch(BASE + '/staff-manifest.json');
     ok(man.status === 200 && (await man.json()).start_url === '/staff', 'with its own installable manifest');
     r = await req('/api/admin/staff/overview');
