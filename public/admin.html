@@ -5455,6 +5455,12 @@ async function openLoan(id){
     <p class="note" style="margin-bottom:8px">Late and legal notices go out automatically when a payment is past grace and nothing has been confirmed received. ✓✓ = buyer opened it (read receipt).</p>
     <div id="notices-admin"></div>
   </div>
+  <div class="card"><h2>👥 People on this loan</h2>
+    <p class="note" style="margin-bottom:8px">Co-buyers, seller contacts, and lender contacts attached to this
+      house. Add more from the property page's contacts (roles: Co-buyer, Seller contact, Private money lender) —
+      they get call and text; the in-app thread stays the buyer's.</p>
+    <div id="loan-people"><p class="note">Loading…</p></div>
+  </div>
   <div class="card">
     <button class="disclose" id="act-toggle" onclick="toggleActivity(${f.property?f.property.id:0})">
       <span class="chev">▸</span>
@@ -5531,8 +5537,27 @@ async function openLoan(id){
   loadNoticesAdmin();
   loadDc101Card();
   loadWorkflow(L.id);
+  loadLoanPeople(f.property?f.property.id:0);
   ACT_OPEN=false; ACT_PROP=f.property?f.property.id:0;
   if (f.tenant) loadTBLocation(f.tenant.id);
+}
+
+// The other people on the loan's house — the co-buyer who also signs, the seller's
+// side, the lender's office — each one a call or a text away.
+async function loadLoanPeople(pid){
+  const el=$('loan-people'); if(!el||!pid) return;
+  let d; try{ d=await api(`/api/admin/properties/${pid}/contacts`); }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  const list=(d.contacts||[]).filter(c=>['cobuyer','seller','lender'].includes(c.role));
+  if(!list.length){ el.innerHTML='<p class="note">None yet — attach co-buyers, seller contacts, or lenders from the property page.</p>'; return; }
+  el.innerHTML=list.map(c=>`
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:13.5px">
+      <span><b>${esc(c.name)}</b> <span class="pill gray">${esc(c.role_label||c.role)}</span>
+        <span class="note"> ${esc(c.phone||'')}</span></span>
+      <span style="white-space:nowrap">
+        <button class="small" ${c.phone?'':'disabled'} onclick="callNow('${esc(String(c.phone||''))}','${esc(c.name)}')">📞</button>
+        <button class="small" ${c.phone?'':'disabled'} onclick="contactThread(${c.id},${pid})">💬</button>
+      </span>
+    </div>`).join('');
 }
 
 // Payment history: the statement view. Each month that has come due, what it asked

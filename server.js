@@ -2126,6 +2126,8 @@ const CONTACT_ROLES = {
   title: { label: 'Title / closing', icon: '🖊️' },
   insurance: { label: 'Insurance agent', icon: '🛡️' },
   lender: { label: 'Private money lender', icon: '🏦' },
+  cobuyer: { label: 'Co-buyer', icon: '🧑‍🤝‍🧑' },
+  seller: { label: 'Seller contact', icon: '🏷️' },
   inspector: { label: 'Inspector', icon: '🔍' },
   agent: { label: 'Real estate agent', icon: '🪧' },
   tax: { label: 'Tax / accounting', icon: '🏛️' },
@@ -3539,10 +3541,25 @@ app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
         owed = st.owed_now_cents; pastDue = !!st.is_past_due;
       }
       totalUnread += unreadBuyer + unreadVendor;
+      // Everyone reachable on this house besides the buyer: co-buyers, seller
+      // contacts, attached vendors — and the PML lenders straight off their loans,
+      // even before anyone has made them a contact card.
+      const people = all(`SELECT c.id AS contact_id, c.name, c.phone, c.role FROM property_contacts pc
+        JOIN contacts c ON c.id=pc.contact_id WHERE pc.property_id=? AND c.archived_at IS NULL
+        ORDER BY CASE c.role WHEN 'cobuyer' THEN 0 WHEN 'lender' THEN 1 WHEN 'seller' THEN 2 ELSE 3 END, c.name`, p.id);
+      const knownPhones = new Set(people.map(x => String(x.phone || '').replace(/\D/g, '').slice(-10)).filter(Boolean));
+      for (const pml of all(`SELECT id, lender_name, lender_phone FROM pml_loans
+          WHERE property_id=? AND lender_name IS NOT NULL`, p.id)) {
+        const bare = String(pml.lender_phone || '').replace(/\D/g, '').slice(-10);
+        if (pml.lender_phone && !knownPhones.has(bare)) {
+          people.push({ contact_id: null, pml_id: pml.id, name: pml.lender_name, phone: pml.lender_phone, role: 'lender' });
+        }
+      }
       out.push({
         id: p.id, address: p.address, city: p.city, state: p.state, zip: p.zip,
         loan_id: loan ? loan.id : null,
         buyer: buyer ? { id: buyer.id, name: buyer.name, phone: buyer.phone, email: buyer.email } : null,
+        people,
         unread: unreadBuyer + unreadVendor, unread_buyer: unreadBuyer, unread_vendor: unreadVendor,
         owed_now_cents: owed, past_due: pastDue,
         last_payment: lastPay || null,
@@ -3562,6 +3579,29 @@ app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
       WHERE lo.company_id=? AND l.type='payment' ORDER BY l.id DESC LIMIT 30`, req.companyId);
     res.json({ properties: out, vendors, payments, total_unread: totalUnread });
   } catch (e) { next(e); }
+});
+
+// A PML lender lives on the loan, not in the contact book — until the first time
+// someone wants to text them. This makes the contact card on demand, attaches it to
+// the property, and hands back the id the texting thread needs. Safe to call twice.
+app.post('/api/admin/pml/:id/ensure-contact', adminOnly, (req, res) => {
+  const pml = get(`SELECT pl.*, pr.company_id AS co FROM pml_loans pl
+    JOIN properties pr ON pr.id=pl.property_id WHERE pl.id=? AND pr.company_id=?`,
+    req.params.id, req.companyId);
+  if (!pml) return res.status(404).json({ error: 'Not found' });
+  if (!pml.lender_phone) return res.status(400).json({ error: 'No phone number on this lender' });
+  const bare = String(pml.lender_phone).replace(/\D/g, '').slice(-10);
+  const digitsOf = (col) => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col},'-',''),' ',''),'(',''),')',''),'+1','')`;
+  let contact = get(`SELECT * FROM contacts WHERE company_id=? AND ${digitsOf('phone')}=? AND archived_at IS NULL`,
+    req.companyId, bare);
+  if (!contact) {
+    const r = run(`INSERT INTO contacts (company_id, name, role, phone, email) VALUES (?,?,?,?,?)`,
+      req.companyId, pml.lender_name || 'Lender', 'lender', pml.lender_phone, pml.lender_email || null);
+    contact = get('SELECT * FROM contacts WHERE id=?', r.lastInsertRowid);
+  }
+  run(`INSERT OR IGNORE INTO property_contacts (property_id, contact_id) VALUES (?,?)`,
+    pml.property_id, contact.id);
+  res.json({ contact_id: contact.id, name: contact.name, phone: contact.phone });
 });
 
 // One click instead of a console walk: point the Twilio number's inbound voice

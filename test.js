@@ -719,6 +719,47 @@ async function main() {
     ok(r.status !== 200, 'an unknown category is still refused');
   }
 
+  console.log('— co-buyers, sellers, and lenders are people you can reach');
+  {
+    // The new roles exist and contacts can carry them.
+    r = await req('/api/admin/contacts');
+    ok(r.json.roles.cobuyer && r.json.roles.seller, 'co-buyer and seller are contact roles now');
+    // A house of its own, so the exact-count assertions elsewhere stay untouched.
+    r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({
+      address: '77 People Pl', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const prop = { property_id: r.json.id };
+    r = await req('/api/admin/contacts', { method: 'POST', body: JSON.stringify({
+      name: 'Carl Cobuyer', role: 'cobuyer', phone: '555-444-3333' }) });
+    ok(r.status === 200, 'a co-buyer contact is created');
+    const cobuyerId = r.json.id;
+    r = await req(`/api/admin/properties/${prop.property_id}/contacts`, { method: 'POST',
+      body: JSON.stringify({ contact_id: cobuyerId }) });
+    ok(r.status === 200, 'and attached to the loan\'s house');
+
+    // The staff app's overview lists them under the property, and PML lenders appear
+    // straight off their loans — no contact card required to see or call them.
+    r = await req('/api/admin/staff/overview');
+    const home = r.json.properties.find(x => x.id === prop.property_id);
+    ok(home && Array.isArray(home.people), 'each property carries its people');
+    ok(home.people.some(x => x.role === 'cobuyer' && x.name === 'Carl Cobuyer'), 'the co-buyer is listed');
+    // A PML on this house with its own phone shows up as a person automatically.
+    r = await req('/api/admin/pml', { method: 'POST', body: JSON.stringify({
+      property_id: prop.property_id, lender_name: 'People Test Capital', lender_phone: '555-202-0011',
+      lien_position: 2, principal_cents: 100000, interest_rate_bps: 1000, term_months: 12,
+      payment_type: 'interest_only', first_payment_date: '2026-09-01' }) });
+    ok(r.status === 200, 'a PML with a phone is created on this house');
+    r = await req('/api/admin/staff/overview');
+    const lenderRow = r.json.properties.find(x => x.id === prop.property_id)
+      .people.find(x => x.role === 'lender' && x.name === 'People Test Capital');
+    ok(!!lenderRow && lenderRow.pml_id, 'the PML lender shows up from the loan itself, no contact card needed');
+
+    // First text to a PML lender mints the contact card, idempotently.
+    r = await req(`/api/admin/pml/${lenderRow.pml_id}/ensure-contact`, { method: 'POST', body: '{}' });
+    ok(r.status === 200 && r.json.contact_id, 'one tap turns the lender into a textable contact');
+    const again = await req(`/api/admin/pml/${lenderRow.pml_id}/ensure-contact`, { method: 'POST', body: '{}' });
+    ok(again.json.contact_id === r.json.contact_id, 'and asking twice reuses the same card');
+  }
+
   console.log('— inbound calls announce themselves and can be dismissed everywhere at once');
   {
     plantAuthToken();

@@ -118,6 +118,12 @@ audio{width:100%;height:30px;margin-top:6px}
       <p class="note" id="p-mode-note" style="margin-top:6px"></p>
     </div>
     <div class="card">
+      <h2>👥 People on this house</h2>
+      <p class="note" style="margin-bottom:6px">Co-buyers, sellers, and lenders — call and text only;
+        the in-app thread above belongs to the buyer.</p>
+      <div id="p-people"><p class="note">Loading…</p></div>
+    </div>
+    <div class="card">
       <h2>💵 Payments on this house</h2>
       <div id="p-pays"><p class="note">Loading…</p></div>
     </div>
@@ -287,7 +293,35 @@ async function openProp(id){
   $('p-text').disabled=!(CUR.loan_id&&CUR.buyer&&CUR.buyer.phone);
   $('p-email').disabled=!(CUR.loan_id&&CUR.buyer&&CUR.buyer.email);
   composeMode='sms'; modeNote();
-  loadPropThread(); loadPropPays();
+  loadPropThread(); loadPropPays(); renderPeople();
+}
+// Everyone else on the house: rows with a role tag and call/text one tap away.
+// PML lenders come straight off their loans; the first text makes them a contact.
+const ROLE_TAG={cobuyer:'🧑‍🤝‍🧑 co-buyer', seller:'🏷️ seller', lender:'🏦 lender', bog:'👟 BOG',
+  contractor:'🔨 contractor', legal:'⚖️ legal', title:'🖊️ title', insurance:'🛡️ insurance'};
+function renderPeople(){
+  const el=$('p-people'); if(!el) return;
+  const ppl=(CUR&&CUR.people)||[];
+  if(!ppl.length){ el.innerHTML='<p class="note">Nobody attached yet — co-buyers, seller contacts and lenders added on the desktop show up here.</p>'; return; }
+  el.innerHTML=ppl.map((x,i)=>`
+    <div class="row">
+      <span><b>${esc(x.name)}</b> <span class="note">${ROLE_TAG[x.role]||esc(x.role)}</span>
+        <div class="note">${esc(x.phone||'no phone')}</div></span>
+      <span style="white-space:nowrap">
+        <button ${x.phone?'':'disabled'} onclick="bridgeCall('${esc(String(x.phone||''))}','${esc(x.name)}')">📞</button>
+        <button ${x.phone?'':'disabled'} onclick="textPerson(${i})">💬</button>
+      </span>
+    </div>`).join('');
+}
+async function textPerson(i){
+  const x=CUR.people[i]; if(!x) return;
+  let cid=x.contact_id;
+  if(!cid && x.pml_id){
+    try{ const r=await api(`/api/admin/pml/${x.pml_id}/ensure-contact`,{method:'POST',body:'{}'}); cid=r.contact_id; x.contact_id=cid; }
+    catch(e){ toast(e.message); return; }
+  }
+  if(!cid){ toast('No contact card for this person yet.'); return; }
+  openVendor(cid, x.name, x.phone||'');
 }
 function modeNote(){
   $('p-mode-note').textContent = composeMode==='sms'
