@@ -5,8 +5,21 @@
 const crypto = require('crypto');
 const { get, run } = require('./db');
 
-const STRIPE_KEY = () => process.env.STRIPE_SECRET_KEY || '';
-const stripeEnabled = () => !!STRIPE_KEY();
+// Like texting and mail, Stripe is the company's own account first and the host's
+// environment second — a servicer connects their key in Settings without touching the
+// deployment. Every function takes an optional company and falls back to the env.
+let ACTIVE_COMPANY = null;                       // set per-request by withCompany below
+const STRIPE_KEY = (company) => {
+  const co = company || ACTIVE_COMPANY;
+  return (co && co.stripe_secret_key) || process.env.STRIPE_SECRET_KEY || '';
+};
+const stripeEnabled = (company) => !!STRIPE_KEY(company);
+// Run fn with this company's credentials active for every Stripe call inside it.
+async function withCompany(company, fn) {
+  const prev = ACTIVE_COMPANY;
+  ACTIVE_COMPANY = company || null;
+  try { return await fn(); } finally { ACTIVE_COMPANY = prev; }
+}
 
 async function stripeRequest(pathname, params) {
   const body = new URLSearchParams();
@@ -196,7 +209,7 @@ async function listAccountTransactions(accountId, limit = 100) {
   return r.data || [];
 }
 
-module.exports = { stripeEnabled, createCheckoutSession, retrieveSession, listRecentSessions, verifyStripeSignature,
+module.exports = { withCompany, stripeEnabled, createCheckoutSession, retrieveSession, listRecentSessions, verifyStripeSignature,
   getOrCreateCustomer, createSetupSession, retrieveSetupIntent, retrievePaymentMethod,
   listCustomerPaymentMethods, detachPaymentMethod, chargeSavedMethod,
   createFinancialConnectionsSession, listFinancialAccounts,

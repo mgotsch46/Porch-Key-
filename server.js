@@ -147,14 +147,18 @@ function ownedProperty(req, id) {
 
 // ---------- stripe webhook needs raw body, mount before json parser ----------
 app.post('/api/stripe/webhook', express.raw({ type: '*/*' }), (req, res) => {
-  const whSecret = process.env.STRIPE_WEBHOOK_SECRET;
   const payload = req.body.toString('utf8');
-  if (whSecret && !pay.verifyStripeSignature(payload, req.headers['stripe-signature'], whSecret)) {
+  const sig = req.headers['stripe-signature'];
+  // Any configured secret may vouch for the delivery: the host's, or a company's own —
+  // each company can connect its own Stripe account from Settings.
+  const secrets = [process.env.STRIPE_WEBHOOK_SECRET,
+    ...all('SELECT DISTINCT stripe_webhook_secret s FROM companies WHERE stripe_webhook_secret IS NOT NULL').map(r => r.s)]
+    .filter(Boolean);
+  if (secrets.length && !secrets.some(sec => pay.verifyStripeSignature(payload, sig, sec))) {
     // Say so in the log. A silently rejected webhook is a payment that vanishes:
     // Stripe took the money and the ledger never heard. The reconciliation sweep
     // will still catch it, but the mismatch itself needs fixing.
-    console.error('Stripe webhook REJECTED — signature did not verify. ' +
-      'STRIPE_WEBHOOK_SECRET probably does not match this endpoint\'s signing secret.');
+    console.error('Stripe webhook REJECTED — signature matched no configured secret.');
     return res.status(400).send('Bad signature');
   }
   try {
@@ -2797,6 +2801,41 @@ app.put('/api/admin/call-mode', adminOnly, (req, res) => {
   res.json({ ok: true, call_mode: mode, my_phone: req.user.phone || null });
 });
 
+// Stripe, connectable from inside the app — the same shape as Twilio, email and Lob:
+// the company's own account first, the host's environment as fallback, so today's
+// single-company deployment keeps working untouched and tomorrow's second company just
+// pastes its own keys.
+app.get('/api/admin/integrations/stripe', adminOnly, (req, res) => {
+  const co = myCompany(req);
+  const key = co.stripe_secret_key || process.env.STRIPE_SECRET_KEY || '';
+  res.json({
+    connected: !!key,
+    source: co.stripe_secret_key ? 'company' : (process.env.STRIPE_SECRET_KEY ? 'env' : null),
+    test_mode: /^(sk|rk)_test_/.test(key),
+    key_tail: co.stripe_secret_key ? '…' + co.stripe_secret_key.slice(-4) : null,
+    webhook_secret_set: !!(co.stripe_webhook_secret || process.env.STRIPE_WEBHOOK_SECRET),
+    webhook_url: baseUrlOf(req) + '/api/stripe/webhook',
+  });
+});
+app.put('/api/admin/integrations/stripe', ownerOnly, (req, res) => {
+  const b = req.body || {};
+  const key = String(b.secret_key || '').trim();
+  const wh = String(b.webhook_secret || '').trim();
+  if (key && !/^(sk|rk)_(test|live)_/.test(key)) {
+    return res.status(400).json({ error: 'That does not look like a Stripe secret key (sk_live_… or sk_test_…)' });
+  }
+  if (wh && !/^whsec_/.test(wh)) {
+    return res.status(400).json({ error: 'The webhook signing secret starts with whsec_' });
+  }
+  run("UPDATE companies SET stripe_secret_key=COALESCE(NULLIF(?,''), stripe_secret_key), stripe_webhook_secret=COALESCE(NULLIF(?,''), stripe_webhook_secret) WHERE id=?",
+    key, wh, req.companyId);
+  res.json({ ok: true });
+});
+app.delete('/api/admin/integrations/stripe', ownerOnly, (req, res) => {
+  run('UPDATE companies SET stripe_secret_key=NULL, stripe_webhook_secret=NULL WHERE id=?', req.companyId);
+  res.json({ ok: true });
+});
+
 // The three values the browser softphone needs, saved separately from the main Twilio
 // credentials so texting keeps working while calling is still being set up.
 app.put('/api/admin/voice', ownerOnly, (req, res) => {
@@ -3414,6 +3453,21 @@ app.get('/api/admin/loans/:id/workflow', adminOnly, (req, res, next) => {
     });
   } catch (e) { next(e); }
 });
+
+// Try a Stripe read under each credential set that exists — the host's environment
+// and every company that connected its own account — until one answers. Used where
+// only a Stripe id is known (a checkout session bouncing back from the browser) and
+// the owning company has to be discovered rather than assumed.
+async function stripeReadAnyAccount(fn) {
+  const companies = [null, ...all('SELECT * FROM companies WHERE stripe_secret_key IS NOT NULL')];
+  let lastErr = null;
+  for (const co of companies) {
+    if (!pay.stripeEnabled(co)) continue;
+    try { return await pay.withCompany(co, fn); }
+    catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('Stripe is not configured');
+}
 
 // ---------- the staff app's one-call overview ----------
 // The phone app opens to this: every property with its buyer, what's unread, what's
@@ -6598,11 +6652,12 @@ app.post('/api/tenant/pay/checkout', tenantReady, async (req, res) => {
     const proto = req.headers['x-forwarded-proto'] || 'http';
     const baseUrl = process.env.BASE_URL || `${proto}://${req.headers.host}`;
     const fee = calcFee(loan.company_id, amount, 'card');
-    const session = await pay.createCheckoutSession({
+    const payCo = get('SELECT * FROM companies WHERE id=?', loan.company_id);
+    const session = await pay.withCompany(payCo && payCo.stripe_secret_key ? payCo : null, () => pay.createCheckoutSession({
       loan: { ...loan, address: property ? property.address : 'your home' },
       amountCents: amount, baseUrl, tenantEmail: req.user.email,
       feeCents: fee, feeLabel: feeSettings(loan.company_id).label,
-    });
+    }));
     res.json({ url: session.url });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -6615,7 +6670,7 @@ app.post('/api/tenant/pay/checkout', tenantReady, async (req, res) => {
 app.get('/api/pay/landing', async (req, res) => {
   try {
     if (pay.stripeEnabled() && req.query.session_id) {
-      const s = await pay.retrieveSession(String(req.query.session_id));
+      const s = await stripeReadAnyAccount(() => pay.retrieveSession(String(req.query.session_id)));
       if (s && s.payment_status === 'paid' && s.metadata && Number(s.metadata.loan_id)) {
         const r = postStripePayment(s);
         if (!r.duplicate) console.log(`Stripe payment posted at landing — session ${s.id}, loan ${s.metadata.loan_id}`);
@@ -6629,8 +6684,17 @@ app.get('/api/pay/landing', async (req, res) => {
 // completed sessions and post anything the ledger is missing. Runs at boot and every
 // six hours; posting is idempotent, so at worst it does nothing.
 async function reconcileStripePayments() {
-  if (!pay.stripeEnabled()) return { checked: 0, posted: 0 };
-  const sessions = await pay.listRecentSessions(100);
+  if (!pay.stripeEnabled() && !get('SELECT id FROM companies WHERE stripe_secret_key IS NOT NULL LIMIT 1')) {
+    return { checked: 0, posted: 0 };
+  }
+  // Sweep every connected account: the host's and each company's own.
+  const credentialOwners = [null, ...all('SELECT * FROM companies WHERE stripe_secret_key IS NOT NULL')];
+  const sessions = [];
+  for (const co of credentialOwners) {
+    if (!pay.stripeEnabled(co)) continue;
+    try { sessions.push(...await pay.withCompany(co, () => pay.listRecentSessions(100))); }
+    catch (e) { console.error('Stripe reconciliation (account):', e.message); }
+  }
   let posted = 0, checked = 0;
   for (const s of sessions) {
     if (s.payment_status !== 'paid' || !s.metadata || !Number(s.metadata.loan_id)) continue;
@@ -6657,7 +6721,7 @@ app.post('/api/admin/stripe/reconcile', adminOnly, async (req, res, next) => {
 app.get('/api/tenant/pay/confirm', tenantReady, async (req, res) => {
   if (!pay.stripeEnabled()) return res.json({ ok: false, reason: 'stripe_not_configured' });
   try {
-    const s = await pay.retrieveSession(req.query.session_id);
+    const s = await stripeReadAnyAccount(() => pay.retrieveSession(req.query.session_id));
     if (s.payment_status === 'paid' && s.metadata && Number(s.metadata.loan_id)) {
       const result = postStripePayment(s);
       return res.json({ ok: true, duplicate: !!result.duplicate });

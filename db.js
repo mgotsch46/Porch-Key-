@@ -450,6 +450,9 @@ addColumnIfMissing('companies', 'record_calls', 'INTEGER DEFAULT 0');
 addColumnIfMissing('companies', 'voicemail_greeting', 'TEXT');
 addColumnIfMissing('companies', 'forward_calls', 'INTEGER DEFAULT 0');
 addColumnIfMissing('companies', 'voice_intel_sid', 'TEXT');   // Twilio Intelligence service, for call transcripts
+// Stripe, the same way as Twilio: the company's own account first, the host second.
+addColumnIfMissing('companies', 'stripe_secret_key', 'TEXT');
+addColumnIfMissing('companies', 'stripe_webhook_secret', 'TEXT');
 // Where a person's calls happen by default. 'softphone' talks through the browser;
 // 'cell' rings their own handset and bridges. Either way the call runs through Twilio,
 // so recording and transcription behave identically — the only difference is the

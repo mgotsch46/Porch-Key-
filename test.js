@@ -719,6 +719,38 @@ async function main() {
     ok(r.status !== 200, 'an unknown category is still refused');
   }
 
+  console.log('— every outside service is the company\'s own to connect');
+  {
+    // The multi-company posture: phone, email, mail, and now Stripe are all pasted in
+    // Settings per company, with the host's environment only as fallback.
+    r = await req('/api/admin/integrations/stripe');
+    ok(r.status === 200 && typeof r.json.connected === 'boolean', 'the Stripe card reports its state');
+    ok(/\/api\/stripe\/webhook$/.test(r.json.webhook_url), 'and the webhook URL to paste into Stripe');
+    r = await req('/api/admin/integrations/stripe', { method: 'PUT', body: JSON.stringify({ secret_key: 'not-a-key' }) });
+    ok(r.status === 400, 'a malformed secret key is refused');
+    r = await req('/api/admin/integrations/stripe', { method: 'PUT', body: JSON.stringify({ webhook_secret: 'nope' }) });
+    ok(r.status === 400, 'a malformed webhook secret is refused');
+    r = await req('/api/admin/integrations/stripe', { method: 'PUT', body: JSON.stringify({
+      secret_key: 'sk_test_' + 'x'.repeat(24), webhook_secret: 'whsec_' + 'y'.repeat(24) }) });
+    ok(r.status === 200, 'a company connects its own Stripe account from Settings');
+    r = await req('/api/admin/integrations/stripe');
+    ok(r.json.source === 'company' && r.json.test_mode === true, 'and the card says whose key is live, and that it is test mode');
+    // The webhook now accepts deliveries signed with the company secret.
+    const payload = JSON.stringify({ type: 'checkout.session.completed', data: { object: { payment_status: 'unpaid', metadata: {} } } });
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = 't=' + ts + ',v1=' + require('node:crypto').createHmac('sha256', 'whsec_' + 'y'.repeat(24))
+      .update(ts + '.' + payload).digest('hex');
+    const hook = await fetch(BASE + '/api/stripe/webhook', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Stripe-Signature': sig }, body: payload });
+    ok(hook.status === 200, 'a webhook signed with the company secret is accepted');
+    const forged = await fetch(BASE + '/api/stripe/webhook', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Stripe-Signature': 't=' + ts + ',v1=deadbeef' }, body: payload });
+    ok(forged.status === 400, 'a forged webhook is refused');
+    r = await req('/api/admin/integrations/stripe', { method: 'DELETE' });
+    ok(r.status === 200 && (await req('/api/admin/integrations/stripe')).json.source !== 'company',
+      'and the account can be disconnected, falling back to the server');
+  }
+
   console.log('— a payment can never vanish between Stripe and the ledger');
   {
     const payMod = require('./payments.js');

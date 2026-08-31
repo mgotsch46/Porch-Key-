@@ -1081,7 +1081,9 @@ a{color:var(--brand);font-weight:600}
       <div class="card">
         <h2>Integrations</h2>
         <div id="set-integrations"></div>
-        <p class="note" style="margin-top:10px">Stripe and AI document reading are configured on the server. See the README.</p>
+        <h3 style="margin:14px 0 6px;font-size:14px">💳 Stripe — online payments</h3>
+        <div id="set-stripe"><p class="note">Loading…</p></div>
+        <p class="note" style="margin-top:10px">AI document reading is configured on the server. See the README.</p>
       </div>
       <div class="card">
         <h2>&#128241; Texting</h2>
@@ -2907,8 +2909,42 @@ async function loadDashAgenda(){
 // ---------- texting setup ----------
 // Deliberately in the app rather than in the deployment: the person who needs texting
 // working should not have to go and edit server variables.
+async function loadStripeCard(){
+  const el=$('set-stripe'); if(!el) return;
+  let t; try{ t=await api('/api/admin/integrations/stripe'); }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  el.innerHTML=`
+    ${t.connected
+      ? `<p class="okmsg">Connected${t.test_mode?' — <b>test mode</b>':''} — buyers can pay by card, bank, and Cash App.
+         ${t.source==='env'?'<span class="note">(using the key set on the server)</span>':`<span class="note">(your own account ${esc(t.key_tail||'')})</span>`}</p>`
+      : '<p class="note" style="margin-bottom:8px">Not connected — buyers cannot pay online until a Stripe key is added.</p>'}
+    <details style="margin:8px 0"><summary class="note" style="cursor:pointer;font-weight:700">${t.source==='company'?'Replace the connected account':'Connect your own Stripe account'}</summary>
+      <div class="field" style="margin-top:8px"><label>Secret key <span class="note">— sk_live_… from dashboard.stripe.com → Developers → API keys</span></label>
+        <input id="st-key" type="password" placeholder="sk_live_…" autocomplete="off"></div>
+      <div class="field"><label>Webhook signing secret <span class="note">— whsec_…, from a webhook endpoint pointed at the URL below</span></label>
+        <input id="st-wh" type="password" placeholder="whsec_…" autocomplete="off"></div>
+      <p class="note" style="margin-bottom:8px">In Stripe → Developers → Webhooks → Add endpoint, event
+        <code>checkout.session.completed</code>, URL<br>
+        <code style="font-size:12px;background:#EDF2F0;padding:3px 6px;border-radius:5px;display:inline-block;margin-top:4px">${esc(t.webhook_url)}</code></p>
+      <div id="st-err" class="err hidden"></div><div id="st-ok" class="okmsg hidden"></div>
+      <button class="primary" onclick="saveStripe()">Save Stripe keys</button>
+      ${t.source==='company'?`<button class="small warn" onclick="disconnectStripe()">Disconnect (fall back to the server's key)</button>`:''}
+    </details>`;
+}
+async function saveStripe(){
+  $('st-err').classList.add('hidden'); $('st-ok').classList.add('hidden');
+  try{
+    await api('/api/admin/integrations/stripe',{method:'PUT',body:JSON.stringify({
+      secret_key:$('st-key').value, webhook_secret:$('st-wh').value })});
+    toast('Stripe saved.'); loadStripeCard();
+  }catch(e){ $('st-err').textContent=e.message; $('st-err').classList.remove('hidden'); }
+}
+async function disconnectStripe(){
+  if(!confirm('Disconnect this company\'s Stripe account? Payments fall back to the server key if one is set.')) return;
+  await api('/api/admin/integrations/stripe',{method:'DELETE'}); loadStripeCard();
+}
 async function loadTexting(){
   const el=$('set-texting'); if(!el) return;
+  loadStripeCard();
   const t=await api('/api/admin/texting');
   // Remember what the dialer needs so Call buttons anywhere in the app know which
   // device to use without asking the server again.
