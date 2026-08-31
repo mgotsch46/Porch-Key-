@@ -42,11 +42,11 @@ workflows:
     name: PorchPay iOS → TestFlight
     environment:
       <<: *ios_env
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.porchpay.app
+      groups:
+        - appstore
       vars:
         APP_DIR: porchpay
+        BUNDLE_ID: com.porchpay.app
         SPLASH_BG: "#F7FBF3"
     scripts:
       - *prep
@@ -56,8 +56,11 @@ workflows:
           npx cap add ios
           npx @capacitor/assets generate --ios --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
           npx cap sync ios
-      - name: Sign and build
+      - name: Fetch or create signing files, then build
         script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          keychain add-certificates
           cd "mobile/$APP_DIR/ios/App"
           xcode-project use-profiles
           agvtool new-version -all $BUILD_NUMBER
@@ -74,11 +77,11 @@ workflows:
     name: PorchPay Admin iOS → TestFlight
     environment:
       <<: *ios_env
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.porchpay.admin
+      groups:
+        - appstore
       vars:
         APP_DIR: porchpay-admin
+        BUNDLE_ID: com.porchpay.admin
         SPLASH_BG: "#16220D"
     scripts:
       - *prep
@@ -88,8 +91,11 @@ workflows:
           npx cap add ios
           npx @capacitor/assets generate --ios --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
           npx cap sync ios
-      - name: Sign and build
+      - name: Fetch or create signing files, then build
         script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          keychain add-certificates
           cd "mobile/$APP_DIR/ios/App"
           xcode-project use-profiles
           agvtool new-version -all $BUILD_NUMBER
