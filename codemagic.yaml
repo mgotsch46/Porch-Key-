@@ -1,0 +1,184 @@
+# PorchPay mobile builds. Codemagic reads this file from the repo root.
+#
+# Four workflows: each app, each store. The apps are thin Capacitor shells around the
+# live site, so these builds only need to run again when the shell itself changes —
+# day-to-day features ship through the normal Railway deploy.
+#
+# One-time setup in the Codemagic UI (Team settings):
+#   1. Integrations → Developer Portal → connect an App Store Connect API key,
+#      named exactly:  porchpay-asc
+#   2. Code signing identities → Android keystores → upload porchpay-upload.keystore,
+#      reference name exactly:  porchpay_keystore
+#      (alias porchpay; passwords are in the credentials file Claude handed over)
+
+definitions:
+  ios_base: &ios_base
+    max_build_duration: 60
+    integrations:
+      app_store_connect: porchpay-asc
+    environment: &ios_env
+      xcode: latest
+      node: 20
+  android_base: &android_base
+    max_build_duration: 60
+    environment: &android_env
+      node: 20
+      java: 17
+
+  # The icon set comes from the same logo the web apps use — one brand everywhere.
+  prep: &prep
+    name: Install shell and brand assets
+    script: |
+      cd "mobile/$APP_DIR"
+      npm install
+      npm install --no-save @capacitor/assets
+      mkdir -p assets
+      cp ../../public/icon-1024.png assets/icon-only.png
+      cp ../../public/icon-1024.png assets/icon.png
+
+workflows:
+  porchpay-ios:
+    <<: *ios_base
+    name: PorchPay iOS → TestFlight
+    environment:
+      <<: *ios_env
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.porchpay.app
+      vars:
+        APP_DIR: porchpay
+        SPLASH_BG: "#F7FBF3"
+    scripts:
+      - *prep
+      - name: Add iOS platform + icons
+        script: |
+          cd "mobile/$APP_DIR"
+          npx cap add ios
+          npx @capacitor/assets generate --ios --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
+          npx cap sync ios
+      - name: Sign and build
+        script: |
+          cd "mobile/$APP_DIR/ios/App"
+          xcode-project use-profiles
+          agvtool new-version -all $BUILD_NUMBER
+          xcode-project build-ipa --workspace App.xcworkspace --scheme App
+    artifacts:
+      - mobile/porchpay/ios/App/build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+
+  porchpay-admin-ios:
+    <<: *ios_base
+    name: PorchPay Admin iOS → TestFlight
+    environment:
+      <<: *ios_env
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.porchpay.admin
+      vars:
+        APP_DIR: porchpay-admin
+        SPLASH_BG: "#16220D"
+    scripts:
+      - *prep
+      - name: Add iOS platform + icons
+        script: |
+          cd "mobile/$APP_DIR"
+          npx cap add ios
+          npx @capacitor/assets generate --ios --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
+          npx cap sync ios
+      - name: Sign and build
+        script: |
+          cd "mobile/$APP_DIR/ios/App"
+          xcode-project use-profiles
+          agvtool new-version -all $BUILD_NUMBER
+          xcode-project build-ipa --workspace App.xcworkspace --scheme App
+    artifacts:
+      - mobile/porchpay-admin/ios/App/build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+
+  porchpay-android:
+    <<: *android_base
+    name: PorchPay Android → signed AAB
+    environment:
+      <<: *android_env
+      android_signing:
+        - porchpay_keystore
+      vars:
+        APP_DIR: porchpay
+        SPLASH_BG: "#F7FBF3"
+    scripts:
+      - *prep
+      - name: Add Android platform + icons
+        script: |
+          cd "mobile/$APP_DIR"
+          npx cap add android
+          npx @capacitor/assets generate --android --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
+          npx cap sync android
+      - name: Wire release signing into the generated project
+        script: |
+          cd "mobile/$APP_DIR/android/app"
+          cat >> build.gradle <<'EOF'
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file(System.getenv("CM_KEYSTORE_PATH"))
+                      storePassword System.getenv("CM_KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("CM_KEY_ALIAS")
+                      keyPassword System.getenv("CM_KEY_PASSWORD")
+                  }
+              }
+              buildTypes { release { signingConfig signingConfigs.release } }
+          }
+          EOF
+      - name: Build the bundle
+        script: |
+          cd "mobile/$APP_DIR/android"
+          ./gradlew bundleRelease
+    artifacts:
+      - mobile/porchpay/android/app/build/outputs/**/*.aab
+
+  porchpay-admin-android:
+    <<: *android_base
+    name: PorchPay Admin Android → signed AAB
+    environment:
+      <<: *android_env
+      android_signing:
+        - porchpay_keystore
+      vars:
+        APP_DIR: porchpay-admin
+        SPLASH_BG: "#16220D"
+    scripts:
+      - *prep
+      - name: Add Android platform + icons
+        script: |
+          cd "mobile/$APP_DIR"
+          npx cap add android
+          npx @capacitor/assets generate --android --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
+          npx cap sync android
+      - name: Wire release signing into the generated project
+        script: |
+          cd "mobile/$APP_DIR/android/app"
+          cat >> build.gradle <<'EOF'
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file(System.getenv("CM_KEYSTORE_PATH"))
+                      storePassword System.getenv("CM_KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("CM_KEY_ALIAS")
+                      keyPassword System.getenv("CM_KEY_PASSWORD")
+                  }
+              }
+              buildTypes { release { signingConfig signingConfigs.release } }
+          }
+          EOF
+      - name: Build the bundle
+        script: |
+          cd "mobile/$APP_DIR/android"
+          ./gradlew bundleRelease
+    artifacts:
+      - mobile/porchpay-admin/android/app/build/outputs/**/*.aab
