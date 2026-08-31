@@ -18,6 +18,9 @@
 html,body{height:100%}
 body{font-family:'Space Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   background:var(--bg);color:var(--ink);font-size:15px;
+  /* The app draws edge-to-edge on iPhone; the notch and status bar live inside the
+     safe-area insets, so content starts below them and the nav clears the home bar. */
+  padding-top:env(safe-area-inset-top);
   padding-bottom:calc(64px + env(safe-area-inset-bottom))}
 h1{font-size:19px;padding:14px 16px 6px}
 h2{font-size:15px;margin-bottom:8px}
@@ -65,7 +68,7 @@ input,textarea{font-family:inherit;font-size:15px;width:100%;border:1.5px solid 
 .seg button{flex:1}
 .seg button.active{background:var(--ink);color:#fff}
 audio{width:100%;height:30px;margin-top:6px}
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:84px;background:var(--ink);color:#fff;
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom));background:var(--ink);color:#fff;
   padding:9px 16px;border-radius:11px;font-size:13.5px;opacity:0;transition:opacity .25s;z-index:9;pointer-events:none}
 .toast.show{opacity:.95}
 </style>
