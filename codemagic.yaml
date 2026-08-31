@@ -56,6 +56,10 @@ workflows:
           npx cap add ios
           npx @capacitor/assets generate --ios --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
           npx cap sync ios
+          # TestFlight refuses builds that have not declared their encryption posture.
+          # The app uses only standard HTTPS, which is exempt.
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" ios/App/App/Info.plist || \
+            /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" ios/App/App/Info.plist
       - name: Fetch or create signing files, then build
         script: |
           keychain initialize
@@ -91,6 +95,10 @@ workflows:
           npx cap add ios
           npx @capacitor/assets generate --ios --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
           npx cap sync ios
+          # TestFlight refuses builds that have not declared their encryption posture.
+          # The app uses only standard HTTPS, which is exempt.
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" ios/App/App/Info.plist || \
+            /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" ios/App/App/Info.plist
       - name: Fetch or create signing files, then build
         script: |
           keychain initialize
