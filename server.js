@@ -2996,9 +2996,16 @@ app.post('/api/voice/incoming', twilioWebhook, (req, res) => {
     for (const u of staff) legs.push(`<Client>admin-${u.id}</Client>`);
   }
   if (co.forward_calls) {
+    // Each cell leg is screened: before connecting, the admin hears who is calling
+    // through PorchPay and presses 1 to take it. Two jobs in one: the call announces
+    // itself instead of arriving as a mystery number, and a carrier voicemail can
+    // never swallow the call, because voicemail does not press buttons.
+    const caller = matchPhone(co.id, sms.normalizePhone(req.body && req.body.From));
+    const whoParam = encodeURIComponent(caller.name || sms.normalizePhone(req.body && req.body.From) || 'an unknown number');
+    const parent = encodeURIComponent((req.body && req.body.CallSid) || '');
     for (const u of staff) {
       const n = sms.normalizePhone(u.phone);
-      if (n) legs.push(`<Number>${xesc(n)}</Number>`);
+      if (n) legs.push(`<Number url="${xesc(base)}/api/voice/staff-screen?co=${co.id}&amp;who=${xesc(whoParam)}&amp;parent=${xesc(parent)}">${xesc(n)}</Number>`);
     }
   }
   if (!legs.length) return res.send(voicemailTwiml(co, base));
@@ -3016,6 +3023,41 @@ app.post('/api/voice/incoming', twilioWebhook, (req, res) => {
     `${rec} action="${xesc(base)}/api/voice/vm-fallback?co=${co.id}">` +
     legs.join('') + `</Dial></Response>`);
 });
+// The screen an admin's cell hears before an inbound call connects. Says who it is,
+// waits for a key: 1 takes the call, 2 sends the whole call — every ringing device —
+// to voicemail, and silence hangs this leg so a carrier voicemail can't capture it.
+app.post('/api/voice/staff-screen', twilioWebhook, (req, res) => {
+  const who = String(req.query.who || 'someone').slice(0, 80);
+  const co = Number(req.query.co) || '';
+  const parent = String(req.query.parent || '');
+  res.type('text/xml').send(`<Response>` +
+    `<Gather numDigits="1" timeout="6" action="${xesc(baseUrlOf(req))}/api/voice/staff-screen-action?co=${co}&amp;parent=${xesc(encodeURIComponent(parent))}">` +
+    `<Say voice="alice">Porch Pay call from ${xesc(who)}. Press 1 to answer, or 2 for voicemail.</Say>` +
+    `</Gather><Hangup/></Response>`);
+});
+app.post('/api/voice/staff-screen-action', twilioWebhook, async (req, res) => {
+  const digit = String((req.body && req.body.Digits) || '');
+  res.type('text/xml');
+  if (digit === '1') return res.send('<Response/>');   // fall through: the leg connects
+  // 2 (or anything else): push the parent call to voicemail via the REST API, which
+  // cancels every other ringing device — desktop softphone included — then drop this leg.
+  try {
+    const co = get('SELECT * FROM companies WHERE id=?', Number(req.query.co));
+    const parent = decodeURIComponent(String(req.query.parent || ''));
+    const c = co && sms.creds(co);
+    if (c && /^CA[0-9a-f]{32}$/i.test(parent)) {
+      const vm = voicemailTwiml(co, baseUrlOf(req));
+      await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/Calls/${parent}.json`, {
+        method: 'POST',
+        headers: { Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64'),
+                   'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ Twiml: vm }).toString(),
+      });
+    }
+  } catch (e) { console.error('Send-to-voicemail redirect:', e.message); }
+  res.send('<Response><Hangup/></Response>');
+});
+
 // A <Dial> finished — Twilio reports how it went and for how long. That is the moment a
 // call_log row learns its outcome.
 app.post('/api/voice/dial-done', twilioWebhook, (req, res) => {

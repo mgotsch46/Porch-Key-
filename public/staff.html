@@ -298,14 +298,27 @@ function modeNote(){
 function composeFocus(){ modeNote(); $('p-input').focus(); }
 async function loadPropThread(){
   const el=$('p-thread');
-  if(!CUR.loan_id){ el.innerHTML='<p class="note">No active loan on this house.</p>'; return; }
-  let msgs; try{ msgs=await api(`/api/admin/loans/${CUR.loan_id}/messages`); }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
-  el.innerHTML=msgs.map(m=>{
-    const mine=m.sender_role!=='tenant';
-    const viaSms=(m.channels||'').split(',').includes('sms');
-    return `<div class="msg ${mine?'me':'them'}">${esc(m.subject?m.subject+'\n':'')}${esc(m.body)}
-      <div class="t">${mine?'You':esc(m.sender_name)} · ${when(m.created_at)}${viaSms?' · 📲':''}</div></div>`;
-  }).join('')||'<p class="note">No messages yet — say hello.</p>';
+  // The whole history of this house, the way a phone shows it: message bubbles for
+  // texts and in-app messages, centered entries for calls — each stamped with when
+  // it happened and how it traveled.
+  let d; try{ d=await api(`/api/admin/properties/${CUR.id}/comms`); }
+  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  const events=(d.events||[]).filter(ev=>['call','voicemail','text','message'].includes(ev.channel)).reverse();
+  const CH={text:'💬 text',message:'📩 in-app'};
+  el.innerHTML=events.map(ev=>{
+    if(ev.channel==='call'||ev.channel==='voicemail'){
+      const dur=ev.duration_sec?` · ${Math.floor(ev.duration_sec/60)}:${String(ev.duration_sec%60).padStart(2,'0')}`:'';
+      return `<div style="align-self:center;text-align:center;font-size:12px;color:var(--mut);padding:2px 0">
+        ${ev.channel==='voicemail'?'📼':'📞'} ${ev.direction==='in'?'Incoming':'Outgoing'} ${ev.channel==='voicemail'?'voicemail':'call'}
+        ${ev.status==='missed'?'· missed':ev.status==='voicemail'?'· to voicemail':''}${dur} · ${when(ev.ts)}
+        ${ev.transcript?`<div style="max-width:260px;white-space:pre-wrap">“${esc(String(ev.transcript).slice(0,140))}”</div>`:''}
+        ${ev.recording_id?`<audio controls preload="none" src="/api/admin/recordings/${ev.recording_id}/audio"></audio>`:''}
+      </div>`;
+    }
+    const mine=ev.direction!=='in';
+    return `<div class="msg ${mine?'me':'them'}">${esc(ev.summary&&ev.channel==='message'?ev.summary+'\n':'')}${esc(ev.body||ev.summary||'')}
+      <div class="t">${mine?'You':esc(ev.who||'')} · ${when(ev.ts)} · ${CH[ev.channel]||esc(ev.channel)}</div></div>`;
+  }).join('')||'<p class="note">No history yet — say hello.</p>';
   el.scrollTop=el.scrollHeight;
   refresh();
 }

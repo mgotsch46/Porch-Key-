@@ -719,6 +719,58 @@ async function main() {
     ok(r.status !== 200, 'an unknown category is still refused');
   }
 
+  console.log('— inbound calls announce themselves and can be dismissed everywhere at once');
+  {
+    plantAuthToken();
+    const db3 = require('./db.js').db;
+    const co = db3.prepare('SELECT id FROM companies ORDER BY id LIMIT 1').get();
+    db3.prepare(`UPDATE companies SET twilio_from='+15550009999', forward_calls=1,
+      voice_twiml_app_sid='AP' || substr(hex(randomblob(16)),1,32) WHERE id=?`).run(co.id);
+    db3.prepare("UPDATE users SET phone='+15555550123' WHERE email='admin@test.com'").run();
+
+    // The buyer calls in: each cell leg carries the screening whisper naming them.
+    let xml = await (await signedForm('/api/voice/incoming', { To: '+15550009999', From: '+15557778888',
+      CallSid: 'CA' + '7'.repeat(32) })).text();
+    ok(/staff-screen/.test(xml), 'cell legs are screened before connecting');
+    ok(/who=/.test(xml), 'and the screen knows who is calling');
+
+    // The screen itself: names the caller, offers 1 to answer, hangs up on silence.
+    xml = await (await signedForm('/api/voice/staff-screen?co=' + co.id + '&who=Jane%20Buyer&parent=CA' + '7'.repeat(32), {})).text();
+    ok(/Porch Pay call from Jane Buyer/.test(xml), 'the whisper says it is a PorchPay call and from whom');
+    ok(/Press 1 to answer/.test(xml) && /<Hangup\/>/.test(xml),
+      'press 1 answers; silence hangs the leg so carrier voicemail cannot steal the call');
+
+    // Pressing 1 connects; pressing 2 drops the leg (and redirects the parent to
+    // voicemail — the Twilio API call is unreachable in tests, but the leg must die).
+    xml = await (await signedForm('/api/voice/staff-screen-action?co=' + co.id + '&parent=CA' + '7'.repeat(32), { Digits: '1' })).text();
+    ok(xml === '<Response/>', 'pressing 1 lets the leg connect');
+    xml = await (await signedForm('/api/voice/staff-screen-action?co=' + co.id + '&parent=CA' + '7'.repeat(32), { Digits: '2' })).text();
+    ok(/<Hangup\/>/.test(xml), 'pressing 2 declines this leg while the call routes to voicemail');
+
+    // The outbound bridge no longer talks at the admin — answer, hear ringing, talk.
+    const smsMod2 = require('./sms.js');
+    let sawTwiml = null;
+    const origFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('api.twilio.com')) {
+        sawTwiml = new URLSearchParams(opts.body).get('Twiml');
+        return { ok: true, json: async () => ({ sid: 'CA' + '8'.repeat(32) }) };
+      }
+      return origFetch(url, opts);
+    };
+    await smsMod2.placeCall('+15557778888', '+15555550123',
+      { id: co.id, twilio_sid: 'AC' + '0'.repeat(32), twilio_token: 't', twilio_from: '+15550009999' },
+      { announce: 'Jane', record: true, baseUrl: 'https://x.test' });
+    global.fetch = origFetch;
+    ok(!/Connecting you to/.test(sawTwiml || ''), 'no spoken preamble to the admin');
+    ok(/<Dial/.test(sawTwiml || '') && /record-from-answer-dual/.test(sawTwiml || ''),
+      'the call just dials — still recorded and transcribed');
+    ok(/api\/voice\/announce/.test(sawTwiml || ''), 'the callee still hears the recording notice');
+
+    db3.prepare('UPDATE companies SET twilio_from=NULL, forward_calls=0 WHERE id=?').run(co.id);
+    db3.prepare("UPDATE users SET phone=NULL WHERE email='admin@test.com'").run();
+  }
+
   console.log('— every outside service is the company\'s own to connect');
   {
     // The multi-company posture: phone, email, mail, and now Stripe are all pasted in
@@ -941,7 +993,7 @@ async function main() {
       voice_twiml_app_sid='AP' || substr(hex(randomblob(16)),1,32), record_calls=1, forward_calls=1 WHERE id=?`).run(co.id);
     let xml = await (await form('/api/voice/incoming', { To: '+15550009999', From: '+15558887777' })).text();
     ok(/<Client>admin-\d+<\/Client>/.test(xml), 'an inbound call rings the browser softphone');
-    ok(/<Number>\+1\d{10}<\/Number>/.test(xml), 'and rings a real handset in the same Dial');
+    ok(/<Number[^>]*>\+1\d{10}<\/Number>/.test(xml), 'and rings a real handset in the same Dial (screened)');
     ok(/record="record-from-answer-dual"/.test(xml), 'an answered inbound call is recorded on both channels');
     ok(/dir=in/.test(xml), 'the recording callback knows the call came in');
     ok(/vm-fallback/.test(xml), 'unanswered still rolls to voicemail');

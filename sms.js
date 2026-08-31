@@ -65,9 +65,9 @@ async function placeCall(to, adminPhone, company, { announce, record, baseUrl } 
   if (!mine) throw new Error('Your own phone number does not look valid');
   const c = creds(company);
   if (!c) throw new Error('Calling is not connected yet — add your Twilio details under Settings → Texting');
-  const who = String(announce || 'your contact').replace(/[<>&"]/g, ' ').slice(0, 60);
-  // When recording, both sides hear it said: the admin in the connect message, the
-  // callee through a whisper before the legs join.
+  // The admin answers and simply hears ringing, like any call they dialed themselves —
+  // no spoken preamble. The recording notice goes to the callee as a whisper, which is
+  // the side the consent laws care about.
   const recAttrs = record && baseUrl
     ? ` record="record-from-answer-dual" recordingStatusCallback="${baseUrl}/api/voice/recording?co=${company.id}&amp;kind=call"`
     : '';
@@ -75,7 +75,7 @@ async function placeCall(to, adminPhone, company, { announce, record, baseUrl } 
   // The action URL hears how the dial went, so even an unrecorded call gets its
   // outcome and duration in the log.
   const done = baseUrl ? ` action="${baseUrl}/api/voice/dial-done?co=${company.id}"` : '';
-  const twiml = `<Response><Say voice="alice">Connecting you to ${who}.${record ? ' This call may be recorded.' : ''} One moment.</Say>` +
+  const twiml = `<Response>` +
     `<Dial callerId="${c.from}" timeout="25"${recAttrs}${done}><Number${whisper}>${number}</Number></Dial></Response>`;
   const params = new URLSearchParams({ To: mine, From: c.from, Twiml: twiml });
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/Calls.json`, {
