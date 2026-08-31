@@ -292,11 +292,20 @@ app.post('/sms/incoming', twilioWebhook, (req, res) => {
     const contact = get(`SELECT * FROM contacts WHERE archived_at IS NULL AND phone IS NOT NULL
       AND ${digitsOf('phone')} = ? ORDER BY id LIMIT 1`, bare);
     if (contact) {
+      // File the reply under a house: the one we last texted them about — or, if
+      // this contact works exactly one property, that one, with no guesswork.
       const lastProp = get(`SELECT property_id FROM contact_messages
         WHERE contact_id=? AND property_id IS NOT NULL ORDER BY id DESC LIMIT 1`, contact.id);
+      let inProp = lastProp ? lastProp.property_id : null;
+      if (!inProp) {
+        const assigned = all(`SELECT pc.property_id FROM property_contacts pc
+          JOIN properties pr ON pr.id=pc.property_id
+          WHERE pc.contact_id=? AND pr.archived_at IS NULL LIMIT 2`, contact.id);
+        if (assigned.length === 1) inProp = assigned[0].property_id;
+      }
       run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
            VALUES (?,?,?,'in',?,?,'received')`,
-        contact.company_id, contact.id, lastProp ? lastProp.property_id : null, from, body);
+        contact.company_id, contact.id, inProp, from, body);
       // Tell the staff who can act on it.
       for (const u of all(`SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin')
           AND deleted_at IS NULL`, contact.company_id)) {
@@ -2231,13 +2240,28 @@ app.delete('/api/admin/properties/:pid/contacts/:cid', adminOnly, (req, res) => 
 app.get('/api/admin/contacts/:id/messages', adminOnly, (req, res) => {
   const c = get('SELECT * FROM contacts WHERE id=? AND company_id=?', req.params.id, req.companyId);
   if (!c) return res.status(404).json({ error: 'Contact not found' });
+  // A BOG can work several houses at once. ?property_id narrows the thread to one
+  // house's conversation — opened from a property, you see only that property's
+  // texts, and only those get marked read; the rest keep their unread badges.
+  const propId = req.query.property_id && ownedProperty(req, req.query.property_id)
+    ? Number(req.query.property_id) : null;
   const rows = all(`SELECT m.*, p.address AS property_address, u.name AS sent_by_name
     FROM contact_messages m
     LEFT JOIN properties p ON p.id=m.property_id
     LEFT JOIN users u ON u.id=m.sent_by
-    WHERE m.contact_id=? ORDER BY m.id`, c.id);
-  run("UPDATE contact_messages SET read_at=datetime('now') WHERE contact_id=? AND direction='in' AND read_at IS NULL", c.id);
-  res.json({ contact: contactRow(c), messages: rows, sms_enabled: sms.smsEnabled(myCompany(req)) });
+    WHERE m.contact_id=?${propId ? ' AND m.property_id=?' : ''} ORDER BY m.id`,
+    ...(propId ? [c.id, propId] : [c.id]));
+  if (propId) {
+    run(`UPDATE contact_messages SET read_at=datetime('now')
+      WHERE contact_id=? AND property_id=? AND direction='in' AND read_at IS NULL`, c.id, propId);
+  } else {
+    run("UPDATE contact_messages SET read_at=datetime('now') WHERE contact_id=? AND direction='in' AND read_at IS NULL", c.id);
+  }
+  const properties = all(`SELECT pr.id, pr.address FROM property_contacts pc
+    JOIN properties pr ON pr.id=pc.property_id
+    WHERE pc.contact_id=? AND pr.archived_at IS NULL ORDER BY pr.address`, c.id);
+  res.json({ contact: contactRow(c), messages: rows, properties,
+    property_id: propId, sms_enabled: sms.smsEnabled(myCompany(req)) });
 });
 
 app.post('/api/admin/contacts/:id/messages', adminOnly, async (req, res, next) => {
@@ -3520,7 +3544,7 @@ async function stripeReadAnyAccount(fn) {
 app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
   try {
     const props = all(`SELECT p.id, p.address, p.city, p.state, p.zip FROM properties p
-      WHERE p.company_id=? ORDER BY p.address`, req.companyId);
+      WHERE p.company_id=? AND p.archived_at IS NULL ORDER BY p.address`, req.companyId);
     const out = [];
     let totalUnread = 0;
     for (const p of props) {
@@ -3565,9 +3589,12 @@ app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
         last_payment: lastPay || null,
       });
     }
-    // Vendors who work on this portfolio, with their property, for the BOG side.
+    // Vendors who work on this portfolio, with their assigned houses, for the BOG side.
     const vendors = all(`SELECT c.id, c.name, c.phone, c.role,
-        (SELECT COUNT(*) FROM contact_messages cm WHERE cm.contact_id=c.id AND cm.direction='in' AND cm.read_at IS NULL) unread
+        (SELECT COUNT(*) FROM contact_messages cm WHERE cm.contact_id=c.id AND cm.direction='in' AND cm.read_at IS NULL) unread,
+        (SELECT GROUP_CONCAT(pr.address, ' · ') FROM property_contacts pc
+          JOIN properties pr ON pr.id=pc.property_id
+          WHERE pc.contact_id=c.id AND pr.archived_at IS NULL) properties
       FROM contacts c WHERE c.company_id=? AND c.archived_at IS NULL AND c.phone IS NOT NULL
       ORDER BY unread DESC, c.name`, req.companyId);
     // The money feed: latest payments across every property.

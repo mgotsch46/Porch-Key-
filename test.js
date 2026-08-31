@@ -760,6 +760,57 @@ async function main() {
     ok(again.json.contact_id === r.json.contact_id, 'and asking twice reuses the same card');
   }
 
+  console.log('— a BOG on several houses keeps a separate conversation for each');
+  {
+    const db2 = require('./db.js');
+    // Two houses, one BOG assigned to both.
+    let r1 = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({
+      address: '10 Split St', city: 'Flint', state: 'MI', zip: '48503' }) });
+    let r2 = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({
+      address: '20 Split St', city: 'Flint', state: 'MI', zip: '48503' }) });
+    const pA = r1.json.id, pB = r2.json.id;
+    r = await req('/api/admin/contacts', { method: 'POST', body: JSON.stringify({
+      name: 'Bob Boots', role: 'bog', phone: '555-777-8899' }) });
+    const bobId = r.json.id;
+    for (const pid of [pA, pB]) {
+      await req(`/api/admin/properties/${pid}/contacts`, { method: 'POST', body: JSON.stringify({ contact_id: bobId }) });
+    }
+    // A conversation on each house, one unread reply apiece.
+    const co = db2.get('SELECT company_id FROM properties WHERE id=?', pA).company_id;
+    for (const [pid, msg] of [[pA, 'checking 10 Split'], [pB, 'checking 20 Split']]) {
+      db2.run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
+        VALUES (?,?,?,'out',?,?,'sent')`, co, bobId, pid, '+15557778899', msg);
+      db2.run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
+        VALUES (?,?,?,'in',?,?,'received')`, co, bobId, pid, '+15557778899', 'reply about ' + pid);
+    }
+    // Scoped to one house: only that house's texts, and the contact's houses ride along.
+    r = await req(`/api/admin/contacts/${bobId}/messages?property_id=${pA}`);
+    ok(r.status === 200 && r.json.messages.length === 2
+      && r.json.messages.every(m => m.property_id === pA), 'the property filter isolates one house\'s texts');
+    ok(Array.isArray(r.json.properties) && r.json.properties.length === 2, 'and lists the houses this BOG works');
+    // Reading house A's thread must not eat house B's unread badge.
+    const unreadB = db2.get(`SELECT COUNT(*) c FROM contact_messages
+      WHERE contact_id=? AND property_id=? AND direction='in' AND read_at IS NULL`, bobId, pB).c;
+    ok(unreadB === 1, 'reading one house\'s thread leaves the other house unread');
+    // Unscoped: the whole history, tagged by house.
+    r = await req(`/api/admin/contacts/${bobId}/messages`);
+    ok(r.json.messages.length === 4, 'without the filter the whole history is there');
+    // The staff overview lists the BOG under both houses, with the houses on the row.
+    r = await req('/api/admin/staff/overview');
+    for (const pid of [pA, pB]) {
+      const home = r.json.properties.find(x => x.id === pid);
+      ok(home && home.people.some(x => x.contact_id === bobId), `the BOG is listed under house ${pid}`);
+    }
+    const bobRow = r.json.vendors.find(v => v.id === bobId);
+    ok(bobRow && /10 Split St/.test(bobRow.properties || '') && /20 Split St/.test(bobRow.properties || ''),
+      'the BOG tab shows which houses this contact works');
+    // Archived houses stay off the phone app entirely.
+    r = await req(`/api/admin/properties/${pB}/archive`, { method: 'POST', body: '{}' });
+    ok(r.status === 200, 'a house can be archived');
+    r = await req('/api/admin/staff/overview');
+    ok(!r.json.properties.some(x => x.id === pB), 'and an archived house leaves the staff overview');
+  }
+
   console.log('— inbound calls announce themselves and can be dismissed everywhere at once');
   {
     plantAuthToken();

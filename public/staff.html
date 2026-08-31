@@ -21,7 +21,7 @@ body{font-family:'Space Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',Rob
   /* The app draws edge-to-edge on iPhone; the notch and status bar live inside the
      safe-area insets, so content starts below them and the nav clears the home bar. */
   padding-top:env(safe-area-inset-top);
-  padding-bottom:calc(78px + env(safe-area-inset-bottom))}
+  padding-bottom:calc(96px + env(safe-area-inset-bottom))}
 h1{font-size:22px;font-weight:700;padding:18px 18px 10px;letter-spacing:-.2px}
 h2{font-size:15px;margin-bottom:10px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;margin:0 14px 14px;
@@ -44,9 +44,21 @@ input,textarea{font-family:inherit;font-size:16px;width:100%;border:1.5px solid 
 .nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:#fff;border-top:1px solid var(--line);
   padding-bottom:env(safe-area-inset-bottom);z-index:5}
 .nav button{flex:1;background:none;border-radius:0;padding:10px 0 8px;font-size:12px;color:var(--mut);position:relative}
-.nav button .ico{display:block;font-size:27px;margin-bottom:2px}
+.nav button .ico{display:block;font-size:31px;margin-bottom:2px}
 .nav button.active{color:var(--brand);font-weight:700}
 .nav .nbadge{position:absolute;top:5px;right:50%;margin-right:-26px}
+/* the property grid: two square tiles across, everything at a glance */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 14px 14px}
+.sq{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:13px;
+  aspect-ratio:1;display:flex;flex-direction:column;gap:3px;position:relative;overflow:hidden;
+  box-shadow:0 1px 3px rgba(22,34,13,.04);cursor:pointer}
+.sq b{font-size:14px;line-height:1.25;padding-right:20px}
+.sq .note{font-size:12px;line-height:1.35}
+.sq .badge{position:absolute;top:10px;right:10px}
+.sq .foot{margin-top:auto}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.chips button{font-size:12.5px;padding:6px 12px;border-radius:999px;background:#fff;border:1px solid var(--line)}
+.chips button.active{background:var(--ink);color:#fff;border-color:var(--ink)}
 /* rows */
 .row{display:flex;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);font-size:14.5px;align-items:center}
 .row:last-child{border-bottom:0}
@@ -141,12 +153,14 @@ audio{width:100%;height:30px;margin-top:6px}
     <div class="signout"><a onclick="logout()">Sign out</a></div>
   </section>
   <section id="tab-vendor" class="hidden">
-    <button class="back" onclick="go('bog')">← Contacts</button>
+    <button class="back" id="v-back" onclick="vendorBack()">← Contacts</button>
     <h1 id="v-title"></h1>
+    <div style="padding:0 16px 8px" class="note hidden" id="v-sub"></div>
     <div style="display:flex;gap:8px;padding:0 12px 12px">
       <button class="primary" onclick="callVendor()">📞 Call</button>
     </div>
     <div class="card">
+      <div id="v-chips" class="chips hidden"></div>
       <div id="v-thread" class="thread"><p class="note">Loading…</p></div>
       <div class="composer">
         <textarea id="v-input" rows="1" placeholder="Text this contact…" oninput="growBox(this)"></textarea>
@@ -187,10 +201,10 @@ audio{width:100%;height:30px;margin-top:6px}
 
   <!-- nav -->
   <nav class="nav">
-    <button id="nb-home" class="active" onclick="go('home')"><span class="ico">🏠</span>Homes<span id="b-home" class="badge nbadge hidden"></span></button>
-    <button id="nb-bog" onclick="go('bog')"><span class="ico">👷</span>BOG<span id="b-bog" class="badge nbadge hidden"></span></button>
-    <button id="nb-dial" onclick="go('dial')"><span class="ico">🔢</span>Dial</button>
-    <button id="nb-money" onclick="go('money')"><span class="ico">💵</span>Money<span id="b-money" class="badge nbadge hidden"></span></button>
+    <button id="nb-home" class="active" onclick="go('home')"><span class="ico">🏘️</span>Homes<span id="b-home" class="badge nbadge hidden"></span></button>
+    <button id="nb-bog" onclick="go('bog')"><span class="ico">🥾</span>BOG<span id="b-bog" class="badge nbadge hidden"></span></button>
+    <button id="nb-dial" onclick="go('dial')"><span class="ico">☎️</span>Dial</button>
+    <button id="nb-money" onclick="go('money')"><span class="ico">🪙</span>Money<span id="b-money" class="badge nbadge hidden"></span></button>
   </nav>
 </div>
 
@@ -255,21 +269,20 @@ async function refresh(){
   setBadge('b-money',OV.payments.filter(p=>p.entry_date===today).length);
   try{ navigator.setAppBadge && (OV.total_unread?navigator.setAppBadge(OV.total_unread):navigator.clearAppBadge()); }catch{}
 
-  // home list
-  $('home-list').innerHTML=OV.properties.map(p=>`
-    <div class="card click" onclick="openProp(${p.id})">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <b>${esc(p.address)}</b>
-        ${p.unread?`<span class="badge">${p.unread}</span>`:''}
-      </div>
+  // home list: two square tiles across
+  $('home-list').innerHTML=!OV.properties.length?'<div class="card"><p class="note">No properties.</p></div>'
+    :'<div class="grid2">'+OV.properties.map(p=>`
+    <div class="sq" onclick="openProp(${p.id})">
+      ${p.unread?`<span class="badge">${p.unread}</span>`:''}
+      <b>${esc(p.address)}</b>
       <div class="note">${esc([p.city,p.state].filter(Boolean).join(', '))}${p.zip?' '+esc(p.zip):''}</div>
-      <div class="row" style="border:0;padding:6px 0 0">
-        <span class="note">${p.buyer?esc(p.buyer.name):'no buyer'}</span>
-        <span>${p.past_due?`<span class="pill due">${fmt(p.owed_now_cents)} past due</span>`
-          :p.loan_id?'<span class="pill ok">current</span>':''}</span>
+      <div class="note">${p.buyer?esc(p.buyer.name):'no buyer'}</div>
+      <div class="foot">
+        ${p.past_due?`<span class="pill due">${fmt(p.owed_now_cents)} past due</span>`
+          :p.loan_id?'<span class="pill ok">current</span>':''}
+        ${p.last_payment?`<div class="note" style="margin-top:4px">${fmt(p.last_payment.amount_cents)} on ${esc(p.last_payment.entry_date)}</div>`:''}
       </div>
-      ${p.last_payment?`<div class="note">Last payment ${fmt(p.last_payment.amount_cents)} on ${esc(p.last_payment.entry_date)}</div>`:''}
-    </div>`).join('')||'<div class="card"><p class="note">No properties.</p></div>';
+    </div>`).join('')+'</div>';
 
   // bog list
   $('bog-list').innerHTML=OV.vendors.map(v=>`
@@ -278,6 +291,7 @@ async function refresh(){
         <b>${esc(v.name)}</b>${v.unread?`<span class="badge">${v.unread}</span>`:''}
       </div>
       <div class="note">${esc(v.role||'')} · ${esc(v.phone||'')}</div>
+      ${v.properties?`<div class="note" style="margin-top:3px">🏠 ${esc(v.properties)}</div>`:''}
     </div>`).join('')||'<div class="card"><p class="note">No contacts with phones yet.</p></div>';
 
   // money list
@@ -329,7 +343,7 @@ async function textPerson(i){
     catch(e){ toast(e.message); return; }
   }
   if(!cid){ toast('No contact card for this person yet.'); return; }
-  openVendor(cid, x.name, x.phone||'');
+  openVendor(cid, x.name, x.phone||'', CUR.id, CUR.address, true);
 }
 function modeNote(){
   $('p-mode-note').textContent = composeMode==='sms'
@@ -390,17 +404,45 @@ async function sendToBuyer(){
 function callBuyer(){ if(CUR&&CUR.buyer&&CUR.buyer.phone) bridgeCall(CUR.buyer.phone, CUR.buyer.name); }
 
 // ---------- vendors (BOG) ----------
-async function openVendor(id,name,phone){
-  CURV={id,name,phone};
+// A BOG can work several houses at once, so each house keeps its own conversation.
+// Opened from a property, the thread shows only that house (and outbound texts file
+// under it); opened from the BOG tab, the chips switch between houses or show all.
+async function openVendor(id,name,phone,propId,propAddr,fromProp){
+  CURV={id,name,phone,property_id:propId||null,property_address:propAddr||'',from_prop:!!fromProp};
   go('vendor');
   $('v-title').textContent=name;
+  $('v-back').textContent=CURV.from_prop?'← '+(CUR?CUR.address:'Property'):'← Contacts';
+  const sub=$('v-sub');
+  sub.classList.toggle('hidden',!propAddr);
+  sub.textContent=propAddr?'Conversation for '+propAddr:'';
+  loadVendorThread();
+}
+function vendorBack(){ if(CURV&&CURV.from_prop&&CUR) openProp(CUR.id); else go('bog'); }
+function vendorChip(pid,addr){
+  if(CURV){ CURV.property_id=pid||null; CURV.property_address=addr||''; }
+  const sub=$('v-sub');
+  sub.classList.toggle('hidden',!addr);
+  sub.textContent=addr?'Conversation for '+addr:'';
+  loadVendorThread();
+}
+async function loadVendorThread(){
   const el=$('v-thread');
   try{
-    const d=await api(`/api/admin/contacts/${id}/messages`);
+    const q=CURV.property_id?`?property_id=${CURV.property_id}`:'';
+    const d=await api(`/api/admin/contacts/${CURV.id}/messages${q}`);
+    // House chips — only when this contact works more than one house.
+    const chips=$('v-chips');
+    const props=d.properties||[];
+    if(props.length>1){
+      chips.classList.remove('hidden');
+      chips.innerHTML=`<button class="${CURV.property_id?'':'active'}" onclick="vendorChip(null,'')">All houses</button>`
+        +props.map(p=>`<button class="${CURV.property_id===p.id?'active':''}"
+          onclick="vendorChip(${p.id},'${esc(p.address)}')">${esc(p.address)}</button>`).join('');
+    } else chips.classList.add('hidden');
     el.innerHTML=d.messages.map(m=>`
       <div class="msg ${m.direction==='out'?'me':'them'}">${esc(m.body)}
-        <div class="t">${m.direction==='out'?(m.sent_by_name?esc(m.sent_by_name):'You'):esc(name)} · ${when(m.created_at)}${m.property_address?' · '+esc(m.property_address):''}</div></div>`
-    ).join('')||'<p class="note">No texts yet.</p>';
+        <div class="t">${m.direction==='out'?(m.sent_by_name?esc(m.sent_by_name):'You'):esc(CURV.name)} · ${when(m.created_at)}${!CURV.property_id&&m.property_address?' · '+esc(m.property_address):''}</div></div>`
+    ).join('')||`<p class="note">${CURV.property_id?'No texts about this house yet.':'No texts yet.'}</p>`;
     el.scrollTop=el.scrollHeight;
     refresh();
   }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; }
@@ -408,8 +450,9 @@ async function openVendor(id,name,phone){
 async function sendToVendor(){
   const t=$('v-input'); const body=t.value.trim(); if(!body||!CURV) return;
   try{
-    await api(`/api/admin/contacts/${CURV.id}/messages`,{method:'POST',body:JSON.stringify({body})});
-    t.value=''; growBox(t); openVendor(CURV.id,CURV.name,CURV.phone); toast('Text sent.');
+    await api(`/api/admin/contacts/${CURV.id}/messages`,{method:'POST',
+      body:JSON.stringify({body,property_id:CURV.property_id||undefined})});
+    t.value=''; growBox(t); loadVendorThread(); toast('Text sent.');
   }catch(e){ toast(e.message); }
 }
 function callVendor(){ if(CURV&&CURV.phone) bridgeCall(CURV.phone, CURV.name); }
