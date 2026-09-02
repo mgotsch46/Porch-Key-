@@ -171,9 +171,20 @@ audio{width:100%;height:30px;margin-top:6px}
     <div class="signout"><a onclick="logout()">Sign out</a></div>
   </section>
 
-  <!-- DIALER -->
+  <!-- COMMS -->
+  <section id="tab-comms" class="hidden">
+    <h1>Comms <button class="small" style="float:right;font-size:15px" onclick="toggleKeypad()">☎️ Keypad</button></h1>
+    <div class="card">
+      <p class="note" style="margin-bottom:10px">Everything across every house, newest first — calls, voicemail and
+        texts, including anything from a number nobody recognises. Each house still has its own thread.</p>
+      <div id="comms-list"><p class="note">Loading…</p></div>
+    </div>
+    <div class="signout"><a onclick="logout()">Sign out</a></div>
+  </section>
+
+  <!-- DIALER (overlay, opened from the Comms header) -->
   <section id="tab-dial" class="hidden">
-    <h1>Dialer</h1>
+    <h1>Dialer <button class="small" style="float:right;font-size:15px" onclick="go('comms')">✕ Close</button></h1>
     <div class="card" style="text-align:center">
       <input id="d-num" inputmode="tel" placeholder="(555) 555-5555" style="text-align:center;font-size:22px;letter-spacing:1px" oninput="dialFmt()">
       <div class="pad">
@@ -204,7 +215,7 @@ audio{width:100%;height:30px;margin-top:6px}
   <nav class="nav">
     <button id="nb-home" class="active" onclick="go('home')"><span class="ico">🏘️</span>Homes<span id="b-home" class="badge nbadge hidden"></span></button>
     <button id="nb-bog" onclick="go('bog')"><span class="ico">🥾</span>BOG<span id="b-bog" class="badge nbadge hidden"></span></button>
-    <button id="nb-dial" onclick="go('dial')"><span class="ico">☎️</span>Dial</button>
+    <button id="nb-comms" onclick="go('comms')"><span class="ico">📡</span>Comms<span id="b-comms" class="badge nbadge hidden"></span></button>
     <button id="nb-money" onclick="go('money')"><span class="ico">🪙</span>Money<span id="b-money" class="badge nbadge hidden"></span></button>
   </nav>
 </div>
@@ -251,12 +262,74 @@ async function logout(){ await api('/api/logout',{method:'POST'}); location.relo
 
 function go(t){
   tab=t;
-  for(const k of ['home','prop','bog','vendor','dial','money']){
+  for(const k of ['home','prop','bog','vendor','dial','comms','money']){
     const el=$('tab-'+k); if(el) el.classList.toggle('hidden',k!==t);
     const nb=$('nb-'+k); if(nb) nb.classList.toggle('active',k===t);
   }
+  // The keypad lives inside Comms, so keep that nav button lit while it is open.
+  if(t==='dial'){ const nb=$('nb-comms'); if(nb) nb.classList.add('active'); }
   if(t==='home'||t==='bog'||t==='money') refresh();
+  if(t==='comms') loadComms();
   window.scrollTo(0,0);
+}
+function toggleKeypad(){ go(tab==='dial'?'comms':'dial'); }
+
+// ---------- comms inbox ----------
+// The same events the property threads show, but across every house at once, so a
+// call from a number that matched nothing is still somewhere a person can find it.
+async function loadComms(){
+  const el=$('comms-list'); if(!el) return;
+  let d; try{ d=await api('/api/admin/comms'); }
+  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  setBadge('b-comms', d.unread_total);
+  if(!d.events.length){ el.innerHTML='<p class="note">Nothing yet.</p>'; return; }
+  const ICON={call:'📞',voicemail:'📼',text:'💬',message:'📩'};
+  el.innerHTML=d.events.map(ev=>{
+    const dur=ev.duration_sec?` · ${Math.floor(ev.duration_sec/60)}:${String(ev.duration_sec%60).padStart(2,'0')}`:'';
+    const key=(ev.call_id?'c'+ev.call_id:'m'+ev.message_id);
+    const where=ev.address?esc(ev.address)
+      :`<span class="pill amber">no house yet</span> <button class="small" onclick="event.stopPropagation();toggleAttach('${key}')">Attach…</button>`;
+    const open=ev.property_id?` onclick="openProp(${ev.property_id})" style="cursor:pointer"`:'';
+    // The form sits inline rather than in a dialog: one tap, no overlay, and it works
+    // standing in a driveway on a small screen.
+    const form=ev.address?'':`<div id="ac-${key}" class="hidden" style="margin-top:8px;padding:8px;background:var(--bg);border-radius:8px">
+      <select id="acp-${key}" style="width:100%;padding:9px;font-size:16px;margin-bottom:6px">
+        ${(OV&&OV.properties||[]).map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('')}
+      </select>
+      <input id="acn-${key}" placeholder="Who is this? (optional)" style="width:100%;padding:9px;font-size:16px;margin-bottom:6px">
+      <button class="primary" style="width:100%" onclick="event.stopPropagation();attachComm('${key}',${ev.message_id||'null'},${ev.call_id||'null'})">File it</button>
+    </div>`;
+    return `<div${open} style="padding:9px 0;border-bottom:1px solid var(--line)">
+      <div style="display:flex;justify-content:space-between;gap:8px">
+        <b>${ICON[ev.channel]||''} ${esc(ev.who||'unknown')}</b>
+        <span class="note" style="white-space:nowrap">${when(ev.ts)}</span>
+      </div>
+      <div class="note">${ev.direction==='in'?'Incoming':'Outgoing'}${dur} · ${where}</div>
+      ${ev.body?`<div style="font-size:13.5px;margin-top:3px;white-space:pre-wrap">${esc(String(ev.body).slice(0,220))}</div>`:''}
+      ${ev.transcript?`<div class="note" style="margin-top:3px">“${esc(String(ev.transcript).slice(0,160))}”</div>`:''}
+      ${ev.recording_id?`<audio controls preload="none" style="width:100%;height:30px;margin-top:5px" src="/api/admin/recordings/${ev.recording_id}/audio"></audio>`:''}
+      ${form}
+    </div>`;
+  }).join('');
+  // The unmatched bucket has no thread of its own, so opening the inbox clears it.
+  try{ await api('/api/admin/comms/seen',{method:'POST',body:JSON.stringify({property_id:0})}); }catch{}
+  refresh();
+}
+// File a stray call or text against a house, from the phone. The house list is the
+// one already loaded for the Homes tab, so there is nothing extra to fetch.
+function toggleAttach(key){ const el=$('ac-'+key); if(el) el.classList.toggle('hidden'); }
+async function attachComm(key, messageId, callId){
+  const sel=$('acp-'+key); if(!sel||!sel.value){ toast('No house to file it against.'); return; }
+  const name=($('acn-'+key)||{}).value||'';
+  const body={ property_id:Number(sel.value) };
+  if(messageId) body.message_id=messageId;
+  if(callId) body.call_id=callId;
+  if(name.trim()) body.new_contact_name=name.trim();
+  try{
+    await api('/api/admin/comms/attach',{method:'POST',body:JSON.stringify(body)});
+    toast(name.trim()?'Filed — contact created.':'Filed.');
+    loadComms();
+  }catch(e){ toast(e.message); }
 }
 
 // ---------- overview: home, badges, money, bog ----------
@@ -266,6 +339,7 @@ async function refresh(){
   const homeUnread=OV.properties.reduce((t,p)=>t+p.unread_buyer,0);
   const bogUnread=OV.vendors.reduce((t,v)=>t+v.unread,0);
   setBadge('b-home',homeUnread); setBadge('b-bog',bogUnread);
+  setBadge('b-comms',OV.unread_comms_total||0);
   const today=new Date().toISOString().slice(0,10);
   setBadge('b-money',OV.payments.filter(p=>p.entry_date===today).length);
   try{ navigator.setAppBadge && (OV.total_unread?navigator.setAppBadge(OV.total_unread):navigator.clearAppBadge()); }catch{}
@@ -377,6 +451,8 @@ async function loadPropThread(){
       <div class="t">${mine?'You':esc(ev.who||'')} · ${when(ev.ts)} · ${CH[ev.channel]||esc(ev.channel)}</div></div>`;
   }).join('')||'<p class="note">No history yet — say hello.</p>';
   el.scrollTop=el.scrollHeight;
+  // Reading the thread is what clears this house's badge — for this person only.
+  try{ await api('/api/admin/comms/seen',{method:'POST',body:JSON.stringify({property_id:CUR.id})}); }catch{}
   refresh();
 }
 async function loadPropPays(){

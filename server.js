@@ -342,13 +342,38 @@ app.post('/sms/incoming', twilioWebhook, (req, res) => {
     }
   }
 
-  // Otherwise it is a stranger or an invitation reply. Point them at the app.
+  // Otherwise it is a stranger or an invitation reply. Point them at the app — but
+  // keep the words. A text that matches nobody used to be answered and thrown away,
+  // so a buyer writing from a spouse's phone, or a prospect texting the number off a
+  // sign, vanished without trace. It is filed against the company with no contact and
+  // no property; the inbox shows it and offers to attach it to either.
   let companyName = null;
+  let company = null;
   if (bare) {
-    const u = get(`SELECT c.name, c.mgmt_company_name FROM users u JOIN companies c ON c.id=u.company_id
+    const u = get(`SELECT c.id, c.name, c.mgmt_company_name FROM users u JOIN companies c ON c.id=u.company_id
       WHERE u.phone IS NOT NULL AND u.deleted_at IS NULL
         AND ${digitsOf('u.phone')} = ? LIMIT 1`, bare);
-    if (u) companyName = u.mgmt_company_name || u.name;
+    if (u) { companyName = u.mgmt_company_name || u.name; company = u.id; }
+  }
+  // Which company owns an unknown number is not knowable from the sender, so file it
+  // under whoever owns the number it was sent TO.
+  if (!company) {
+    const toNum = sms.normalizePhone(req.body && req.body.To);
+    const owner = toNum ? get('SELECT id FROM companies WHERE twilio_from=?', toNum) : null;
+    if (owner) company = owner.id;
+  }
+  if (company && bare && body) {
+    run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
+         VALUES (?, NULL, NULL, 'in', ?, ?, 'received')`, company, from, body);
+    for (const u of all(`SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin')
+        AND deleted_at IS NULL`, company)) {
+      notify.notify(u.id, {
+        kind: 'message',
+        title: `💬 Text from ${from}`,
+        body: body.slice(0, 140),
+        url: '/admin#comms',
+      }).catch(() => {});
+    }
   }
   res.type('text/xml').send(sms.autoReplyTwiml(companyName));
 });
@@ -1243,6 +1268,9 @@ app.get('/api/admin/summary', adminOnly, (req, res) => {
       AND due_date = date('now')`, req.companyId).c,
     unread_vendor_texts: get(`SELECT COUNT(*) c FROM contact_messages
       WHERE company_id=? AND direction='in' AND read_at IS NULL`, req.companyId).c,
+    // Everything inbound this person has not looked at yet, across every house.
+    unread_comms: Object.values(commsUnreadByProperty(req.companyId, req.user.id))
+      .reduce((a, b) => a + b, 0),
   });
 });
 
@@ -3547,6 +3575,9 @@ app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
       WHERE p.company_id=? AND p.archived_at IS NULL ORDER BY p.address`, req.companyId);
     const out = [];
     let totalUnread = 0;
+    // Calls and voicemails have no read flag of their own — "new" is anything that
+    // landed since this person last opened the house. Same measure the inbox uses.
+    const commsUnread = commsUnreadByProperty(req.companyId, req.user.id);
     for (const p of props) {
       const loan = get(`SELECT l.id, l.tenant_user_id, l.payment_cents, l.escrow_cents FROM loans l
         WHERE l.property_id=? AND l.status='active' ORDER BY l.id DESC LIMIT 1`, p.id);
@@ -3584,7 +3615,9 @@ app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
         loan_id: loan ? loan.id : null,
         buyer: buyer ? { id: buyer.id, name: buyer.name, phone: buyer.phone, email: buyer.email } : null,
         people,
-        unread: unreadBuyer + unreadVendor, unread_buyer: unreadBuyer, unread_vendor: unreadVendor,
+        unread: unreadBuyer + unreadVendor + (commsUnread[p.id] || 0),
+        unread_buyer: unreadBuyer, unread_vendor: unreadVendor,
+        unread_comms: commsUnread[p.id] || 0,
         owed_now_cents: owed, past_due: pastDue,
         last_payment: lastPay || null,
       });
@@ -3604,7 +3637,11 @@ app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
       LEFT JOIN properties p ON p.id=lo.property_id
       LEFT JOIN users u ON u.id=lo.tenant_user_id
       WHERE lo.company_id=? AND l.type='payment' ORDER BY l.id DESC LIMIT 30`, req.companyId);
-    res.json({ properties: out, vendors, payments, total_unread: totalUnread });
+    // The Comms tab counts everything inbound this person has not seen, including the
+    // unmatched bucket (property 0), which belongs to no house and so to no tile.
+    const commsTotal = Object.values(commsUnread).reduce((a, b) => a + b, 0);
+    res.json({ properties: out, vendors, payments,
+      total_unread: totalUnread + commsTotal, unread_comms_total: commsTotal });
   } catch (e) { next(e); }
 });
 
@@ -3835,6 +3872,210 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
       : ev.channel === want) : events;   // 'notice' and 'payment' filter by their own names
     res.json({ property_id: prop.id, address: prop.address, events: filtered.slice(0, limit) });
   } catch (e) { next(e); }
+});
+
+// ---------- the communications inbox ----------
+// One place for everything that came in or went out, across every house — because
+// call history filed only under a property is unreachable when the caller matches no
+// property, and voicemail buried in Settings is not somewhere anyone looks daily.
+// Per-property threads stay exactly where they were; this sits above them.
+//
+// Grouped by house, newest first, with a bucket (property_id 0) for inbound that
+// matched nobody. Unread is per staff member, measured against comms_seen.
+function commsUnreadByProperty(companyId, userId) {
+  const seen = {};
+  for (const s of all('SELECT property_id, last_seen_at FROM comms_seen WHERE user_id=?', userId)) {
+    seen[s.property_id] = s.last_seen_at;
+  }
+  const counts = {};
+  const bump = (pid, n) => { if (n) counts[pid] = (counts[pid] || 0) + n; };
+  // Timestamps on messages come from SQLite's datetime('now'), which truncates to the
+  // second: a text stamped 10:00:05 actually arrived somewhere in that whole second.
+  // The seen mark is written with milliseconds, so compare against the END of the
+  // item's second. A text that landed at 10:00:05.9 is still counted after an inbox
+  // opened at 10:00:05.1 — nothing is lost to a sub-second race — and everything
+  // clears the moment the inbox is opened in any later second.
+  const ms = (s) => { const t = Date.parse(String(s || '').replace(' ', 'T') + 'Z'); return Number.isNaN(t) ? 0 : t; };
+  const since = (pid) => (pid in seen ? ms(seen[pid]) : 0);
+  const isNew = (ts, pid) => ms(ts) + 1000 > since(pid);
+
+  // Inbound calls, by the property they were matched to (0 when they matched none).
+  for (const r of all(`SELECT COALESCE(cl.property_id, l.property_id, 0) AS pid, cl.created_at
+      FROM call_log cl LEFT JOIN loans l ON l.id=cl.loan_id
+      WHERE cl.company_id=? AND cl.direction='in'`, companyId)) {
+    if (isNew(r.created_at, r.pid)) bump(r.pid, 1);
+  }
+  // Inbound texts: vendor threads, unmatched strangers, and buyer texts on a loan.
+  for (const r of all(`SELECT COALESCE(property_id, 0) AS pid, created_at FROM contact_messages
+      WHERE company_id=? AND direction='in'`, companyId)) {
+    if (isNew(r.created_at, r.pid)) bump(r.pid, 1);
+  }
+  for (const r of all(`SELECT l.property_id AS pid, m.created_at FROM messages m
+      JOIN loans l ON l.id=m.loan_id JOIN users u ON u.id=m.sender_user_id
+      WHERE l.company_id=? AND u.role='tenant'`, companyId)) {
+    if (isNew(r.created_at, r.pid)) bump(r.pid, 1);
+  }
+  return counts;
+}
+
+app.get('/api/admin/comms', adminOnly, (req, res, next) => {
+  try {
+    const limit = Math.min(300, Number(req.query.limit) || 100);
+    const events = [];
+    const push = (e) => events.push(e);
+
+    for (const c of all(`SELECT cl.*, p.address, r.id AS recording_id, r.transcript_status
+        FROM call_log cl
+        LEFT JOIN loans l ON l.id=cl.loan_id
+        LEFT JOIN properties p ON p.id = COALESCE(cl.property_id, l.property_id)
+        LEFT JOIN call_recordings r ON r.call_sid=cl.call_sid AND r.kind='call'
+        WHERE cl.company_id=? ORDER BY cl.id DESC LIMIT ?`, req.companyId, limit)) {
+      push({ ts: c.created_at, channel: 'call', direction: c.direction,
+        who: c.counterpart_name || c.counterpart_phone || 'unknown', phone: c.counterpart_phone,
+        property_id: c.property_id || null, address: c.address || null,
+        call_id: c.id, contact_id: c.contact_id || null,
+        unmatched: !c.property_id && !c.address && !c.contact_id && c.direction === 'in',
+        summary: (c.direction === 'in' ? 'Incoming call' : 'Outgoing call') +
+          (c.status === 'voicemail' ? ' — went to voicemail' : c.status === 'missed' ? ' — not answered' : ''),
+        duration_sec: c.duration_sec, status: c.status,
+        recording_id: c.recording_id || null, transcript_status: c.transcript_status || null });
+    }
+    for (const v of all(`SELECT v.*, l.property_id AS pid, p.address FROM call_recordings v
+        LEFT JOIN loans l ON l.id=v.loan_id LEFT JOIN properties p ON p.id=l.property_id
+        WHERE v.company_id=? AND v.kind='voicemail' ORDER BY v.id DESC LIMIT ?`, req.companyId, limit)) {
+      push({ ts: v.created_at, channel: 'voicemail', direction: 'in',
+        who: v.from_number || 'unknown', phone: v.from_number,
+        property_id: v.pid || null, address: v.address || null,
+        summary: 'Voicemail' + (v.duration_sec ? ` — ${v.duration_sec}s` : ''),
+        recording_id: v.id, transcript_status: v.transcript_status || null, transcript: v.transcript || null });
+    }
+    // Vendor and unmatched texts. contact_id NULL and property_id NULL means nobody
+    // claimed it yet — those are the ones that used to be thrown away.
+    for (const t of all(`SELECT cm.*, c.name AS contact_name, p.address FROM contact_messages cm
+        LEFT JOIN contacts c ON c.id=cm.contact_id
+        LEFT JOIN properties p ON p.id=cm.property_id
+        WHERE cm.company_id=? ORDER BY cm.id DESC LIMIT ?`, req.companyId, limit)) {
+      push({ ts: t.created_at, channel: 'text', direction: t.direction,
+        who: t.contact_name || t.phone, phone: t.phone,
+        property_id: t.property_id || null, address: t.address || null,
+        contact_id: t.contact_id || null, message_id: t.id,
+        unmatched: !t.contact_id && !t.property_id,
+        body: String(t.body || '').slice(0, 500), status: t.status });
+    }
+    for (const m of all(`SELECT m.*, u.name AS sender_name, u.role AS sender_role, l.property_id, p.address
+        FROM messages m JOIN loans l ON l.id=m.loan_id JOIN users u ON u.id=m.sender_user_id
+        LEFT JOIN properties p ON p.id=l.property_id
+        WHERE l.company_id=? ORDER BY m.id DESC LIMIT ?`, req.companyId, limit)) {
+      const chans = String(m.channels || 'app');
+      push({ ts: m.created_at, channel: chans.includes('sms') ? 'text' : 'message',
+        direction: m.sender_role === 'tenant' ? 'in' : 'out',
+        who: m.sender_name, property_id: m.property_id || null, address: m.address || null,
+        summary: m.subject || null, body: String(m.body || '').slice(0, 500), channels: chans });
+    }
+
+    events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+    const want = String(req.query.channel || '');
+    const filtered = want ? events.filter(ev =>
+      want === 'call' ? (ev.channel === 'call' || ev.channel === 'voicemail')
+      : want === 'text' ? (ev.channel === 'text' || ev.channel === 'message')
+      : ev.channel === want) : events;
+
+    const unread = commsUnreadByProperty(req.companyId, req.user.id);
+    res.json({
+      events: filtered.slice(0, limit),
+      unread_by_property: unread,
+      unread_total: Object.values(unread).reduce((a, b) => a + b, 0),
+    });
+  } catch (e) { next(e); }
+});
+// Opening a thread marks it seen for this person only.
+app.post('/api/admin/comms/seen', adminOnly, (req, res) => {
+  const pid = Number(req.body && req.body.property_id) || 0;
+  // Millisecond precision on purpose — see commsUnreadByProperty.
+  const nowMs = `strftime('%Y-%m-%d %H:%M:%f','now')`;
+  run(`INSERT INTO comms_seen (user_id, property_id, last_seen_at) VALUES (?,?,${nowMs})
+       ON CONFLICT(user_id, property_id) DO UPDATE SET last_seen_at=${nowMs}`, req.user.id, pid);
+  res.json({ ok: true });
+});
+
+// Claim an orphan: file a text or a call from an unknown number against a house, a
+// contact, or both, so the next one from that number threads itself.
+//
+// Two things travel together here. Filing the one item in front of you is the small
+// half; the useful half is that every other loose item from the same number moves
+// with it, and — when asked — the number becomes a contact card, so the NEXT call or
+// text matches on arrival instead of landing in the orphan bucket again.
+app.post('/api/admin/comms/attach', adminOnly, (req, res, next) => {
+ try {
+  const { message_id, call_id, property_id, contact_id, new_contact_name } = req.body || {};
+  if (property_id) {
+    const p = get('SELECT id FROM properties WHERE id=? AND company_id=?', property_id, req.companyId);
+    if (!p) return res.status(400).json({ error: 'That property is not yours' });
+  }
+  if (contact_id) {
+    const c = get('SELECT id FROM contacts WHERE id=? AND company_id=?', contact_id, req.companyId);
+    if (!c) return res.status(400).json({ error: 'That contact is not yours' });
+  }
+
+  // A call is the row in call_log; a text is the row in contact_messages.
+  const call = call_id
+    ? get('SELECT * FROM call_log WHERE id=? AND company_id=?', call_id, req.companyId) : null;
+  if (call_id && !call) return res.status(404).json({ error: 'Not found' });
+  if (call) {
+    const phone = call.counterpart_phone;
+    let cid = contact_id || null;
+    // Making a contact card is what stops the next call from being an orphan too.
+    if (!cid && new_contact_name) {
+      const r = run('INSERT INTO contacts (company_id, name, phone, role) VALUES (?,?,?,?)',
+        req.companyId, String(new_contact_name).slice(0, 120), phone, 'other');
+      cid = r.lastInsertRowid;
+    }
+    if (cid && property_id) {
+      run(`INSERT OR IGNORE INTO property_contacts (property_id, contact_id) VALUES (?,?)`,
+        property_id, cid);
+    }
+    // Move every loose item from this number, not just the one that was clicked.
+    const bare = String(phone || '').replace(/\D/g, '').slice(-10);
+    if (bare) {
+      const digitsOf = (col) => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col},'-',''),' ',''),'(',''),')',''),'+1','')`;
+      run(`UPDATE call_log SET property_id=COALESCE(?, property_id), contact_id=COALESCE(?, contact_id)
+           WHERE company_id=? AND ${digitsOf('counterpart_phone')}=? AND property_id IS NULL`,
+        property_id || null, cid || null, req.companyId, bare);
+      run(`UPDATE contact_messages SET property_id=COALESCE(?, property_id), contact_id=COALESCE(?, contact_id)
+           WHERE company_id=? AND ${digitsOf('phone')}=? AND property_id IS NULL`,
+        property_id || null, cid || null, req.companyId, bare);
+      run(`UPDATE call_recordings SET loan_id=COALESCE(loan_id, ?)
+           WHERE company_id=? AND ${digitsOf('from_number')}=? AND loan_id IS NULL`,
+        property_id ? (get('SELECT id FROM loans WHERE property_id=? ORDER BY id DESC LIMIT 1', property_id) || {}).id || null : null,
+        req.companyId, bare);
+    }
+    return res.json({ ok: true, contact_id: cid || null });
+  }
+
+  const m = get('SELECT * FROM contact_messages WHERE id=? AND company_id=?', message_id, req.companyId);
+  if (!m) return res.status(404).json({ error: 'Not found' });
+  // Same courtesy for texts: name the number and it becomes a contact.
+  let cid = contact_id || null;
+  if (!cid && new_contact_name) {
+    const r = run('INSERT INTO contacts (company_id, name, phone, role) VALUES (?,?,?,?)',
+      req.companyId, String(new_contact_name).slice(0, 120), m.phone, 'other');
+    cid = r.lastInsertRowid;
+  }
+  if (cid && property_id) {
+    run(`INSERT OR IGNORE INTO property_contacts (property_id, contact_id) VALUES (?,?)`, property_id, cid);
+  }
+  const bareT = String(m.phone || '').replace(/\D/g, '').slice(-10);
+  if (bareT) {
+    const digitsOf = (col) => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col},'-',''),' ',''),'(',''),')',''),'+1','')`;
+    run(`UPDATE call_log SET property_id=COALESCE(?, property_id), contact_id=COALESCE(?, contact_id)
+         WHERE company_id=? AND ${digitsOf('counterpart_phone')}=? AND property_id IS NULL`,
+      property_id || null, cid || null, req.companyId, bareT);
+  }
+  // The clicked text last, so it is filed even when it carries no usable number.
+  run('UPDATE contact_messages SET property_id=COALESCE(?, property_id), contact_id=COALESCE(?, contact_id) WHERE id=?',
+    property_id || null, cid || null, m.id);
+  res.json({ ok: true, contact_id: cid || null });
+ } catch (e) { next(e); }
 });
 
 // Recording / voicemail / transcript configuration.

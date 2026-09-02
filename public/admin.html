@@ -516,7 +516,8 @@ a{color:var(--brand);font-weight:600}
     <button id="nv-reminders" onclick="nav('reminders')"><span class="ico">🔔</span><span class="lbl">Reminders</span></button>
 
     <div class="navgrp">Communication</div>
-    <button id="nv-msgs" class="tab" onclick="nav('msgs')"><span class="ico">💬</span><span class="lbl">Messages</span><span id="msg-badge" class="badge hidden"></span></button>
+    <button id="nv-comms" class="tab" onclick="nav('comms')"><span class="ico">📡</span><span class="lbl">Communications</span><span id="comms-badge" class="badge hidden"></span></button>
+    <button id="nv-msgs" class="subnav" onclick="nav('msgs')"><span class="ico">💬</span><span class="lbl">Messages</span><span id="msg-badge" class="badge hidden"></span></button>
     <button id="nv-templates" class="subnav" onclick="nav('templates')"><span class="ico">📝</span><span class="lbl">Templates</span></button>
     <button id="nv-contacts" class="subnav" onclick="nav('contacts')"><span class="ico">📇</span><span class="lbl">Contacts</span><span id="ct-badge" class="badge hidden"></span></button>
     <button id="nv-invites" class="subnav" onclick="nav('invites')"><span class="ico">📲</span><span class="lbl">Invitations</span><span id="inv-badge" class="badge hidden"></span></button>
@@ -767,6 +768,21 @@ a{color:var(--brand);font-weight:600}
     </section>
 
     <!-- CONTACTS -->
+    <section id="pg-comms" class="hidden">
+      <h1>Communications</h1>
+      <div class="card">
+        <p class="note" style="margin-bottom:12px">Everything that came in or went out, across every house — calls,
+          voicemails, texts and buyer messages, newest first. Each house still keeps its own thread; this is the one
+          place that shows all of them at once, including anything that arrived from a number nobody recognises.</p>
+        <div class="segbtn" style="margin-bottom:12px">
+          <button id="ci-all" class="active" onclick="loadComms('')">All</button>
+          <button id="ci-call" onclick="loadComms('call')">📞 Calls &amp; voicemail</button>
+          <button id="ci-text" onclick="loadComms('text')">💬 Texts &amp; messages</button>
+        </div>
+        <div id="comms-list"><p class="note">Loading…</p></div>
+      </div>
+    </section>
+
     <section id="pg-contacts" class="hidden">
       <h1>Contacts</h1>
       <div class="card">
@@ -1406,7 +1422,7 @@ async function logout(){
 }
 
 function nav(pg){
-  for(const p of ['dash','loans','loan','docs','ledger','pml','pmld','tbs','props','propd','calc','tasks','cal','contacts','reports','templates','reminders','invites','exp','msgs','slips','settings']){
+  for(const p of ['dash','loans','loan','docs','ledger','pml','pmld','tbs','props','propd','calc','tasks','cal','comms','contacts','reports','templates','reminders','invites','exp','msgs','slips','settings']){
     const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
   }
@@ -1423,6 +1439,69 @@ function nav(pg){
   if(pg==='tasks'){loadProps();loadTasks();}
   if(pg==='cal')loadCalendar();
   if(pg==='contacts')loadContacts();
+  if(pg==='comms')loadComms('');
+}
+
+// ---------- communications inbox ----------
+// The per-house threads are unchanged; this is the view across all of them. Opening
+// it marks the unmatched bucket seen, because that bucket has no thread of its own.
+let COMMS_FILTER='';
+async function loadComms(ch){
+  COMMS_FILTER=ch||'';
+  for(const b of ['all','call','text']){
+    const el=$('ci-'+b); if(el) el.classList.toggle('active', b===(COMMS_FILTER||'all'));
+  }
+  const el=$('comms-list'); if(!el) return;
+  let d; try{ d=await api('/api/admin/comms'+(COMMS_FILTER?'?channel='+COMMS_FILTER:'')); }
+  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  setBadge('comms-badge', d.unread_total);
+  if(!d.events.length){ el.innerHTML='<p class="note">Nothing yet.</p>'; return; }
+  const when=(ts)=>new Date(String(ts).replace(' ','T')+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  const ICON={call:'📞',voicemail:'📼',text:'💬',message:'📩'};
+  el.innerHTML=d.events.map(ev=>{
+    const dur=ev.duration_sec?` · ${Math.floor(ev.duration_sec/60)}:${String(ev.duration_sec%60).padStart(2,'0')}`:'';
+    const where=ev.address
+      ? `<a onclick="openProp(${ev.property_id})" style="cursor:pointer">${esc(ev.address)}</a>`
+      : '<span class="pill amber">no house yet</span>';
+    const attach=ev.unmatched
+      ? ` <button class="small" onclick="attachComm(${ev.message_id||'null'},${ev.call_id||'null'},'${esc(String(ev.phone||''))}')">Attach…</button>` : '';
+    return `<div style="padding:9px 0;border-bottom:1px solid var(--line)">
+      <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <span><b>${ICON[ev.channel]||''} ${esc(ev.who||'unknown')}</b>
+          <span class="note">${ev.direction==='in'?'in':'out'} · ${when(ev.ts)}${dur}</span></span>
+        <span class="note">${where}${attach}</span>
+      </div>
+      ${ev.body?`<div style="font-size:13.5px;margin-top:3px;white-space:pre-wrap">${esc(String(ev.body).slice(0,300))}</div>`:''}
+      ${ev.summary&&!ev.body?`<div class="note" style="margin-top:3px">${esc(ev.summary)}</div>`:''}
+      ${ev.transcript?`<div class="note" style="margin-top:3px">“${esc(String(ev.transcript).slice(0,200))}”</div>`:''}
+      ${ev.recording_id?`<audio controls preload="none" style="width:100%;max-width:380px;height:30px;margin-top:5px" src="/api/admin/recordings/${ev.recording_id}/audio"></audio>`:''}
+    </div>`;
+  }).join('');
+  await api('/api/admin/comms/seen',{method:'POST',body:JSON.stringify({property_id:0})});
+}
+// File a stray call or text against a house. Everything else loose from the same
+// number moves with it, and naming the number makes a contact so the next one from
+// them threads itself instead of landing here again.
+let AC_MSG=null, AC_CALL=null;
+async function attachComm(messageId, callId, phone){
+  AC_MSG=messageId; AC_CALL=callId;
+  const props=await api('/api/admin/properties');
+  const opts=(props.properties||props||[]).map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('');
+  modal(`<h2>Attach ${esc(phone||'this')}</h2>
+    <p class="note" style="margin-bottom:10px">Files it against the house, and moves every other loose call and
+      text from this number with it. Naming them creates a contact, so the next one matches on arrival.</p>
+    <div class="field"><label>Property</label><select id="ac-prop">${opts}</select></div>
+    <div class="field"><label>Who is this? <span class="note">— optional, creates a contact</span></label>
+      <input id="ac-name" placeholder="e.g. Dave — roofer"></div>
+    <button class="primary" onclick="attachCommGo()">Attach</button>`);
+}
+async function attachCommGo(){
+  const body={ property_id:Number($('ac-prop').value) };
+  if(AC_MSG) body.message_id=AC_MSG;
+  if(AC_CALL) body.call_id=AC_CALL;
+  const nm=$('ac-name').value.trim(); if(nm) body.new_contact_name=nm;
+  await api('/api/admin/comms/attach',{method:'POST',body:JSON.stringify(body)});
+  closeModal(); toast(nm?'Filed — contact created.':'Filed.'); loadComms(COMMS_FILTER);
 }
 
 // ---------- properties ----------
@@ -5327,6 +5406,7 @@ async function loadDash(){
   $('exp-badge').textContent = d.unassigned_expenses;
   setBadge('task-badge', d.overdue_tasks);
   setBadge('ct-badge', d.unread_vendor_texts);
+  setBadge('comms-badge', d.unread_comms);
   $('d-loans').innerHTML = d.loans.map(l=>
     `<tr class="click" onclick="openLoan(${l.id})"><td>${esc(l.address)}</td><td>${esc(l.tenant)}</td>
      <td class="right">${fmt(l.balance_cents)}</td><td class="right">${fmt(l.payment_cents)}</td>
@@ -5446,21 +5526,6 @@ async function openLoan(id){
       <div class="note" style="margin-top:6px">Escrow balance: ${fmt(L.escrow_balance_cents)} · Fees due: ${fmt(L.fees_due_cents)}</div>
     </div>
   </div>
-  <div class="card"><h2>📍 Where the buyer's phone has been</h2>
-    <p class="note" style="margin-bottom:10px">Only recorded while the buyer has location sharing switched on,
-      and only when they open the app — this is not continuous tracking. If they switch it off, the history is deleted.</p>
-    <div id="loc-panel"><p class="note">Loading…</p></div>
-  </div>
-  <div class="card"><h2>Notices <button class="small" onclick="customNoticeModal()">Send custom notice</button></h2>
-    <p class="note" style="margin-bottom:8px">Late and legal notices go out automatically when a payment is past grace and nothing has been confirmed received. ✓✓ = buyer opened it (read receipt).</p>
-    <div id="notices-admin"></div>
-  </div>
-  <div class="card"><h2>👥 People on this loan</h2>
-    <p class="note" style="margin-bottom:8px">Co-buyers, seller contacts, and lender contacts attached to this
-      house. Add more from the property page's contacts (roles: Co-buyer, Seller contact, Private money lender) —
-      they get call and text; the in-app thread stays the buyer's.</p>
-    <div id="loan-people"><p class="note">Loading…</p></div>
-  </div>
   <div class="card">
     <button class="disclose" id="act-toggle" onclick="toggleActivity(${f.property?f.property.id:0})">
       <span class="chev">▸</span>
@@ -5477,6 +5542,21 @@ async function openLoan(id){
       </div>
       <div id="act-list"><p class="note">Loading…</p></div>
     </div>
+  </div>
+  <div class="card"><h2>📍 Where the buyer's phone has been</h2>
+    <p class="note" style="margin-bottom:10px">Only recorded while the buyer has location sharing switched on,
+      and only when they open the app — this is not continuous tracking. If they switch it off, the history is deleted.</p>
+    <div id="loc-panel"><p class="note">Loading…</p></div>
+  </div>
+  <div class="card"><h2>Notices <button class="small" onclick="customNoticeModal()">Send custom notice</button></h2>
+    <p class="note" style="margin-bottom:8px">Late and legal notices go out automatically when a payment is past grace and nothing has been confirmed received. ✓✓ = buyer opened it (read receipt).</p>
+    <div id="notices-admin"></div>
+  </div>
+  <div class="card"><h2>👥 People on this loan</h2>
+    <p class="note" style="margin-bottom:8px">Co-buyers, seller contacts, and lender contacts attached to this
+      house. Add more from the property page's contacts (roles: Co-buyer, Seller contact, Private money lender) —
+      they get call and text; the in-app thread stays the buyer's.</p>
+    <div id="loan-people"><p class="note">Loading…</p></div>
   </div>
   <div class="card"><h2>🗺️ Late-payment workflow${f.property&&f.property.state?` — ${esc(f.property.state)}`:''}</h2>
     <p class="note" style="margin-bottom:10px">This loan's state decides the track. Every step shows here as it
@@ -5606,6 +5686,8 @@ async function loadActivity(pid,channel){
   let d;
   try{ d=await api(`/api/admin/properties/${pid}/comms${channel?'?channel='+channel:''}`); }
   catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  // Opening a house's activity clears that house's badge, for this person only.
+  api('/api/admin/comms/seen',{method:'POST',body:JSON.stringify({property_id:Number(pid)})}).catch(()=>{});
   if(!d.events.length){ el.innerHTML='<p class="note">Nothing yet.</p>'; return; }
   const ICON={call:'📞',voicemail:'📼',text:'💬',message:'📩',email:'✉️',notice:'⚖️',payment:'💵'};
   const when=(ts)=>new Date(String(ts).replace(' ','T')+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});

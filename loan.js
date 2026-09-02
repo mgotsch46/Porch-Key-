@@ -65,8 +65,14 @@ function paymentsDue(loan, asOf) {
   return Math.min(months, loan.term_months);
 }
 
-function nextDueDate(loan, asOf) {
-  const n = paymentsDue(loan, asOf);
+// The next payment owed is the oldest UNPAID installment — not the next one on the
+// calendar. Deriving it from paymentsDue alone means the date skips past an unpaid
+// installment the moment its due date arrives (a buyer who missed Sept was shown
+// "next due Oct 1" on Sept 1, beside "past due"), and never advances for a buyer who
+// has paid ahead. When no ledger count is supplied the old schedule-only behaviour
+// stands, which is what the PML trackers want — they have a schedule and no ledger.
+function nextDueDate(loan, asOf, paymentsMade) {
+  const n = Number.isFinite(paymentsMade) ? paymentsMade : paymentsDue(loan, asOf);
   const first = new Date(loan.first_payment_date + 'T00:00:00Z');
   if (n >= loan.term_months) return null;
   return addMonthsUTC(first, n).toISOString().slice(0, 10);
@@ -92,7 +98,7 @@ function loanStatus(loan, ledgerRows, asOf) {
     payments_due: due,
     owed_now_cents: owedNow,
     fees_due_cents: Math.max(0, feesAssessed - feesPaid),
-    next_due_date: nextDueDate(loan, asOf),
+    next_due_date: nextDueDate(loan, asOf, paymentsMade),
     is_past_due: owedNow > 0 && due > 0,
     payments_made_equiv: paymentsMade,
   };

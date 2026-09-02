@@ -1063,6 +1063,21 @@ CREATE INDEX IF NOT EXISTS idx_notes_property ON notes(property_id, id);
 CREATE INDEX IF NOT EXISTS idx_notes_loan ON notes(loan_id, id);
 `);
 
+// ---------- communications: who has seen what ----------
+// One row per staff member per property, holding the moment they last opened that
+// house's thread. "New" is anything that arrived after it, which keeps the count
+// personal: a BOG reading a message on their phone does not clear the owner's badge.
+// property_id 0 is the catch-all bucket for inbound that matched no house.
+// Created after properties and users exist, because of the foreign keys.
+db.exec(`
+CREATE TABLE IF NOT EXISTS comms_seen (
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  property_id INTEGER NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, property_id)
+);
+`);
+
 ensureSeed();
 
 // Emergency password reset. Set RESET_OWNER_PASSWORD (optionally RESET_OWNER_EMAIL) and
