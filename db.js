@@ -519,6 +519,38 @@ addColumnIfMissing('properties', 'owner_name', 'TEXT');
 addColumnIfMissing('properties', 'owner_type', "TEXT DEFAULT 'llc'");
 // What the buyer pays each month, broken out. Taxes and insurance are escrowed —
 // that money is held for them. The other three are fees to the servicer.
+// Money received that nobody has said what to do with yet. It used to be added to the
+// buyer's escrow balance, which was wrong twice over: it is not escrow, and escrow is
+// trust money held for a named person, so parking odd amounts there quietly overstates
+// what is being held on their behalf. It waits here instead until a person allocates it.
+//
+// Existing escrow balances are left alone. This changes where new money goes, not where
+// old money went — restating live buyer balances is not something a migration should do
+// on its own.
+addColumnIfMissing('loans', 'unapplied_cents', 'INTEGER NOT NULL DEFAULT 0');
+// Every allocation decision, kept: who directed the money, when, into what, and why.
+// The journal records the accounting; this records the judgement, which is the part
+// somebody will want explained a year later.
+db.exec(`
+CREATE TABLE IF NOT EXISTS unapplied_allocations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  loan_id INTEGER NOT NULL REFERENCES loans(id),
+  allocated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  allocated_by INTEGER REFERENCES users(id),
+  total_cents INTEGER NOT NULL,
+  principal_cents INTEGER NOT NULL DEFAULT 0,
+  interest_cents INTEGER NOT NULL DEFAULT 0,
+  taxes_cents INTEGER NOT NULL DEFAULT 0,
+  insurance_cents INTEGER NOT NULL DEFAULT 0,
+  late_fee_cents INTEGER NOT NULL DEFAULT 0,
+  admin_fee_cents INTEGER NOT NULL DEFAULT 0,
+  postage_cents INTEGER NOT NULL DEFAULT 0,
+  other_cents INTEGER NOT NULL DEFAULT 0,
+  note TEXT,
+  journal_entry_id INTEGER REFERENCES journal_entries(id)
+);
+CREATE INDEX IF NOT EXISTS idx_unapp_alloc_loan ON unapplied_allocations(loan_id, allocated_at);
+`);
 addColumnIfMissing('loans', 'monthly_taxes_cents', 'INTEGER DEFAULT 0');
 addColumnIfMissing('loans', 'monthly_insurance_cents', 'INTEGER DEFAULT 0');
 addColumnIfMissing('loans', 'monthly_utilities_cents', 'INTEGER DEFAULT 0');
@@ -567,6 +599,23 @@ addColumnIfMissing('notices', 'lob_tracking', 'TEXT');
 addColumnIfMissing('notices', 'lob_status', 'TEXT');
 addColumnIfMissing('notices', 'lob_expected', 'TEXT');
 addColumnIfMissing('notices', 'lob_cost_cents', 'INTEGER');
+// A letter bought with a test key renders and tracks exactly like a real one and is
+// never printed or mailed. That difference is invisible everywhere it matters, so it
+// is recorded on the notice itself: a test letter is not evidence of anything.
+addColumnIfMissing('notices', 'lob_test', 'INTEGER DEFAULT 0');
+// Where a buyer actually receives mail, when that is not the house. A notice of
+// default is precisely the notice whose recipient may have already moved out, and a
+// certified letter to an address they left produces a delivery scan that proves
+// nothing. Empty means "mail it to the property", which is the common case.
+addColumnIfMissing('users', 'mail_line1', 'TEXT');
+addColumnIfMissing('users', 'mail_line2', 'TEXT');
+addColumnIfMissing('users', 'mail_city', 'TEXT');
+addColumnIfMissing('users', 'mail_state', 'TEXT');
+addColumnIfMissing('users', 'mail_zip', 'TEXT');
+// The unit number on a duplex or an apartment. It is not part of the street address
+// because the street address is what identifies the property everywhere else in the
+// app; it is a second address line that only mail cares about.
+addColumnIfMissing('properties', 'unit', 'TEXT');
 // A cost that happens on a schedule — lawn care weekly, insurance quarterly. The rule
 // lives here; the money lives in property_costs, one materialized row per occurrence,
 // so the cost basis and the books see ordinary cost rows and nothing changes downstream.
@@ -931,6 +980,18 @@ db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_source
 // ---------- Michigan forfeiture track ----------
 // A property in Michigan carries its district court on its back — typed once, reused
 // on every DC 101 the house ever needs.
+// What an Illinois forfeiture notice has to recite about the property. None of it is
+// derivable — it comes off the deed and the recorded memorandum — so it is typed once
+// per house and remembered. A notice that cannot name the legal description, the PIN
+// and the recording is not a notice anybody should serve.
+addColumnIfMissing('properties', 'legal_description', 'TEXT');
+addColumnIfMissing('properties', 'pin', 'TEXT');                       // parcel index number
+addColumnIfMissing('properties', 'memo_recorded_county', 'TEXT');      // county recorder's office
+addColumnIfMissing('properties', 'memo_recorded_date', 'TEXT');        // YYYY-MM-DD
+addColumnIfMissing('properties', 'memo_document_no', 'TEXT');
+addColumnIfMissing('properties', 'escrow_agent', 'TEXT');              // where the contract is escrowed
+// The court is the property's, not the seller's. Michigan already stores these; Illinois
+// uses the same three columns for its circuit court, which is why they are not renamed.
 addColumnIfMissing('properties', 'court_district', 'TEXT');
 addColumnIfMissing('properties', 'court_address', 'TEXT');
 addColumnIfMissing('properties', 'court_phone', 'TEXT');

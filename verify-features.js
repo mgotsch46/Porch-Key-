@@ -1,4 +1,4 @@
-// Standalone check of everything Marisa has asked for, against a live server.
+// Standalone check of everything the owner has asked for, against a live server.
 process.env.DATA_DIR='/tmp/verify-'+Date.now();
 process.env.PORT=3311;
 process.env.ADMIN_EMAIL='v@test.com'; process.env.ADMIN_PASSWORD='Verify123!';

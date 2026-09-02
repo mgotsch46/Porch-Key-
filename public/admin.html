@@ -1380,6 +1380,9 @@ function rateStr(bps){
 const fdate = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let currentLoanId=null, LOAN_F=null, TBS=[], SCHED_VIEW='yearly', CALC_VIEW='yearly', msgLoanId=null, expFilter='unassigned', ndUploadedIds=[], PROPS=[];
+// Which loan has already had its allocation dialog opened this session, so returning to
+// a loan you deliberately left part-allocated does not reopen it every time.
+let ALLOC_PROMPTED=null;
 
 async function api(path,opts={}){
   const res = await fetch(path,{headers:{'Content-Type':'application/json'},credentials:'same-origin',...opts});
@@ -1840,6 +1843,37 @@ function editPropModal(pid){
       <div class="field"><label>Trust name</label><input id="ep-trust" value="${esc(v(p.trust_name))}"></div>
       <div class="field"><label>Trustee</label><input id="ep-trustee" value="${esc(v(p.trustee))}"></div>
     </div>
+
+    <h3 style="margin:20px 0 4px;font-size:14px">Legal identification</h3>
+    <p class="note" style="margin:0 0 10px">Copied off the deed and the recorded memorandum. A default notice
+      identifies a parcel with these, not with a mailing address — fill them in once and every notice carries them.</p>
+    <div class="field"><label>Legal description
+      <span class="note">— verbatim from the contract</span></label>
+      <textarea id="ep-legal" rows="3">${esc(v(p.legal_description))}</textarea></div>
+    <div class="grid2">
+      <div class="field"><label>Parcel ID <span class="note">— PIN / PID / tax no.</span></label>
+        <input id="ep-pin" value="${esc(v(p.pin))}"></div>
+      <div class="field"><label>Escrow agent <span class="note">— where the contract is escrowed</span></label>
+        <input id="ep-escrowagent" value="${esc(v(p.escrow_agent))}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Memorandum recorded in</label>
+        <input id="ep-memocounty" placeholder="County" value="${esc(v(p.memo_recorded_county))}"></div>
+      <div class="field"><label>Recorded on</label>
+        <input id="ep-memodate" type="date" value="${v(p.memo_recorded_date)}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Recording document no.</label>
+        <input id="ep-memodoc" value="${esc(v(p.memo_document_no))}"></div>
+      <div class="field"><label>Court <span class="note">— the property's, not yours</span></label>
+        <input id="ep-court" placeholder="e.g. 67th District Court" value="${esc(v(p.court_district))}"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>Court address</label>
+        <input id="ep-courtaddr" value="${esc(v(p.court_address))}"></div>
+      <div class="field"><label>Court telephone</label>
+        <input id="ep-courtphone" value="${esc(v(p.court_phone))}"></div>
+    </div>
     <div class="grid2">
       <div class="field"><label>Beds</label><input id="ep-beds" type="number" value="${v(p.beds)}"></div>
       <div class="field"><label>Baths</label><input id="ep-baths" type="number" step="0.5" value="${v(p.baths)}"></div>
@@ -1884,7 +1918,15 @@ async function saveProp(pid){
       purchase_price_cents:cents('ep-price'), target_sale_price_cents:cents('ep-target'),
       late_fee_cents:cents('ep-latefee'), grace_days:num('ep-grace'), due_day:num('ep-dueday'),
       insurance_carrier:$('ep-carrier').value.trim(), insurance_expires:$('ep-insexp').value||null,
-      tax_due_date:$('ep-taxdue').value||null, tax_due_date2:$('ep-taxdue2').value||null, notes:$('ep-notes').value })});
+      tax_due_date:$('ep-taxdue').value||null, tax_due_date2:$('ep-taxdue2').value||null,
+      legal_description:$('ep-legal').value.trim(), pin:$('ep-pin').value.trim(),
+      escrow_agent:$('ep-escrowagent').value.trim(),
+      memo_recorded_county:$('ep-memocounty').value.trim(),
+      memo_recorded_date:$('ep-memodate').value||null,
+      memo_document_no:$('ep-memodoc').value.trim(),
+      court_district:$('ep-court').value.trim(), court_address:$('ep-courtaddr').value.trim(),
+      court_phone:$('ep-courtphone').value.trim(),
+      notes:$('ep-notes').value })});
     closeModal(); await loadProps(); openProp(pid);
   }catch(e){ $('ep-err').textContent=e.message; $('ep-err').classList.remove('hidden'); }
 }
@@ -3252,7 +3294,19 @@ async function loadLob(){
         <span class="note">Return address</span><b>${esc(d.mail_address_line1)}, ${esc(d.mail_address_city)}, ${esc(d.mail_address_state)} ${esc(d.mail_address_zip)}</b></div>
       <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
         <span class="note">Cost passed to the buyer per letter</span><b>${d.cost_cents?fmt(d.cost_cents):'not set — no fee is charged'}</b></div>
-      ${d.test_mode?'<p class="note" style="margin-top:10px">When the wiring is proven, swap the test key for your live key here.</p>':''}
+      ${d.in_flight?`<div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+        <span class="note">Letters still in the post</span><b>${d.in_flight}</b></div>`:''}
+      ${d.test_mode_warning?`<p class="note" style="margin-top:10px;color:var(--amber)"><b>${esc(d.test_mode_warning)}</b></p>`:''}
+
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+        <h3 style="font-size:14px;margin:0 0 4px">Send yourself a test letter</h3>
+        <p class="note" style="margin:0 0 10px">Mails one letter to your own return address. It proves the key,
+          the address check, the letterhead and the envelope — the things nothing else can prove until paper
+          arrives. About ${fmt(d.auto_first_class_cents)} first class.</p>
+        <div id="lobtest-out" class="hidden" style="margin-bottom:10px"></div>
+        <button class="small" onclick="lobTest('first_class')">Send first class · ${fmt(d.auto_first_class_cents)}</button>
+        <button class="small" onclick="lobTest('certified')">Send certified · ${fmt(d.auto_certified_cents)}</button>
+      </div>
     `:''}
     <details style="margin:12px 0" ${d.connected?'':'open'}>
       <summary class="note" style="cursor:pointer;font-weight:700">${d.connected?'Change settings':'Set this up'}</summary>
@@ -3279,6 +3333,32 @@ async function loadLob(){
       </div>
     </details>`;
 }
+// One real letter to your own address. Confirmed first, because it costs money and
+// because sending mail is not a thing to do on a mis-click.
+async function lobTest(service){
+  const cert = service === 'certified';
+  if(!confirm(`Mail a test letter to your own return address by ${cert?'certified mail':'first class'}?\n\n`
+    +`This buys real postage — about ${cert?'$8':'$1'} — unless your Lob key is a test key, in which case `
+    +`nothing is printed and nothing is charged.`)) return;
+  const out=$('lobtest-out'); out.classList.remove('hidden');
+  out.innerHTML='<p class="note">Sending…</p>';
+  try{
+    const r=await api('/api/admin/lob/test-letter',{method:'POST',body:JSON.stringify({service})});
+    out.innerHTML=`<div class="${r.test_mode?'note':'okmsg'}" style="padding:10px;border:1px solid var(--line);border-radius:6px">
+      <b>${esc(r.message)}</b>
+      <div class="note" style="margin-top:6px">
+        To: ${esc(r.mailed_to)}<br>
+        ${r.tracking?'Tracking: '+esc(r.tracking)+'<br>':''}
+        ${r.expected_delivery?'Expected: '+esc(r.expected_delivery)+'<br>':''}
+        Cost: ${fmt(r.cost_cents)}
+        ${r.verification_note?'<br>'+esc(r.verification_note):''}
+      </div></div>`;
+    loadLob();
+  }catch(e){
+    out.innerHTML=`<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
 async function saveLob(){
   $('lob-err').classList.add('hidden'); $('lob-ok').classList.add('hidden');
   try{
@@ -3748,16 +3828,34 @@ async function loadBooks(){
       <span class="note">Escrow held matches escrow owed</span>
       <b>${d.trust.balanced?'yes':'NO — off by '+money(d.trust.trust_cash_cents-d.trust.escrow_owed_cents)}</b></div>
 
+    ${(d.causes||[]).length ? `
+      <h3 style="margin:18px 0 8px;font-size:14px">Why these differ</h3>
+      ${d.causes.map(c=>`
+        <div style="border-left:3px solid var(--amber,#b8860b);padding:2px 0 2px 12px;margin-bottom:14px">
+          <div style="font-weight:600;font-size:13px">${esc(c.accounts.join(' · '))}</div>
+          <div class="note" style="margin-top:4px;line-height:1.55">${esc(c.why)}</div>
+          <div class="note" style="margin-top:4px">Accounts for ${money(c.total_cents)} in total.</div>
+        </div>`).join('')}` : ''}
+
     ${offLoans.length||offPml.length ? `
       <h3 style="margin:16px 0 6px;font-size:14px">Not reconciling</h3>
       <div style="overflow-x:auto"><table>
         <thead><tr><th>Account</th><th class="right">App shows</th><th class="right">Journal shows</th><th class="right">Difference</th></tr></thead>
         <tbody>
-        ${offLoans.map(l=>`<tr><td>Buyer loan #${l.loan_id}${l.escrow_diff?' (escrow)':''}</td>
-          <td class="right">${fmt(l.escrow_diff?l.escrow_old:l.principal_old)}</td>
-          <td class="right">${fmt(l.escrow_diff?l.escrow_journal:l.principal_journal)}</td>
-          <td class="right" style="color:var(--red)">${money(l.escrow_diff||l.principal_diff)}</td></tr>`).join('')}
-        ${offPml.map(p=>`<tr><td>Lender loan #${p.pml_loan_id}</td>
+        ${offLoans.flatMap(l=>[
+          l.principal_diff?`<tr><td>Buyer loan #${l.loan_id} principal
+            ${l.principal_cause?`<div class="note" style="font-size:11px">${esc(l.principal_cause.replace(/_/g,' '))}</div>`:''}</td>
+            <td class="right">${fmt(l.principal_old)}</td>
+            <td class="right">${fmt(l.principal_journal)}</td>
+            <td class="right" style="color:var(--red)">${money(l.principal_diff)}</td></tr>`:'',
+          l.escrow_diff?`<tr><td>Buyer loan #${l.loan_id} escrow
+            ${l.escrow_cause?`<div class="note" style="font-size:11px">${esc(l.escrow_cause.replace(/_/g,' '))}</div>`:''}</td>
+            <td class="right">${fmt(l.escrow_old)}</td>
+            <td class="right">${fmt(l.escrow_journal)}</td>
+            <td class="right" style="color:var(--red)">${money(l.escrow_diff)}</td></tr>`:'',
+        ]).filter(Boolean).join('')}
+        ${offPml.map(p=>`<tr><td>Lender loan #${p.pml_loan_id}${p.lender_name?' — '+esc(p.lender_name):''}
+          ${p.principal_cause?`<div class="note" style="font-size:11px">${esc(p.principal_cause.replace(/_/g,' '))}</div>`:''}</td>
           <td class="right">${fmt(p.principal_old)}</td><td class="right">${fmt(p.principal_journal)}</td>
           <td class="right" style="color:var(--red)">${money(p.principal_diff)}</td></tr>`).join('')}
         </tbody></table></div>` : ''}
@@ -3772,8 +3870,103 @@ async function loadBooks(){
           <td class="note">${a.code}</td><td>${esc(a.name)}${a.fund==='trust'?' <span class="pill amber">trust</span>':''}</td>
           <td class="note">${a.type}</td><td class="right">${fmt(a.balance_cents)}</td></tr>`).join('')}</tbody>
       </table></div>
-    </div>`;
+    </div>
+
+    <button class="disclose" style="margin-top:14px" onclick="toggleEntries()">
+      <span class="chev" id="je-chev">&#9656;</span><span class="t">Journal entries</span>
+      <span class="note" style="margin-left:auto">correct or remove</span></button>
+    <div id="je-panel" class="hidden" style="margin-top:10px"></div>`;
 }
+
+// ---------- the entries themselves ----------
+// Correcting an entry never rewrites it. Removing one posts an offsetting reversal;
+// editing one posts a reversal and a corrected replacement. The buttons say delete and
+// edit because that is what they do to the balance — the history keeps every step.
+function toggleEntries(){
+  const p=$('je-panel'), c=$('je-chev'); if(!p) return;
+  const opening=p.classList.contains('hidden');
+  p.classList.toggle('hidden');
+  if(c) c.innerHTML = opening ? '&#9662;' : '&#9656;';
+  if(opening) loadEntries();
+}
+
+async function loadEntries(){
+  const el=$('je-panel'); if(!el) return;
+  el.innerHTML='<p class="note">Loading…</p>';
+  let rows;
+  try{ rows=await api('/api/admin/journal?limit=200'); }
+  catch(e){ el.innerHTML=`<p class="note">Could not load: ${esc(e.message)}</p>`; return; }
+  if(!rows.length){ el.innerHTML='<p class="note">No entries yet.</p>'; return; }
+
+  el.innerHTML=`
+    <p class="note" style="margin-bottom:10px">Entries the app posted from a payment or a fee are fixed
+      by correcting that record. Entries typed in by hand, and the opening balances the migration created,
+      can be corrected here — which posts a reversal rather than changing what is already written down.</p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Date</th><th>Description</th><th>Source</th><th class="right">Amount</th><th></th></tr></thead>
+      <tbody>${rows.map(r=>`
+        <tr${r.reverses_id||r.reversed_by_id?' style="opacity:.55"':''}>
+          <td class="note" style="white-space:nowrap">${esc(r.entry_date)}</td>
+          <td>${esc(r.description)}${r.reversed_by_id?' <span class="pill">reversed</span>':''}${r.reverses_id?' <span class="pill">reversal</span>':''}</td>
+          <td class="note">${esc(String(r.source_type).replace(/_/g,' '))}</td>
+          <td class="right">${fmt(r.total_cents)}</td>
+          <td class="right" style="white-space:nowrap">${r.correctable
+            ? `<button class="small" onclick="editEntry(${r.id})">Edit</button>
+               <button class="small warn" onclick="removeEntry(${r.id})">Delete</button>`
+            : '<span class="note">—</span>'}</td>
+        </tr>`).join('')}</tbody>
+    </table></div>`;
+}
+
+async function removeEntry(id){
+  if(!confirm('Remove this entry?\n\nIt is reversed rather than erased: an offsetting entry is posted, '
+    +'the balance moves to where deleting would have put it, and both rows stay in the history.')) return;
+  try{
+    const r=await api('/api/admin/journal/'+id,{method:'DELETE',body:JSON.stringify({reason:'removed from Books'})});
+    toast(r.message||'Reversed.');
+    loadEntries(); loadBooks();
+  }catch(e){ alert(e.message); }
+}
+
+async function editEntry(id){
+  let e;
+  try{ e=await api('/api/admin/journal/'+id); }catch(err){ alert(err.message); return; }
+  if(!e.correctable){ alert(e.locked_reason); return; }
+
+  const desc=prompt('Description',e.description);
+  if(desc===null) return;
+  const amount=prompt(
+    'Amount in dollars.\n\nThis entry has '+e.lines.length+' lines; changing the amount rescales '
+    +'each of them by the same proportion, so it still balances.',
+    (e.total_cents/100).toFixed(2));
+  if(amount===null) return;
+  const cents=Math.round(parseFloat(amount)*100);
+  if(!(cents>0)){ alert('That is not an amount.'); return; }
+
+  const factor=cents/e.total_cents;
+  const lines=e.lines.map(l=>({
+    account:l.account_code,
+    debit: l.debit_cents?Math.round(l.debit_cents*factor):0,
+    credit:l.credit_cents?Math.round(l.credit_cents*factor):0,
+    property_id:l.property_id, loan_id:l.loan_id, pml_loan_id:l.pml_loan_id,
+    beneficiary_user_id:l.beneficiary_user_id, memo:l.memo,
+  }));
+  // Rounding each line independently can leave the entry a cent out; the server would
+  // refuse it, so the last line absorbs the difference before it is sent.
+  const dr=lines.reduce((t,l)=>t+l.debit,0), cr=lines.reduce((t,l)=>t+l.credit,0);
+  if(dr!==cr){
+    const last=[...lines].reverse().find(l=>(dr>cr?l.credit:l.debit)>0);
+    if(last){ if(dr>cr) last.credit+=dr-cr; else last.debit+=cr-dr; }
+  }
+
+  try{
+    const r=await api('/api/admin/journal/'+id,{method:'PUT',
+      body:JSON.stringify({description:desc,lines})});
+    toast(r.message||'Corrected.');
+    loadEntries(); loadBooks();
+  }catch(err){ alert(err.message); }
+}
+
 function toggleTrial(){
   const p=$('tb-panel'), c=$('tb-chev'); if(!p) return;
   const open=p.classList.toggle('hidden');
@@ -5480,6 +5673,13 @@ async function openLoan(id){
   nav('loan');
   const L=f.loan, S=f.status;
   $('loan-detail').innerHTML = `
+  ${L.unapplied_cents>0?`
+  <div class="card" style="border-left:4px solid var(--amber);margin-bottom:14px">
+    <h2 style="margin:0 0 4px">${fmt(L.unapplied_cents)} received and not yet applied</h2>
+    <p class="note" style="margin:0 0 10px">This money is on the account but nothing says what it was for.
+      It is not counted as escrow and it is not reducing anything until you say where it goes.</p>
+    <button class="primary" onclick="allocateModal()">Allocate it</button>
+  </div>`:''}
   <div class="cards">
     <div class="stat"><div class="n">${fmt(L.principal_balance_cents)}</div><div class="l">Principal balance</div></div>
     <div class="stat"><div class="n">${fmt(L.payment_cents+L.escrow_cents)}</div><div class="l">Monthly payment</div></div>
@@ -5618,6 +5818,14 @@ async function openLoan(id){
   loadDc101Card();
   loadWorkflow(L.id);
   loadLoanPeople(f.property?f.property.id:0);
+  // Money sitting undirected is the thing most worth doing something about, so opening
+  // the loan opens the dialog. Once per loan per visit — being asked again every time
+  // you come back to a loan you have deliberately left part-allocated is nagging, and
+  // the banner keeps it one click away regardless.
+  if(L.unapplied_cents>0 && ALLOC_PROMPTED!==L.id){
+    ALLOC_PROMPTED=L.id;
+    setTimeout(()=>{ if(currentLoanId===L.id) allocateModal(); },350);
+  }
   ACT_OPEN=false; ACT_PROP=f.property?f.property.id:0;
   if (f.tenant) loadTBLocation(f.tenant.id);
 }
@@ -6000,6 +6208,89 @@ async function sendCustomNotice(){
     closeModal(); loadNoticesAdmin();
   }catch(e){ $('cn-err').textContent=e.message; $('cn-err').classList.remove('hidden'); }
 }
+// ---------- allocating money nobody has accounted for ----------
+// The buckets come from the server so there is one list, not two that drift. Amounts
+// are typed in dollars; the running remainder is the thing to watch, because leaving
+// some of it undirected is allowed — knowing where half of it goes is still progress.
+async function allocateModal(){
+  if(!currentLoanId) return;
+  let d;
+  try{ d=await api('/api/admin/loans/'+currentLoanId+'/unapplied'); }
+  catch(e){ alert(e.message); return; }
+  if(!d.unapplied_cents){ toast('Nothing waiting to be allocated.'); return; }
+
+  const hint={ late_fee:d.owed.fees_due_cents, admin_fee:d.owed.fees_due_cents,
+               interest:d.owed.interest_due_cents, principal:d.owed.principal_balance_cents };
+  modal(`
+    <h2>Allocate ${fmt(d.unapplied_cents)}</h2>
+    <p class="note">Money arrived on this account beyond what was owed. Say what it was for.
+      You can direct part of it now and leave the rest waiting.</p>
+    <div id="alloc-rows" style="margin-top:14px">
+      ${d.buckets.map(b=>`
+        <label style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)">
+          <span style="flex:1">${esc(b.label)}${hint[b.key]?`<span class="note" style="margin-left:6px">${fmt(hint[b.key])} outstanding</span>`:''}</span>
+          <span class="note">$</span>
+          <input type="text" inputmode="decimal" data-alloc="${b.key}" value=""
+                 style="width:110px;text-align:right" oninput="allocSum(${d.unapplied_cents})">
+        </label>`).join('')}
+    </div>
+    <label style="display:block;margin-top:12px">Note
+      <span class="note">— required if you use Other</span>
+      <input type="text" id="alloc-note" maxlength="300" placeholder="What was this money for?"></label>
+    <p style="margin-top:12px;font-size:15px">
+      Allocating <b id="alloc-total">$0.00</b> · <span id="alloc-left" class="note"></span></p>
+    <div class="actions" style="margin-top:8px">
+      <button class="primary" id="alloc-go" onclick="allocateSubmit(${currentLoanId},${d.unapplied_cents})">Apply</button>
+      <button class="small" onclick="closeModal()">Cancel</button>
+    </div>
+    ${d.history.length?`<h3 style="margin:18px 0 6px;font-size:14px">Already allocated</h3>
+      ${d.history.map(h=>`<div class="note" style="padding:5px 0;border-bottom:1px solid var(--line)">
+        ${fdate(String(h.allocated_at).slice(0,10))} — ${fmt(h.total_cents)}
+        ${h.allocated_by_name?'by '+esc(h.allocated_by_name):''}${h.note?' · '+esc(h.note):''}</div>`).join('')}`:''}
+  `);
+  allocSum(d.unapplied_cents);
+}
+
+function allocCents(){
+  let total=0; const out={};
+  document.querySelectorAll('[data-alloc]').forEach(i=>{
+    const c=Math.round(parseFloat(i.value||'0')*100);
+    const v=Number.isFinite(c)&&c>0?c:0;
+    out[i.getAttribute('data-alloc')]=v; total+=v;
+  });
+  return {out,total};
+}
+function allocSum(available){
+  const {total}=allocCents();
+  const left=available-total;
+  const t=$('alloc-total'), l=$('alloc-left'), go=$('alloc-go');
+  if(t) t.textContent=fmt(total);
+  if(l){
+    l.textContent = left>0 ? fmt(left)+' will stay unapplied'
+                  : left<0 ? 'over by '+fmt(-left)
+                  : 'all of it accounted for';
+    l.style.color = left<0 ? 'var(--red)' : '';
+  }
+  if(go) go.disabled = total<=0 || left<0;
+}
+async function allocateSubmit(loanId,available){
+  const {out,total}=allocCents();
+  if(total<=0){ alert('Put an amount against at least one line.'); return; }
+  if(total>available){ alert('That is more than is waiting.'); return; }
+  const note=($('alloc-note')&&$('alloc-note').value||'').trim();
+  if(out.other>0 && !note){ alert('Say what the money allocated to Other was for.'); return; }
+  const go=$('alloc-go'); if(go) go.disabled=true;
+  try{
+    const r=await api('/api/admin/loans/'+loanId+'/unapplied/allocate',
+      {method:'POST',body:JSON.stringify({...out,note})});
+    closeModal();
+    toast(r.remaining_cents>0
+      ? fmt(r.allocated_cents)+' applied · '+fmt(r.remaining_cents)+' still waiting'
+      : fmt(r.allocated_cents)+' applied');
+    openLoan(loanId);
+  }catch(e){ alert(e.message); if(go) go.disabled=false; }
+}
+
 function modal(html,{wide}={}){
   // The document viewer wants most of the screen; everything else keeps the compact
   // default. Reset each call so one wide modal doesn't stretch the next.

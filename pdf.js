@@ -27,9 +27,14 @@ const HELV = [
   333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,
   556,556,333,500,278,556,500,722,500,500,500,334,260,334,584,
 ];
+// The punctuation esc() maps into the WinAnsi 0x80-0x9F block, by its real Helvetica
+// width. An em dash is a full em — nearly twice the 556 default — and guessing narrow
+// is what pushes a line past the margin.
+const WINANSI_W = { 0x85: 1000, 0x91: 222, 0x92: 222, 0x93: 333, 0x94: 333,
+                    0x95: 350, 0x96: 556, 0x97: 1000 };
 const widthOf = (ch, bold) => {
   const c = ch.charCodeAt(0);
-  const w = c < HELV.length ? HELV[c] : 556;
+  const w = WINANSI_W[c] || (c < HELV.length ? HELV[c] : 556);
   // Helvetica-Bold runs a little wider; close enough for wrapping, and erring wide
   // means a line never overflows the margin.
   return bold ? w * 1.06 : w;
@@ -63,12 +68,23 @@ function wrap(text, size, bold, maxW) {
 // PDF strings are parenthesised, so those three characters have to be escaped. Anything
 // outside Latin-1 is transliterated rather than written as a byte the reader will
 // mangle — a smart quote arriving as garbage looks worse than a straight one.
-const SUBS = { '’': "'", '‘': "'", '“': '"', '”': '"',
-               '–': '-', '—': '--', '…': '...', ' ': ' ', '•': '-' };
+//
+// This punctuation is not outside Latin-1, though. These fonts are declared with
+// WinAnsiEncoding, which carries real em dashes, en dashes, curly quotes, an ellipsis
+// and a bullet in the 0x80-0x9F block. Flattening them to ASCII anyway is why a notice
+// headed "NOTICE OF DEFAULT — 412 Elm St" printed as "-- 412 Elm St". Mapped to the
+// code points the encoding actually provides, they print as themselves.
+const SUBS = {
+  '‘': '\x91', '’': '\x92',      // curly single quotes
+  '“': '\x93', '”': '\x94',      // curly double quotes
+  '–': '\x96', '—': '\x97',      // en dash, em dash
+  '…': '\x85', '•': '\x95',      // ellipsis, bullet
+  ' ': ' ',                         // non-breaking space
+};
 function esc(s) {
   return String(s == null ? '' : s)
-    .replace(/[’‘“”–—… •]/g, c => SUBS[c])
-    .replace(/[^\x20-\xFF]/g, '?')
+    .replace(/[‘’“”–—…• ]/g, c => SUBS[c])
+    .replace(/[^\x20-\xFF\x85\x91-\x97]/g, '?')
     .replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 }
 
@@ -279,7 +295,7 @@ class Doc {
     this.y -= size + 6;
     return this;
   }
-  letterhead(company, { subtitle, logo } = {}) {
+  letterhead(company, { subtitle, logo, contactLine } = {}) {
     const name = (company && (company.mgmt_company_name || company.name)) || 'Your servicer';
     // Logo on the left, company details to the right of it — a normal letterhead.
     // Without a logo the text simply starts at the margin.
@@ -298,8 +314,11 @@ class Doc {
     const addr = company ? [company.mailing_address,
       [company.mailing_city, company.mailing_state].filter(Boolean).join(', '),
       company.mailing_zip].filter(Boolean).join('  ') : '';
-    const contact = company ? [company.rep_name, company.rep_phone, company.contact_email]
-      .filter(Boolean).join('  ·  ') : '';
+    // A default notice says which department sent it, and gives that department's
+    // address rather than the general one. Everything else keeps the company contact.
+    const contact = contactLine || (company
+      ? [company.rep_name, company.rep_phone, company.contact_email].filter(Boolean).join('  ·  ')
+      : '');
     if (addr) this.text(addr, { size: 9, gap: 2, x: textX });
     if (contact) this.text(contact, { size: 9, gap: 2, x: textX });
     if (subtitle) this.text(subtitle, { size: 9, gap: 2, x: textX });
@@ -385,17 +404,31 @@ function htmlToBlocks(html) {
 }
 
 // A message or notice as a letter on the company's paper.
-function letter({ company, subject, bodyHtml, bodyText, meta = [], sentAt, footer, logo }) {
+function letter({ company, subject, bodyHtml, bodyText, meta = [], sentAt, footer, logo, contactLine }) {
   const d = new Doc({
     title: subject || 'Letter',
     footer: footer || `${(company && (company.mgmt_company_name || company.name)) || 'Your servicer'}${sentAt ? ' · ' + String(sentAt).slice(0, 10) : ''}`,
   });
-  d.letterhead(company, { logo });
+  d.letterhead(company, { logo, contactLine });
   d.space(6);
   if (sentAt) d.text(new Date(sentAt.length <= 10 ? sentAt + 'T00:00:00Z' : sentAt + 'Z')
     .toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }),
     { size: 9.5, gap: 8 });
-  if (subject) d.text(subject, { size: 14, bold: true, gap: 10 });
+  // Some letters are written as complete documents and open with their own heading —
+  // the Michigan and Illinois notices all do. Printing the subject above one of those
+  // gives the reader the title twice, once with the address appended and once without.
+  // So the subject is the heading only when the body does not already carry it.
+  // The two are rarely identical: the subject carries the address ("… — 412 Elm St")
+  // and the body's own heading is often the longer formal title. So compare on the
+  // opening words of each, with the address suffix stripped — enough to recognise the
+  // same document without matching two genuinely different headings.
+  const firstLine = String(bodyText || '').split('\n', 1)[0].trim();
+  const bare = (s) => String(s || '')
+    .replace(/\s+/g, ' ').replace(/\s+[—–-]\s+.*$/, '').trim().toUpperCase();
+  const a = bare(subject), b = bare(firstLine);
+  const bodyOpensWithTitle = !!a && !!b &&
+    (a === b || a.startsWith(b.slice(0, 24)) || b.startsWith(a.slice(0, 24)));
+  if (subject && !bodyOpensWithTitle) d.text(subject, { size: 14, bold: true, gap: 10 });
   for (const [k, v] of meta) d.row(k, v, { size: 9.5 });
   if (meta.length) d.space(8);
   const blocks = bodyHtml ? htmlToBlocks(bodyHtml) : String(bodyText || '').split(/\n{2,}/);

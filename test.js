@@ -1706,7 +1706,7 @@ async function main() {
   await req('/api/admin/company', { method: 'PUT', body: JSON.stringify({ name: 'Renew EQ LLC' }) });
   r = await req('/api/admin/setup', { method: 'POST', body: JSON.stringify({
     mgmt_company_name: 'RenewEQ Property Management',
-    rep_name: 'Marisa G', rep_phone: '5135551000' }) });
+    rep_name: 'Servicing Dept', rep_phone: '5135551000' }) });
   ok(r.status === 200, 'management company name saved');
   r = await req('/api/admin/templates');
   const welcome = r.json.templates.find(t => t.category === 'welcome') || r.json.templates[0];
@@ -1882,7 +1882,7 @@ async function main() {
   ok(r.json.merge_fields.some(f => f.key === 'rep_phone'), 'representative merge fields available');
 
   r = await req('/api/admin/setup', { method: 'POST', body: JSON.stringify({
-    mgmt_company_name: 'RenewEQ Management', rep_name: 'Marisa G', rep_phone: '(555) 222-3333',
+    mgmt_company_name: 'RenewEQ Management', rep_name: 'Servicing Dept', rep_phone: '(555) 222-3333',
     mailing_address: 'PO Box 9', mailing_city: 'Detroit', mailing_state: 'MI', mailing_zip: '48226' }) });
   ok(r.status === 200, 'management company details saved');
 
@@ -1896,7 +1896,7 @@ async function main() {
     loan_id: soldLoan, subject: 'Hello {{first_name}}',
     body_html: '<p>Your balance is {{balance}}. Call {{rep_name}} at {{rep_phone}}.</p>' }) });
   ok(r.json.subject === 'Hello Carlos', 'subject merge fields resolve');
-  ok(r.json.html.includes('Marisa G') && r.json.html.includes('555-222-3333'),
+  ok(r.json.html.includes('Servicing Dept') && r.json.html.includes('555-222-3333'),
     'representative details merge in, phone normalised to dashes');
   ok(r.json.html.includes('pp-letterhead'), 'message wrapped in company letterhead');
   ok(r.json.html.includes('Porch Pay'), 'Porch Pay mark present on correspondence');

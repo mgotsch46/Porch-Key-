@@ -424,7 +424,12 @@ function postPayment(loanId, amountCents, method, entryDate, externalId, memo, c
   const owedBefore = loanEngine.loanStatus(loan, rowsBefore, entryDate).owed_now_cents;
   const alloc = loanEngine.allocatePayment(loan, amountCents, entryDate);
   const newPrincipal = loan.principal_balance_cents - alloc.to_principal_cents;
-  const newEscrow = loan.escrow_balance_cents + alloc.to_escrow_cents + alloc.unapplied_cents;
+  // Money left over after fees, interest, escrow and principal are all satisfied used
+  // to be dropped into the escrow balance. Escrow is trust money held for a named
+  // person, and an overpayment is not that — it is money whose purpose nobody has
+  // stated yet. It waits in its own place until somebody says where it goes.
+  const newEscrow = loan.escrow_balance_cents + alloc.to_escrow_cents;
+  const newUnapplied = (loan.unapplied_cents || 0) + alloc.unapplied_cents;
   const newFees = loan.fees_due_cents - alloc.to_fees_cents;
   const newInterestDue = alloc.interest_shortfall_cents;
   run(`INSERT INTO ledger (loan_id, entry_date, type, method, amount_cents, to_interest_cents,
@@ -452,8 +457,22 @@ function postPayment(loanId, amountCents, method, entryDate, externalId, memo, c
     });
   } catch (e) { /* notification only */ }
   run(`UPDATE loans SET principal_balance_cents=?, escrow_balance_cents=?, fees_due_cents=?,
-        interest_due_cents=?, status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
-    newPrincipal, newEscrow, newFees, newInterestDue, newPrincipal, loanId);
+        interest_due_cents=?, unapplied_cents=?,
+        status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
+    newPrincipal, newEscrow, newFees, newInterestDue, newUnapplied, newPrincipal, loanId);
+  // A payoff that overshoots leaves money nobody has directed. Tell the servicer now,
+  // while they can still ask the buyer what it was for.
+  if (alloc.unapplied_cents > 0) {
+    try {
+      const propAddr = get('SELECT address FROM properties WHERE id=?', loan.property_id);
+      notifyAdmins(loan.company_id, {
+        kind: 'payment_received',
+        title: `$${(alloc.unapplied_cents / 100).toFixed(2)} needs allocating`,
+        body: `${propAddr ? propAddr.address : 'Loan #' + loanId} — money arrived beyond what was owed.`,
+        url: '/staff', dedupeKey: `unapplied-${loanId}-${externalId || Date.now()}`,
+      });
+    } catch (e) { /* notification only */ }
+  }
   // A payment that leaves a Michigan default standing gets its receipt written in the
   // same breath the money lands — the reservation of rights only protects if it is
   // contemporaneous. A receipt that fails to generate must never block a payment.
@@ -474,6 +493,78 @@ function postStripePayment(session) {
   return postPayment(loanId, amount, method, today(), `stripe:${session.id}`, 'Online payment', null, fee);
 }
 
+// ---------- who the borrowers are ----------
+// A land contract signed by two people has two vendees, and a notice that names one of
+// them is a notice to one of them. The app has always addressed the buyer on the loan
+// and nothing else, while its own evidence documents printed a field labelled
+// "Purchaser(s)" and put a single name in it.
+//
+// Co-buyers are already in the app as contacts tagged against the house. This is the
+// one place that answers "whose notice is this", so the wording, the envelope and the
+// certificate of service cannot disagree about it.
+function borrowersFor(loan, property, tenant) {
+  const names = [];
+  if (tenant && tenant.name) names.push(tenant.name);
+  // A property without an id is a made-up one — the sample data behind the document
+  // previews. There is nobody attached to it to look up.
+  if (property && property.id) {
+    for (const c of all(`SELECT c.name FROM property_contacts pc JOIN contacts c ON c.id = pc.contact_id
+        WHERE pc.property_id = ? AND c.role = 'cobuyer' AND c.archived_at IS NULL
+        ORDER BY c.name`, property.id)) {
+      if (c.name && !names.includes(c.name)) names.push(c.name);
+    }
+  }
+  return names;
+}
+
+// "Jane Buyer", or "Jane Buyer and John Buyer", or "A, B and C". Used wherever the
+// borrowers are addressed as people rather than listed as a field.
+function borrowerLine(names, fallback = 'Purchaser') {
+  if (!names || !names.length) return fallback;
+  if (names.length === 1) return names[0];
+  return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+}
+
+// ---------- where a letter is actually sent ----------
+// Three places buy postage — the ladder, the mail-by-hand button, and DC 101 service —
+// and all three used to build the recipient inline from the property's street address.
+// That address is wrong in two ordinary cases: a duplex, where the unit number never
+// made it onto the envelope, and a buyer who has moved out, which is precisely the
+// buyer a notice of default is addressed to. A delivery scan at an address the buyer
+// left proves nothing at all.
+//
+// So there is one answer to the question, and everything asks it here. A mailing
+// address recorded on the buyer wins; otherwise the property, carrying its unit line.
+function mailingAddressFor({ property, tenant, borrowers }) {
+  // Lob caps the recipient name at 40 characters. Two full names usually fit; when they
+  // do not, the envelope falls back to the first borrower rather than arriving with a
+  // truncated second name on it. The notice inside always lists everyone.
+  const joined = borrowers && borrowers.length ? borrowerLine(borrowers, '') : '';
+  const name = (joined && joined.length <= 40 ? joined : (tenant && tenant.name)) || 'Occupant';
+  const t = tenant || {};
+  if (t.mail_line1 && t.mail_city && t.mail_state && t.mail_zip) {
+    return {
+      name,
+      address_line1: t.mail_line1,
+      address_line2: t.mail_line2 || undefined,
+      address_city: t.mail_city,
+      address_state: t.mail_state,
+      address_zip: t.mail_zip,
+      source: 'buyer',
+    };
+  }
+  if (!property || !property.address) return null;
+  return {
+    name,
+    address_line1: property.address,
+    address_line2: property.unit || undefined,
+    address_city: property.city,
+    address_state: property.state,
+    address_zip: property.zip,
+    source: 'property',
+  };
+}
+
 // ---------- the late-notice ladder ----------
 // Driven by notice_rules, so the days and the wording are yours to change without a
 // deploy. Every rung fires on the app, by text and by email at the same moment — a
@@ -489,7 +580,7 @@ async function sendLadderNotice({ rule, loan, property, tenant, co, status, dueD
     ? { subject: rule.subject, body: rule.body }
     : wordingOverride || noticeRules.defaultWording(rule, {
         loan, property, tenant, amountCents: status.owed_now_cents, dueDate, daysPast,
-        reserveRights, feeCharged });
+        reserveRights, feeCharged, company: co, borrowers: borrowersFor(loan, property, tenant) });
 
   const paras = wording.body.split('\n\n').map(par => `<p>${tpl.escapeHtml(par)}</p>`).join('');
   const baseUrl = process.env.BASE_URL || '';
@@ -542,8 +633,23 @@ async function sendLadderNotice({ rule, loan, property, tenant, co, status, dueD
     if (!tenant || !tenant.phone) delivery.sms = { ok: false, error: 'No mobile number on file' };
     else if (!sms.smsEnabled(co)) delivery.sms = { ok: false, error: 'Texting is not connected' };
     else {
-      const short = `${wording.subject}\n\n$${(status.owed_now_cents / 100).toFixed(2)} is ${daysPast} days past due on ` +
-        `${property ? property.address : 'your account'}. The full notice is in your app: ${baseUrl || ''}/`;
+      // A text arrives on a lock screen, in a household where the phone may be shared,
+      // and it sits in a carrier's logs. An early reminder can carry the figure — that
+      // is the useful part of a reminder. A default notice cannot: the words "notice of
+      // default" beside a balance, visible without unlocking the phone, is a disclosure
+      // to whoever happens to be looking, and it is not one the buyer agreed to.
+      //
+      // So the serious rungs — the legal ones, and Michigan's day-6 notice, which is a
+      // default notice whatever its stage is called — send a bare pointer to the app.
+      // Nothing is lost: the notice itself went out by app, email and, at 30 days,
+      // certified mail. The address stays so a buyer with two houses knows which.
+      const addrLabel = property ? property.address : 'your account';
+      const isDefaultNotice = rule.notice_type === 'legal_notice' || reserveRights;
+      const short = isDefaultNotice
+        ? `A notice about your account at ${addrLabel} is waiting in the PorchPay app. ` +
+          `Please open it and read it: ${baseUrl || ''}/`
+        : `Payment reminder — $${(status.owed_now_cents / 100).toFixed(2)} is ${daysPast} days past due ` +
+          `on ${addrLabel}. You can pay in the app: ${baseUrl || ''}/`;
       try {
         await sms.sendSms(tenant.phone, short, co);
         delivery.sms = { ok: true, to: tenant.phone };
@@ -551,30 +657,38 @@ async function sendLadderNotice({ rule, loan, property, tenant, co, status, dueD
     }
   }
 
-  // 5. Certified mail, for the 30-day rung only. That is the notice a forfeiture
-  //    case leans on, and "certified" is what turns it from a claim into a tracking
-  //    number with delivery scans. The idempotency key means a sweep that crashes and
-  //    reruns cannot mail — or bill — the same notice twice.
-  if (rule.stage === 'late_30' && lob.lobEnabled(co)) {
-    if (!property || !property.address) {
-      delivery.mail = { ok: false, error: 'No property address to mail to' };
+  // 5. Certified mail, on whichever rungs are set to carry it — the 30-day one by
+  //    default. That is the notice a forfeiture case leans on, and "certified" is what
+  //    turns it from a claim into a tracking number with delivery scans. The
+  //    idempotency key means a sweep that crashes and reruns cannot mail — or bill —
+  //    the same notice twice.
+  if (rule.certified) {
+    const to = mailingAddressFor({ property, tenant, borrowers: borrowersFor(loan, property, tenant) });
+    if (!lob.lobEnabled(co)) {
+      // Silence here used to be indistinguishable from a rung that was never meant to
+      // mail. On a rung that was, the record should say so.
+      delivery.mail = { ok: false, error: 'Certified mail is not set up — add the Lob key and return address in Settings' };
+    } else if (!to) {
+      delivery.mail = { ok: false, error: 'No address to mail to' };
     } else {
       try {
         const sent = await lob.sendCertifiedLetter(co, {
-          to: { name: (tenant && tenant.name) || 'Occupant', address_line1: property.address,
-                address_city: property.city, address_state: property.state, address_zip: property.zip },
+          to,
           subject: wording.subject, body: wording.body,
-          description: `30-day notice — loan ${loan.id} ${period}`,
+          description: `${rule.label} — loan ${loan.id} ${period}`,
           idempotencyKey: `notice-${loan.id}-${rule.stage}-${period}`,
         });
-        run(`UPDATE notices SET lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=? WHERE id=?`,
-          sent.id, sent.tracking_number, sent.expected_delivery_date, sent.cost_cents || null, noticeId);
-        delivery.mail = { ok: true, lob_id: sent.id, tracking: sent.tracking_number, test: sent.test };
+        run(`UPDATE notices SET lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=?, lob_test=? WHERE id=?`,
+          sent.id, sent.tracking_number, sent.expected_delivery_date, sent.cost_cents || null,
+          sent.test ? 1 : 0, noticeId);
+        delivery.mail = { ok: true, lob_id: sent.id, tracking: sent.tracking_number, test: sent.test,
+          addressed_to: to.source, note: sent.verification_note || undefined };
 
         // A copy of what was mailed, filed on the loan. Evidence, not correspondence
         // for the buyer — they got the notice itself through every other channel.
         try {
-          const pdfBuf = pdfDoc.letter({ company: co, subject: wording.subject, bodyText: wording.body, sentAt: today() });
+          const pdfBuf = pdfDoc.letter({ company: co, subject: wording.subject, bodyText: wording.body,
+            sentAt: today(), contactLine: tpl.departmentFor(co, rule.email_identity).contactLine });
           const stored = crypto.randomUUID() + '.pdf';
           fs.writeFileSync(path.join(UPLOAD_DIR, stored), pdfBuf);
           run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
@@ -613,6 +727,24 @@ async function sendLadderNotice({ rule, loan, property, tenant, co, status, dueD
 // out unpaid, a File-DC 102 task appears with that district court's own filing
 // checklist. The complaint itself is filed by a person, never by a cron job.
 
+// Taxes and insurance the seller actually fronted because escrow was short, split by
+// what the money was for. Only paid disbursements count — a scheduled one has not cost
+// anybody anything yet, and a notice that demands repayment of a bill nobody has paid
+// is a notice with a hole in it.
+function advancesFor(loanId) {
+  const rows = all(`SELECT ei.item_type, COALESCE(SUM(d.advanced_cents), 0) AS c
+    FROM escrow_disbursements d
+    LEFT JOIN escrow_items ei ON ei.id = d.escrow_item_id
+    WHERE d.loan_id = ? AND d.status = 'paid' AND d.advanced_cents > 0
+    GROUP BY ei.item_type`, loanId);
+  const out = { taxes_cents: 0, insurance_cents: 0 };
+  for (const r of rows) {
+    if (r.item_type === 'property_tax') out.taxes_cents += r.c;
+    else if (r.item_type === 'hazard_insurance' || r.item_type === 'flood_insurance') out.insurance_cents += r.c;
+  }
+  return out;
+}
+
 function missedDueDatesFor(loan, status) {
   const first = new Date(loan.first_payment_date + 'T00:00:00Z');
   const dates = [];
@@ -645,6 +777,7 @@ function deliverToBuyer({ key, co, loan, tenant, subject, intro, details = '', e
         company: co, buyer: tenant, loan, property,
         status: loanEngine.loanStatus(loan, all('SELECT * FROM ledger WHERE loan_id=?', loan.id), today()),
         payoff: loanEngine.payoffQuote(loan, today()), baseUrl: process.env.BASE_URL || '',
+        borrowers: borrowersFor(loan, property, tenant),
       });
       if (t.subject) sub = tpl.applyMerge(t.subject, values);
       const custom = tpl.applyMerge(
@@ -698,6 +831,7 @@ function prepareDc101(loan, { period, status, property, tenant, co }) {
   const court = noticeRules.miCourtFor(property);
   const values = dc101.buildValues({
     company: co, property, tenant,
+    borrowers: borrowersFor(loan, property, tenant),
     missedDueDates: missedDueDatesFor(loan, status),
     pastDueCents: Math.max(0, status.owed_now_cents - status.fees_due_cents),
     feesCents: status.fees_due_cents,
@@ -757,7 +891,8 @@ function fileMiFiveDayEvidence({ co, loan, property, tenant, noticeId, period })
   };
 
   fileDoc(
-    pdfDoc.letter({ company: co, subject: n.subject, bodyText: n.body, sentAt: today(), logo }),
+    pdfDoc.letter({ company: co, subject: n.subject, bodyText: n.body, sentAt: today(), logo,
+      contactLine: tpl.departmentFor(co, 'servicing').contactLine }),
     `Notice as sent — 5-day late notice (${period})`, `mi-5day-notice-${noticeId}.pdf`);
 
   const line = (label, value) => `${label}: ${value}`;
@@ -793,9 +928,28 @@ function fileMiFiveDayEvidence({ co, loan, property, tenant, noticeId, period })
         line('Result', `NOT DELIVERED — ${sm.error}`),
       ].join('\n'))
     : 'Not attempted on this notice.'));
-  ch.push('CHANNEL — FIRST-CLASS U.S. MAIL\n' +
-    'Not sent automatically with this notice. If mailed from the notice screen, the mailed copy and ' +
-    'its tracking are filed separately alongside this certificate.');
+  // Channel 1 on the company's own certificate. The day-6 notice can now go certified,
+  // so when it did, this records what the template asks for: the address used, where
+  // that address came from, and the article number and scan that make it provable.
+  const ml = delivery.mail;
+  const to = mailingAddressFor({ property, tenant, borrowers: borrowersFor(loan, property, tenant) });
+  ch.push('CHANNEL — FIRST-CLASS U.S. MAIL\n' + (
+    ml && ml.ok
+      ? `Date deposited in the mail: ${n.sent_at ? String(n.sent_at).slice(0, 10) : today()}\n` +
+        `Addressed to: ${borrowerLine(borrowersFor(loan, property, tenant), (tenant && tenant.name) || 'Purchaser')}\n` +
+        `Address used: ${[to && to.address_line1, to && to.address_line2, to && to.address_city,
+                          to && to.address_state, to && to.address_zip].filter(Boolean).join(', ') || '—'}\n` +
+        `Source of address: ${ml.addressed_to === 'buyer' ? "Purchaser's written update — mailing address on file"
+                              : 'Property address'}\n` +
+        `Postage: Certified — article no. ${n.lob_tracking || '(pending)'}\n` +
+        `Delivery status: ${n.lob_status || 'created'}${n.lob_expected ? `; expected ${n.lob_expected}` : ''}\n` +
+        (ml.note ? `Note: ${ml.note}\n` : '') +
+        (ml.test ? 'TEST LETTER — generated but never printed or mailed. Not evidence of delivery.\n' : '') +
+        'A PDF of the letter exactly as mailed is filed under this loan\'s documents.'
+      : ml && ml.error
+        ? `Not mailed: ${ml.error}`
+        : 'Not sent by mail with this notice. If mailed later from the notice screen, the mailed copy ' +
+          'and its tracking are filed separately alongside this certificate.'));
 
   const certBody =
 `Retain in the seller's deal file. Not filed with the court.
@@ -819,9 +973,9 @@ Generated by Seller's servicing platform on ${stamp}.`;
   fileDoc(
     pdfDoc.letter({
       company: co, subject: 'CERTIFICATE OF DELIVERY — Notice of Late Payment and Default', logo,
-      sentAt: today(),
+      sentAt: today(), contactLine: tpl.departmentFor(co, 'servicing').contactLine,
       meta: [['Deal', `Loan #${loan.id}`], ['Property', `${property.address}, ${property.city}, MI ${property.zip}`],
-             ['Purchaser(s)', (tenant && tenant.name) || '—'], ['Notice date', today()], ['Arrears month', period]],
+             ['Purchaser(s)', borrowerLine(borrowersFor(loan, property, tenant), '—')], ['Notice date', today()], ['Arrears month', period]],
       bodyText: certBody,
     }),
     `Certificate of delivery — 5-day notice (${period})`, `mi-5day-certificate-${noticeId}.pdf`);
@@ -852,7 +1006,7 @@ No DC 101 forfeiture notice is currently pending on this account. If one is serv
 Michigan Land Contract
 
 Property: ${property.address}, ${property.city}, Michigan ${property.zip}${loan.contract_date ? `\nLand contract dated: ${loan.contract_date}` : ''}
-Purchaser(s): ${(tenant && tenant.name) || '—'}
+Purchaser(s): ${borrowerLine(borrowersFor(loan, property, tenant), '—')}
 
 1. PAYMENT RECEIVED
 Amount received: ${money(amountCents)}
@@ -895,9 +1049,12 @@ function miPartialReceipt({ loan, alloc, amountCents, method, entryDate, owedBef
   const anyDc = dc || get(`SELECT id FROM notices WHERE loan_id=? AND stage='mi_dc101' LIMIT 1`, loan.id);
   const body = miReceiptText({ co, property, loan, tenant, amountCents, entryDate, method, owedBefore, alloc, dc });
 
+  // The receipt exists to preserve a forfeiture, and it usually issues while a DC 101
+  // cure period is running — so it comes from Legal, not Servicing.
   const buf = pdfDoc.letter({
     company: co, subject: 'Partial Payment Acknowledgment and Non-Waiver Receipt',
     sentAt: entryDate, logo: companyLogo(co), bodyText: body,
+    contactLine: tpl.departmentFor(co, 'legal').contactLine,
   });
   const stored = crypto.randomUUID() + '.pdf';
   fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf);
@@ -964,6 +1121,146 @@ function createDc102Task(notice, loan, property, status) {
       console.log(`DC 102 filing task created for loan ${loan.id}`);
     }
   } catch (e) { /* unique source_key — already created */ }
+}
+
+// ---------- the Illinois track ----------
+// Installment contracts in Illinois leave the generic ladder entirely and run the
+// company's own sequence: a Notice of Default on day 6, a Notice of Intent to Declare
+// Forfeiture on day 46, a 5-Day Notice to Quit on day 85, with a preparation task at
+// day 75 and a filing task at day 91. All three letters go certified — the delivery
+// scan is the evidence, and these are the letters an eviction is built on.
+//
+// A task rather than a letter wherever a person must act: arranging personal service,
+// and filing in the circuit court for the property's county.
+function ilTaskOnce(loan, property, { key, title, notes, due }) {
+  try {
+    const r = run(`INSERT INTO tasks (company_id, property_id, loan_id, title, notes, category, priority, due_date, source_key)
+       VALUES (?,?,?,?,?,'legal','high',?,?)`,
+      loan.company_id, loan.property_id, loan.id, title, notes, due || today(), key);
+    if (r.changes > 0) {
+      notifyAdmins(loan.company_id, {
+        kind: 'notice', title, body: `${property.address} — on your list.`,
+        url: '/admin', dedupeKey: key,
+      });
+    }
+  } catch (e) { /* unique source_key — already created */ }
+}
+
+async function runIllinois({ loan, property, tenant, co, status, dueDate, period, daysPast }) {
+  const already = (stage) =>
+    !!get('SELECT id FROM notices WHERE loan_id=? AND period=? AND stage=?', loan.id, period, stage);
+  const borrowers = borrowersFor(loan, property, tenant);
+  const missedDates = missedDueDatesFor(loan, status);
+  const payoffCents = (() => {
+    try { return loanEngine.payoffQuote(loan, today()).total_cents; }
+    catch { return loan.principal_balance_cents; }
+  })();
+
+  // Day 6: the late fee, then the Notice of Default. The fee is charged before the
+  // notice is written so the amount to reinstate on the letter includes it.
+  if (daysPast >= 6 && !already('il_default')) {
+    if (loan.late_fee_cents > 0 &&
+        !get(`SELECT id FROM ledger WHERE loan_id=? AND type='late_fee' AND memo LIKE ?`, loan.id, `%${period}%`)) {
+      run(`INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo)
+           VALUES (?,?, 'late_fee', ?, ?)`, loan.id, today(), -loan.late_fee_cents,
+        `Late fee — ${period} missed payment (Notice of Default)`);
+      run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', loan.late_fee_cents, loan.id);
+      loan = get('SELECT * FROM loans WHERE id=?', loan.id);
+    }
+    const fresh = loanEngine.loanStatus(loan, all('SELECT * FROM ledger WHERE loan_id=?', loan.id), today());
+    const w = noticeRules.ilDefaultWording({ company: co, loan, property, tenant, status: fresh,
+      dueDate, missedDates, payoffCents, todayIso: today(), borrowers });
+    await sendIlNotice({ stage: 'il_default', label: 'Notice of Default', identity: 'servicing',
+      type: 'legal_notice', wording: w, loan, property, tenant, co, status: fresh, period, daysPast });
+  }
+
+  // Day 46: intent to forfeit. Thirty days to cure, counted from today because that is
+  // when it is mailed, and recorded on the notice so the filing task can read it back.
+  if (daysPast >= 46 && !already('il_forfeit')) {
+    const w = noticeRules.ilForfeitureWording({ company: co, loan, property, tenant, status,
+      dueDate, missedDates, payoffCents, todayIso: today(), borrowers });
+    const id = await sendIlNotice({ stage: 'il_forfeit', label: 'Notice of Intent to Declare Forfeiture',
+      identity: 'legal', type: 'legal_notice', wording: w, loan, property, tenant, co, status, period, daysPast });
+    if (id) run('UPDATE notices SET cure_deadline=? WHERE id=?', w.forfeitCureBy, id);
+    const gaps = noticeRules.ilMissingFields(property);
+    if (gaps.length) {
+      ilTaskOnce(loan, property, {
+        key: `il-gaps-${loan.id}-${period}`,
+        title: `Forfeiture notice went out with blanks — ${property.address}`,
+        notes: `The Notice of Intent to Declare Forfeiture was mailed with these details missing from the ` +
+          `property record, and printed as blank lines:\n\n${gaps.map(g => `  • ${g}`).join('\n')}\n\n` +
+          `Fill them in on the property, then send a corrected notice by hand if your attorney advises it.`,
+      });
+    }
+  }
+
+  // Day 75: get ready. A person has to arrange service and pull the file together.
+  if (daysPast >= noticeRules.IL_PREP_DAY) {
+    ilTaskOnce(loan, property, {
+      key: `il-prep-${loan.id}-${period}`,
+      title: `Prepare for eviction — ${property.address}`,
+      notes: `Day ${noticeRules.IL_PREP_DAY} of the Illinois sequence. The 5-Day Notice to Quit goes out on day 85 and ` +
+        `the eviction can be filed on day 91.\n\n` +
+        `Before then:\n` +
+        `  • Contact the attorney\n` +
+        `  • Arrange personal service for the 5-day notice — it is the strongest service and needs booking\n` +
+        `  • Confirm the file: payment history, every notice with its tracking and delivery scan, and the ` +
+        `current default and payoff figures\n\n` +
+        `Filing is in the circuit court for the county where the property sits, not where the seller sits.`,
+    });
+  }
+
+  // Day 85: the demand that has to precede a filing.
+  if (daysPast >= 85 && !already('il_5day')) {
+    const w = noticeRules.ilFiveDayWording({ company: co, loan, property, tenant, status,
+      todayIso: today(), borrowers, baseUrl: process.env.BASE_URL || '' });
+    await sendIlNotice({ stage: 'il_5day', label: '5-Day Notice to Quit', identity: 'legal',
+      type: 'legal_notice', wording: w, loan, property, tenant, co, status, period, daysPast });
+    ilTaskOnce(loan, property, {
+      key: `il-serve5-${loan.id}-${period}`,
+      title: `Serve the 5-Day Notice in person — ${property.address}`,
+      notes: `The 5-Day Notice to Quit has been mailed certified. Personal service is stronger and should be ` +
+        `used as well wherever it can be arranged.\n\n` +
+        `If neither personal service nor certified mail can be completed, posting is a last resort and only ` +
+        `after documented attempts at both.\n\n` +
+        `Keep the proof — affidavit of service, tracking and scan, or a photograph and note if posted. ` +
+        `An eviction cannot be filed without it.`,
+    });
+  }
+
+  // Day 91: the first day everything has expired.
+  if (daysPast >= noticeRules.IL_FILE_DAY) {
+    const forfeit = get(`SELECT cure_deadline FROM notices WHERE loan_id=? AND period=? AND stage='il_forfeit'`,
+      loan.id, period);
+    const contractCureBy = (() => {
+      const d = new Date(dueDate + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + noticeRules.IL_CONTRACT_CURE_DAYS);
+      return d.toISOString().slice(0, 10);
+    })();
+    ilTaskOnce(loan, property, {
+      key: `il-file-${loan.id}-${period}`,
+      title: `File forcible entry and detainer — ${property.address}`,
+      notes: `Day ${noticeRules.IL_FILE_DAY}. $${(status.owed_now_cents / 100).toFixed(2)} is still owed.\n\n` +
+        `All three periods have run:\n` +
+        `  • 90-day contract cure, from the date of default — expired ${contractCureBy}\n` +
+        `  • 30-day forfeiture cure, from the Intent notice — expired ${forfeit && forfeit.cure_deadline ? forfeit.cure_deadline : 'see the notice'}\n` +
+        `  • 5-day demand — expired\n\n` +
+        `Do not file until proof of service for the 5-day notice is in the file.\n\n` +
+        `File in the circuit court for ${property.county ? property.county + ' County' : "the property's county"}. ` +
+        `Every notice, its tracking number and its delivery scan are filed under this loan's documents.`,
+    });
+  }
+}
+
+// One place that posts an Illinois notice: the record, the message thread, email, text
+// and certified mail, in the same shape the ladder uses. Returns the notice id.
+async function sendIlNotice({ stage, label, identity, type, wording, loan, property, tenant, co,
+                             status, period, daysPast }) {
+  const rule = { stage, label, notice_type: type, email_identity: identity,
+                 channels: 'app,sms,email', certified: 1, subject: null, body: null };
+  return sendLadderNotice({ rule, loan, property, tenant, co, status,
+    dueDate: null, period, daysPast, reserveRights: true,
+    wordingOverride: { subject: wording.subject, body: wording.body } });
 }
 
 async function runNoticeSweep() {
@@ -1051,7 +1348,9 @@ async function runNoticeSweep() {
             const wordingOverride = (rule.subject && rule.body) ? null
               : noticeRules.miLateNoticeWording({
                   company: co, loan, property, tenant, status: freshStatus, dueDate,
-                  missedDates: missedDueDatesFor(loan, freshStatus), feeCharged, todayIso: today() });
+                  missedDates: missedDueDatesFor(loan, freshStatus), feeCharged, todayIso: today(),
+                  borrowers: borrowersFor(loan, property, tenant),
+                  advances: advancesFor(loan.id) });
             const noticeId = await sendLadderNotice({ rule, loan, property, tenant, co, status: freshStatus,
               dueDate, period, daysPast, reserveRights: true, feeCharged, wordingOverride });
             // Evidence, filed the moment it exists: the notice exactly as sent, on the
@@ -1067,6 +1366,12 @@ async function runNoticeSweep() {
           const freshStatus = loanEngine.loanStatus(loan, freshLedger, today());
           prepareDc101(loan, { period, status: freshStatus, property, tenant, co });
         }
+        continue;
+      }
+
+      // Illinois runs its own sequence and never touches the generic ladder either.
+      if (noticeRules.isIllinois(property)) {
+        await runIllinois({ loan, property, tenant, co, status, dueDate, period, daysPast });
         continue;
       }
 
@@ -1181,7 +1486,7 @@ try {
   if (healed.changes > 0) console.log(`Healed ${healed.changes} stale invitation status(es) for buyers already in the app`);
 } catch (e) { console.error('Invitation heal:', e.message); }
 
-// One-time: recording and transcripts became the default. Marisa asked for every call
+// One-time: recording and transcripts became the default. The owner asked for every call
 // recorded and transcribed; companies created from here on start that way, and this
 // flips existing ones once — the marker means turning it off later sticks.
 try {
@@ -1557,16 +1862,29 @@ app.put('/api/admin/properties/:id', adminOnly, (req, res) => {
   if (!p) return res.status(404).json({ error: 'Not found' });
   const b = { ...p, ...req.body };
   const n = (v) => (v === '' || v == null ? null : Math.round(Number(v)));
-  run(`UPDATE properties SET address=?, city=?, state=?, zip=?, county=?, trust_name=?, trustee=?,
+  run(`UPDATE properties SET address=?, unit=?, city=?, state=?, zip=?, county=?, trust_name=?, trustee=?,
        notes=?, lat=?, lng=?, owner_name=?, owner_type=?, beds=?, baths=?, sqft=?, year_built=?,
        acquired_date=?, purchase_price_cents=?, target_sale_price_cents=?,
        late_fee_cents=?, grace_days=?, due_day=?,
+       legal_description=?, pin=?, memo_recorded_county=?, memo_recorded_date=?,
+       memo_document_no=?, escrow_agent=?,
+       court_district=?, court_address=?, court_phone=?,
        insurance_carrier=?, insurance_expires=?, tax_due_date=?, tax_due_date2=? WHERE id=?`,
-    b.address, b.city, b.state, b.zip, b.county ?? null, b.trust_name, b.trustee,
+    b.address, b.unit || null, b.city, b.state, b.zip, b.county ?? null, b.trust_name, b.trustee,
     b.notes, b.lat ?? null, b.lng ?? null, b.owner_name ?? null, b.owner_type ?? null,
     n(b.beds), b.baths === '' || b.baths == null ? null : Number(b.baths), n(b.sqft), n(b.year_built),
     b.acquired_date || null, n(b.purchase_price_cents), n(b.target_sale_price_cents),
     n(b.late_fee_cents), n(b.grace_days), n(b.due_day),
+    b.legal_description ?? p.legal_description ?? null, b.pin ?? p.pin ?? null,
+    b.memo_recorded_county ?? p.memo_recorded_county ?? null,
+    b.memo_recorded_date ?? p.memo_recorded_date ?? null,
+    b.memo_document_no ?? p.memo_document_no ?? null,
+    b.escrow_agent ?? p.escrow_agent ?? null,
+    // The court belongs to the property. Serving a DC 101 also writes these, so a house
+    // remembers its court once anybody has filled it in from either direction.
+    b.court_district ?? p.court_district ?? null,
+    b.court_address ?? p.court_address ?? null,
+    b.court_phone ?? p.court_phone ?? null,
     b.insurance_carrier || null, b.insurance_expires || null, b.tax_due_date || null, b.tax_due_date2 || null, p.id);
   res.json(get('SELECT * FROM properties WHERE id=?', p.id));
 });
@@ -2314,7 +2632,7 @@ app.post('/api/admin/contacts/:id/messages', adminOnly, async (req, res, next) =
   const text = [
     prop ? `${prop.address}:` : null,
     body,
-    `— ${req.user.name || tpl.outboundName(co)}, ${tpl.outboundName(co)}`,
+    `— ${tpl.outboundName(co)}, Servicing Department`,
   ].filter(Boolean).join('\n');
 
   if (!sms.smsEnabled(myCompany(req))) {
@@ -2356,7 +2674,7 @@ app.post('/api/admin/properties/:id/broadcast', adminOnly, async (req, res, next
     if (!c) { results.push({ id, ok: false, error: 'Not found' }); continue; }
     const phone = sms.normalizePhone(c.phone);
     if (!phone) { results.push({ id, name: c.name, ok: false, error: 'No mobile number' }); continue; }
-    const text = `${p.address}:\n${body}\n— ${req.user.name || tpl.outboundName(co)}, ${tpl.outboundName(co)}`;
+    const text = `${p.address}:\n${body}\n— ${tpl.outboundName(co)}, Servicing Department`;
     try {
       if (!sms.smsEnabled(myCompany(req))) throw new Error('Texting is not connected yet');
       await sms.sendSms(phone, text, myCompany(req));
@@ -3536,11 +3854,11 @@ app.get('/api/admin/loans/:id/workflow', adminOnly, (req, res, next) => {
                : status.is_past_due ? 'upcoming' : 'idle'),
           period: n ? n.period : null,
           done_at: n ? n.sent_at : null, channels: n && !skipped ? channelsOf(n) : [],
-          certified: rule.stage === 'late_30',
+          certified: !!rule.certified,
           detail: skipped ? 'Recorded but not sent — a higher rung had already been reached.'
             : n ? null
             : `Sends itself on day ${rule.trigger_day} from the ${rule.identity} address` +
-              (rule.stage === 'late_30' ? ', and by certified mail when Lob is connected.' : '.') });
+              (rule.certified ? ', and by certified mail when Lob is connected.' : '.') });
       }
     }
 
@@ -4274,12 +4592,13 @@ app.put('/api/admin/notice-rules/:id', adminOnly, (req, res) => {
   const identity = b.email_identity === 'legal' ? 'legal'
     : b.email_identity === 'servicing' ? 'servicing' : r.email_identity;
   const chans = Array.isArray(b.channels) ? b.channels.filter(c => ['app','sms','email'].includes(c)) : null;
-  run(`UPDATE notice_rules SET trigger_day=?, email_identity=?, channels=?, subject=?, body=?, active=?
-       WHERE id=?`,
+  run(`UPDATE notice_rules SET trigger_day=?, email_identity=?, channels=?, subject=?, body=?, active=?,
+         certified=? WHERE id=?`,
     day, identity, chans && chans.length ? ['app', ...chans.filter(c => c !== 'app')].join(',') : r.channels,
     b.subject !== undefined ? (b.subject || null) : r.subject,
     b.body !== undefined ? (b.body || null) : r.body,
-    b.active === undefined ? r.active : (b.active ? 1 : 0), r.id);
+    b.active === undefined ? r.active : (b.active ? 1 : 0),
+    b.certified === undefined ? r.certified : (b.certified ? 1 : 0), r.id);
   res.json(get('SELECT * FROM notice_rules WHERE id=?', r.id));
 });
 
@@ -4627,6 +4946,328 @@ app.get('/api/admin/books', adminOnly, (req, res) => {
   });
 });
 
+// ---------- directing money nobody has accounted for ----------
+// A buyer pays more than everything they owe, or sends a round number that does not
+// match anything. That money is real and it is theirs until somebody says otherwise,
+// so the app holds it apart and asks. Guessing is what produced the escrow figures
+// that do not reconcile.
+//
+// Each bucket says three things: what it does to the loan's own running balances, and
+// which account it credits in the journal. Taxes and insurance are escrow — money you
+// hold in trust to pay somebody else's bill — so they cross from the operating fund
+// into the trust fund, which takes four lines rather than two.
+const ALLOC_BUCKETS = [
+  { key: 'principal',  label: 'Principal',      account: '1200', field: 'principal_balance_cents', reduces: true },
+  { key: 'interest',   label: 'Interest',       account: '4100', field: 'interest_due_cents',      reduces: true },
+  { key: 'taxes',      label: 'Taxes',          account: '2100', escrow: true },
+  { key: 'insurance',  label: 'Insurance',      account: '2100', escrow: true },
+  { key: 'late_fee',   label: 'Late fees',      account: '4200', field: 'fees_due_cents',          reduces: true },
+  { key: 'admin_fee',  label: 'Admin fees',     account: '4300', field: 'fees_due_cents',          reduces: true },
+  { key: 'postage',    label: 'Postage',        account: '4500', field: 'fees_due_cents',          reduces: true },
+  { key: 'other',      label: 'Other',          account: '4900', needsNote: true },
+];
+
+app.get('/api/admin/loans/:id/unapplied', adminOnly, (req, res) => {
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  res.json({
+    loan_id: loan.id,
+    unapplied_cents: loan.unapplied_cents || 0,
+    buckets: ALLOC_BUCKETS.map(b => ({ key: b.key, label: b.label, needs_note: !!b.needsNote })),
+    // What is currently owed, so the dialog can suggest without deciding.
+    owed: {
+      fees_due_cents: loan.fees_due_cents,
+      interest_due_cents: loan.interest_due_cents,
+      principal_balance_cents: loan.principal_balance_cents,
+    },
+    history: all(`SELECT a.*, u.name AS allocated_by_name
+      FROM unapplied_allocations a LEFT JOIN users u ON u.id = a.allocated_by
+      WHERE a.loan_id=? ORDER BY a.id DESC LIMIT 20`, loan.id),
+  });
+});
+
+app.post('/api/admin/loans/:id/unapplied/allocate', adminOnly, (req, res) => {
+  const loan = ownedLoan(req, req.params.id);
+  if (!loan) return res.status(404).json({ error: 'Loan not found' });
+  const available = loan.unapplied_cents || 0;
+  if (available <= 0) return res.status(400).json({ error: 'There is nothing waiting to be allocated on this loan' });
+
+  const b = req.body || {};
+  const amounts = {};
+  let total = 0;
+  for (const bucket of ALLOC_BUCKETS) {
+    const v = Math.round(Number(b[bucket.key] || 0));
+    if (!Number.isFinite(v) || v < 0) return res.status(400).json({ error: `${bucket.label} cannot be negative` });
+    amounts[bucket.key] = v;
+    total += v;
+  }
+  if (total <= 0) return res.status(400).json({ error: 'Put an amount against at least one line' });
+  if (total > available) {
+    return res.status(400).json({
+      error: `That allocates $${(total / 100).toFixed(2)} but only $${(available / 100).toFixed(2)} is waiting.`,
+    });
+  }
+  const note = String(b.note || '').trim();
+  // "Other" is the bucket that means "not one of the named things", so it is the one
+  // that has to say what it was. A line of history reading "Other — $340" is no better
+  // than the unallocated money it replaced.
+  if (amounts.other > 0 && !note) {
+    return res.status(400).json({ error: 'Say what the money allocated to Other was for.' });
+  }
+
+  const co = myCompany(req);
+  const escrowTotal = amounts.taxes + amounts.insurance;
+  if (escrowTotal > 0 && !loan.tenant_user_id) {
+    return res.status(400).json({
+      error: 'Taxes and insurance are held in trust for the buyer, so this loan needs a buyer on it first.',
+    });
+  }
+
+  // Journal side. The money is already in operating cash — it arrived with the
+  // payment — so allocating it moves the Unapplied liability into whatever it was
+  // really for. Anything heading for escrow has to physically cross funds: operating
+  // cash out, trust cash in, and each side balancing on its own.
+  const lines = [{ account: '2150', debit: total }];
+  for (const bucket of ALLOC_BUCKETS) {
+    const amt = amounts[bucket.key];
+    if (!amt) continue;
+    if (bucket.escrow) continue;                 // handled together below
+    lines.push({ account: bucket.account, credit: amt, loan_id: loan.id,
+      property_id: loan.property_id, memo: bucket.label });
+  }
+  if (escrowTotal > 0) {
+    lines.push({ account: '1010', credit: escrowTotal, loan_id: loan.id, memo: 'Moved to trust' });
+    lines.push({ account: '1015', debit: escrowTotal, loan_id: loan.id,
+      beneficiary_user_id: loan.tenant_user_id, memo: 'Escrow received' });
+    if (amounts.taxes) {
+      lines.push({ account: '2100', credit: amounts.taxes, loan_id: loan.id,
+        beneficiary_user_id: loan.tenant_user_id, memo: 'Taxes' });
+    }
+    if (amounts.insurance) {
+      lines.push({ account: '2100', credit: amounts.insurance, loan_id: loan.id,
+        beneficiary_user_id: loan.tenant_user_id, memo: 'Insurance' });
+    }
+  }
+
+  const sp = 'alloc_' + Date.now().toString(36);
+  db.exec(`SAVEPOINT ${sp}`);
+  try {
+    const entry = journal.postEntry({
+      company_id: req.companyId,
+      date: today(),
+      description: `Allocated $${(total / 100).toFixed(2)} of unapplied funds${note ? ` — ${note}` : ''}`,
+      source_type: 'manual',
+      property_id: loan.property_id, loan_id: loan.id,
+      created_by: req.user.id,
+      lines,
+    });
+
+    // The loan's own running balances. Interest and fees can only be reduced to zero —
+    // more than that would be an overpayment of the thing itself, which is what
+    // unapplied money is for in the first place.
+    const set = {
+      principal_balance_cents: loan.principal_balance_cents,
+      interest_due_cents: loan.interest_due_cents,
+      fees_due_cents: loan.fees_due_cents,
+      escrow_balance_cents: loan.escrow_balance_cents + escrowTotal,
+    };
+    for (const bucket of ALLOC_BUCKETS) {
+      const amt = amounts[bucket.key];
+      if (!amt || !bucket.reduces) continue;
+      set[bucket.field] = Math.max(0, set[bucket.field] - amt);
+    }
+    run(`UPDATE loans SET principal_balance_cents=?, interest_due_cents=?, fees_due_cents=?,
+           escrow_balance_cents=?, unapplied_cents=?,
+           status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
+      set.principal_balance_cents, set.interest_due_cents, set.fees_due_cents,
+      set.escrow_balance_cents, available - total, set.principal_balance_cents, loan.id);
+
+    run(`INSERT INTO unapplied_allocations (loan_id, allocated_by, total_cents,
+           principal_cents, interest_cents, taxes_cents, insurance_cents,
+           late_fee_cents, admin_fee_cents, postage_cents, other_cents, note, journal_entry_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      loan.id, req.user.id, total, amounts.principal, amounts.interest, amounts.taxes,
+      amounts.insurance, amounts.late_fee, amounts.admin_fee, amounts.postage,
+      amounts.other, note || null, entry.id);
+
+    // The buyer is entitled to know where their money went. This is the same courtesy
+    // as a receipt, and it is the record that answers "you never told me" later.
+    if (loan.tenant_user_id) {
+      const detail = ALLOC_BUCKETS.filter(x => amounts[x.key] > 0)
+        .map(x => `${x.label}: $${(amounts[x.key] / 100).toFixed(2)}`).join('\n');
+      const remainder = available - total;
+      notify.notify(loan.tenant_user_id, {
+        kind: 'payment_received',
+        title: 'Your payment has been applied',
+        body: `$${(total / 100).toFixed(2)} has been applied to your account.\n${detail}` +
+          (remainder > 0 ? `\n$${(remainder / 100).toFixed(2)} is still being held.` : ''),
+        url: '/?tab=activity',
+      }).catch(() => {});
+    }
+
+    db.exec(`RELEASE ${sp}`);
+    res.json({
+      ok: true,
+      allocated_cents: total,
+      remaining_cents: available - total,
+      journal_entry_id: entry.id,
+      loan: get('SELECT * FROM loans WHERE id=?', loan.id),
+    });
+  } catch (e) {
+    db.exec(`ROLLBACK TO ${sp}`); db.exec(`RELEASE ${sp}`);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---------- correcting the journal ----------
+// A ledger you can rewrite is not a ledger. So nothing here changes a row that has
+// already been posted: correcting an entry posts an offsetting reversal, and editing
+// one posts a reversal and then a corrected replacement. The screen calls those
+// "delete" and "edit" because that is what they do from where the user sits; the
+// history keeps all three rows and the links between them. That is also what makes
+// these books usable as evidence — a ledger with rows removed from it is one an
+// opposing attorney gets to ask about.
+//
+// Only entries a person is responsible for can be touched: things typed in by hand,
+// and the opening balances the migration invented. An entry the app posted from a
+// payment stays locked to that payment, because the fix for a wrong payment is to fix
+// the payment, not to edit its shadow in the journal.
+const CORRECTABLE = new Set(['manual', 'opening_balance']);
+
+function ownedEntry(req, id) {
+  return get('SELECT * FROM journal_entries WHERE id=? AND company_id=?', Number(id), req.companyId);
+}
+function entryWithLines(e) {
+  const lines = all(`SELECT id, line_no, account_code, debit_cents, credit_cents, property_id,
+      loan_id, pml_loan_id, beneficiary_user_id, memo
+    FROM journal_lines WHERE entry_id=? ORDER BY line_no`, e.id);
+  const reversal = get('SELECT id, entry_date, description FROM journal_entries WHERE reverses_id=?', e.id);
+  const reverses = e.reverses_id
+    ? get('SELECT id, entry_date, description FROM journal_entries WHERE id=?', e.reverses_id) : null;
+  return {
+    ...e,
+    lines,
+    total_cents: lines.reduce((t, l) => t + l.debit_cents, 0),
+    reversed_by: reversal || null,
+    reverses: reverses || null,
+    // Why a control is greyed out is more useful than the control simply not being there.
+    correctable: CORRECTABLE.has(e.source_type) && !reversal && !e.reverses_id,
+    locked_reason: reversal ? 'This entry has already been reversed.'
+      : e.reverses_id ? 'This entry is itself a reversal — reverse the original instead.'
+      : CORRECTABLE.has(e.source_type) ? null
+      : `Posted automatically from a ${String(e.source_type).replace(/_/g, ' ')}. Correct that record and the journal follows.`,
+  };
+}
+
+app.get('/api/admin/journal', adminOnly, (req, res) => {
+  const { property_id, loan_id, source_type, from, to } = req.query;
+  const where = ['je.company_id = ?'];
+  const args = [req.companyId];
+  if (property_id) { where.push('je.property_id = ?'); args.push(Number(property_id)); }
+  if (loan_id) { where.push('je.loan_id = ?'); args.push(Number(loan_id)); }
+  if (source_type) { where.push('je.source_type = ?'); args.push(String(source_type)); }
+  if (from) { where.push('je.entry_date >= ?'); args.push(String(from)); }
+  if (to) { where.push('je.entry_date <= ?'); args.push(String(to)); }
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
+  const rows = all(`SELECT je.*,
+      (SELECT COALESCE(SUM(debit_cents),0) FROM journal_lines WHERE entry_id=je.id) AS total_cents,
+      (SELECT id FROM journal_entries r WHERE r.reverses_id = je.id)               AS reversed_by_id
+    FROM journal_entries je WHERE ${where.join(' AND ')}
+    ORDER BY je.entry_date DESC, je.id DESC LIMIT ${limit}`, ...args);
+  res.json(rows.map(r => ({
+    ...r,
+    correctable: CORRECTABLE.has(r.source_type) && !r.reversed_by_id && !r.reverses_id,
+  })));
+});
+
+app.get('/api/admin/journal/:id', adminOnly, (req, res) => {
+  const e = ownedEntry(req, req.params.id);
+  if (!e) return res.status(404).json({ error: 'No such entry' });
+  res.json(entryWithLines(e));
+});
+
+// Post a correction by hand. Balancing, fund separation and the trust-overdraw check
+// are all enforced inside postEntry — there is no way in here that skips them.
+app.post('/api/admin/journal', adminOnly, (req, res, next) => {
+  try {
+    const b = req.body || {};
+    if (!Array.isArray(b.lines) || b.lines.length < 2) {
+      return res.status(400).json({ error: 'An entry needs at least two lines — that is what makes it balance' });
+    }
+    const r = journal.postEntry({
+      company_id: req.companyId,
+      date: b.date || today(),
+      description: String(b.description || '').trim() || 'Manual entry',
+      source_type: 'manual',
+      property_id: b.property_id || null, loan_id: b.loan_id || null, pml_loan_id: b.pml_loan_id || null,
+      created_by: req.user.id,
+      lines: b.lines,
+    });
+    res.json(entryWithLines(get('SELECT * FROM journal_entries WHERE id=?', r.id)));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// "Delete" — an offsetting entry, so the balance moves to where deleting would have
+// put it and both rows stay on the record.
+app.delete('/api/admin/journal/:id', adminOnly, (req, res) => {
+  const e = ownedEntry(req, req.params.id);
+  if (!e) return res.status(404).json({ error: 'No such entry' });
+  const view = entryWithLines(e);
+  if (!view.correctable) return res.status(400).json({ error: view.locked_reason });
+  try {
+    const rev = journal.reverseEntry(e.id, {
+      created_by: req.user.id,
+      reason: (req.body && req.body.reason) || 'removed',
+    });
+    res.json({
+      ok: true, reversal_id: rev.id,
+      message: 'Reversed. The entry no longer affects any balance, and both it and the reversal ' +
+        'stay in the history.',
+    });
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+// "Edit" — reverse, then post the corrected version, both linked to the original.
+app.put('/api/admin/journal/:id', adminOnly, (req, res) => {
+  const e = ownedEntry(req, req.params.id);
+  if (!e) return res.status(404).json({ error: 'No such entry' });
+  const view = entryWithLines(e);
+  if (!view.correctable) return res.status(400).json({ error: view.locked_reason });
+  const b = req.body || {};
+  const lines = Array.isArray(b.lines) && b.lines.length >= 2 ? b.lines : null;
+  if (!lines) return res.status(400).json({ error: 'A corrected entry needs at least two lines' });
+
+  // Both halves land together or neither does. A reversal with no replacement is a
+  // deletion nobody asked for.
+  const sp = 'jedit_' + Date.now().toString(36);
+  db.exec(`SAVEPOINT ${sp}`);
+  try {
+    const rev = journal.reverseEntry(e.id, { created_by: req.user.id, reason: 'corrected' });
+    const fresh = journal.postEntry({
+      company_id: req.companyId,
+      date: b.date || e.entry_date,
+      description: String(b.description || '').trim() || e.description,
+      source_type: e.source_type,
+      source_id: e.source_id,
+      property_id: b.property_id !== undefined ? b.property_id : e.property_id,
+      loan_id: b.loan_id !== undefined ? b.loan_id : e.loan_id,
+      pml_loan_id: b.pml_loan_id !== undefined ? b.pml_loan_id : e.pml_loan_id,
+      created_by: req.user.id,
+      lines,
+    });
+    db.exec(`RELEASE ${sp}`);
+    res.json({
+      ok: true, reversal_id: rev.id, entry_id: fresh.id,
+      entry: entryWithLines(get('SELECT * FROM journal_entries WHERE id=?', fresh.id)),
+      message: 'Corrected. The original and its reversal stay in the history; the new entry ' +
+        'carries the right figures.',
+    });
+  } catch (err) {
+    db.exec(`ROLLBACK TO ${sp}`); db.exec(`RELEASE ${sp}`);
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // Everything that has happened on one house — the buyer's note and the lender's note
 // side by side, which is the whole point of putting them in one journal.
 app.get('/api/admin/properties/:id/ledger', adminOnly, (req, res, next) => {
@@ -4756,6 +5397,16 @@ app.get('/api/admin/lob', adminOnly, (req, res) => {
     mail_address_city: co.mail_address_city || null,
     mail_address_state: co.mail_address_state || null,
     mail_address_zip: co.mail_address_zip || null,
+    // A test key is not a half-connected state, it is a different thing: letters
+    // render and track and are never mailed. Serving a DC 101 is refused while one
+    // is in place, so the screen has to be able to say why.
+    test_mode_warning: /^test_/.test(co.lob_api_key || '')
+      ? 'Test key: letters are generated and tracked but never printed or mailed. A DC 101 cannot be served on a test key.'
+      : null,
+    in_flight: get(`SELECT COUNT(*) c FROM notices n JOIN loans l ON l.id=n.loan_id
+      WHERE l.company_id=? AND n.lob_id IS NOT NULL AND COALESCE(n.lob_test,0)=0
+        AND (n.lob_status IS NULL OR n.lob_status NOT IN ('delivered','returned_to_sender','failed'))`,
+      req.companyId).c,
   });
 });
 app.put('/api/admin/lob', ownerOnly, async (req, res, next) => {
@@ -4783,6 +5434,68 @@ app.delete('/api/admin/lob', ownerOnly, (req, res) => {
   run('UPDATE companies SET lob_api_key=NULL WHERE id=?', req.companyId);
   res.json({ ok: true });
 });
+
+// Prove the whole pipe with one letter, addressed to your own return address.
+//
+// Everything up to the envelope can be verified without spending anything — the key,
+// the address verification, the letter body, the cost calculation. What cannot be
+// verified any other way is whether a physical envelope arrives, on the right paper,
+// from the right return address. That takes one real letter, and sending it to a
+// buyer to find out is the wrong way round.
+//
+// First class by default, about a dollar. Certified is offered because the delivery
+// scan is the thing the forfeiture notices actually depend on, and it is worth seeing
+// one land at least once before relying on it.
+app.post('/api/admin/lob/test-letter', ownerOnly, async (req, res) => {
+  const co = myCompany(req);
+  if (!lob.lobEnabled(co)) {
+    return res.status(400).json({ error: 'Add the Lob key and your return address in Settings first.' });
+  }
+  const service = (req.body && req.body.service) === 'certified' ? 'certified' : 'first_class';
+  const c = lob.creds(co);
+  const when = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  const body =
+`This is a test letter from ${tpl.outboundName(co)}.
+
+It was sent from PorchPay to confirm that certified mail is wired up correctly before any notice goes to a buyer. Nothing about this letter concerns any account.
+
+What it proves, now that it has arrived:
+
+  • The Lob API key works and the account can buy postage.
+  • The return address on the envelope is the one configured in Settings.
+  • The letterhead, typeface and margins print the way they look on screen.
+  • The address was checked against USPS records before the postage was bought.
+${service === 'certified' ? '  • A tracking number was issued and delivery scans are being recorded.\n' : ''}
+Sent ${when}.
+Service: ${service === 'certified' ? 'USPS certified mail with tracking' : 'USPS first class'}.
+
+No reply is needed. This letter can be thrown away.`;
+
+  try {
+    const sent = await lob.sendLetter(co, {
+      to: { name: c.from.name, address_line1: c.from.address_line1,
+            address_city: c.from.address_city, address_state: c.from.address_state,
+            address_zip: c.from.address_zip },
+      subject: 'PorchPay — test letter', body, service,
+      description: 'PorchPay test letter',
+      idempotencyKey: `lob-test-${req.companyId}-${Date.now()}`,
+    });
+    res.json({
+      ok: true,
+      test_mode: sent.test,
+      tracking: sent.tracking_number,
+      expected_delivery: sent.expected_delivery_date,
+      cost_cents: sent.cost_cents,
+      verification_note: sent.verification_note || null,
+      mailed_to: [c.from.address_line1, c.from.address_city, c.from.address_state, c.from.address_zip].join(', '),
+      message: sent.test
+        ? 'Created on a TEST key — Lob rendered it but nothing will be printed or mailed. Switch to your live key to send a real envelope.'
+        : `On its way to ${c.from.address_line1}. Expect it in a few days.`,
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message, undeliverable: !!e.undeliverable });
+  }
+});
 // Mail any notice by hand — certified when it needs to be provable, regular first
 // class when it just needs to arrive. Cost is computed from Lob's published rates
 // (or the settings override), posted as a collection fee on live sends.
@@ -4798,20 +5511,22 @@ app.post('/api/admin/notices/:id/mail', adminOnly, async (req, res, next) => {
     const loan = get('SELECT * FROM loans WHERE id=?', n.loan_id);
     const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
     const tenant = loan.tenant_user_id ? get('SELECT * FROM users WHERE id=?', loan.tenant_user_id) : null;
-    if (!property || !property.address) return res.status(400).json({ error: 'No property address to mail to' });
+    const to = mailingAddressFor({ property, tenant, borrowers: borrowersFor(loan, property, tenant) });
+    if (!to) return res.status(400).json({ error: 'No address to mail to' });
     const sent = await lob.sendLetter(co, {
-      to: { name: (tenant && tenant.name) || 'Occupant', address_line1: property.address,
-            address_city: property.city, address_state: property.state, address_zip: property.zip },
+      to,
       subject: n.subject, body: n.body,
       description: `${n.stage || n.type} — loan ${loan.id}`, service,
       idempotencyKey: `manual-${n.id}-${service}`,
     });
-    run(`UPDATE notices SET lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=? WHERE id=?`,
-      sent.id, sent.tracking_number, sent.expected_delivery_date, sent.cost_cents || null, n.id);
+    run(`UPDATE notices SET lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=?, lob_test=? WHERE id=?`,
+      sent.id, sent.tracking_number, sent.expected_delivery_date, sent.cost_cents || null,
+      sent.test ? 1 : 0, n.id);
     // The same evidence trail the automatic send keeps: a PDF copy of what was
     // mailed, filed on the loan, so nothing about mail ever requires Lob's website.
     try {
-      const pdfBuf = pdfDoc.letter({ company: co, subject: n.subject, bodyText: n.body, sentAt: today() });
+      const pdfBuf = pdfDoc.letter({ company: co, subject: n.subject, bodyText: n.body, sentAt: today(),
+        contactLine: tpl.departmentFor(co, n.type === 'legal_notice' ? 'legal' : 'servicing').contactLine });
       const stored = crypto.randomUUID() + '.pdf';
       fs.writeFileSync(path.join(UPLOAD_DIR, stored), pdfBuf);
       run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
@@ -4842,6 +5557,60 @@ app.get('/api/admin/notices/:id/mail-status', adminOnly, async (req, res, next) 
       s.status, s.tracking_number, s.expected_delivery_date, n.id);
     res.json(s);
   } catch (e) { next(e); }
+});
+
+// Walk the letters that are still in the postal system and write down where they got
+// to. This used to happen only when somebody opened a notice and clicked — which meant
+// the delivery scan, the single fact that makes certified mail worth buying, was
+// recorded if and only if a human happened to look. A forfeiture exhibit assembled
+// months later needs the scan already on file.
+//
+// Only letters that have not finished are polled: no lob_id, or a terminal status,
+// and there is nothing left to ask about. Test letters are skipped — they track, but
+// what they track is fiction.
+// Where a letter stops moving. "re-routed" is deliberately not on this list: it means
+// USPS forwarded the mail to a new address, so the letter is still travelling and the
+// delivery scan is still coming. Treating it as finished would stop polling exactly the
+// letter whose scan matters most — the one addressed to a buyer who has moved.
+const LOB_TERMINAL = ['delivered', 'returned_to_sender', 'failed'];
+
+// And a letter that never reaches any of those is not polled forever. After nine weeks
+// USPS has no more to say and the entry is left where it stands rather than costing an
+// API call twice a day until the end of time.
+const LOB_GIVE_UP_DAYS = 63;
+
+async function runMailStatusSweep() {
+  const rows = all(`SELECT n.id, n.lob_id, l.company_id
+    FROM notices n JOIN loans l ON l.id = n.loan_id
+    WHERE n.lob_id IS NOT NULL
+      AND COALESCE(n.lob_test, 0) = 0
+      AND (n.lob_status IS NULL OR n.lob_status NOT IN (${LOB_TERMINAL.map(() => '?').join(',')}))
+      AND n.sent_at >= date('now', ?)`,
+    ...LOB_TERMINAL, `-${LOB_GIVE_UP_DAYS} days`);
+  const companies = new Map();
+  for (const row of rows) {
+    try {
+      if (!companies.has(row.company_id)) {
+        companies.set(row.company_id, get('SELECT * FROM companies WHERE id=?', row.company_id));
+      }
+      const co = companies.get(row.company_id);
+      if (!lob.lobEnabled(co)) continue;
+      const s = await lob.getLetterStatus(co, row.lob_id);
+      run('UPDATE notices SET lob_status=?, lob_tracking=?, lob_expected=? WHERE id=?',
+        s.status, s.tracking_number, s.expected_delivery_date, row.id);
+      if (LOB_TERMINAL.includes(s.status)) {
+        console.log(`Certified letter for notice ${row.id}: ${s.status}`);
+      }
+    } catch (e) {
+      console.error('Mail status check failed for notice', row.id, e.message);
+    }
+  }
+}
+setInterval(() => { runMailStatusSweep().catch(e => console.error('Mail status sweep:', e.message)); },
+  6 * 60 * 60 * 1000);
+setTimeout(() => { runMailStatusSweep().catch(e => console.error('Mail status sweep:', e.message)); }, 45000);
+app.post('/api/admin/mail-status-sweep', adminOnly, async (req, res, next) => {
+  try { await runMailStatusSweep(); res.json({ ok: true }); } catch (e) { next(e); }
 });
 
 // ---------- DC 101: review, preview, serve ----------
@@ -4905,6 +5674,9 @@ app.get('/api/admin/notices/:id/dc101', adminOnly, (req, res, next) => {
       court_suggestion: court, contract_date: loan.contract_date,
       mail_cost_cents: lob.estimateCostCents({ service: 'certified', pages: 3 }),
       lob_ready: lob.lobEnabled(myCompany(req)),
+      // What would print blank if this were served right now. Shown on the review
+      // screen so it is fixed before service rather than discovered at the hearing.
+      missing_fields: noticeRules.miMissingFields(property, court),
     });
   } catch (e) { next(e); }
 });
@@ -4945,10 +5717,24 @@ app.post('/api/admin/notices/:id/serve-dc101', adminOnly, async (req, res, next)
     if (!lob.lobEnabled(co)) {
       return res.status(400).json({ error: 'Certified mail is not set up — add the Lob key and your mailing address in Settings' });
     }
+    // Serving a DC 101 is not sending a letter. It stamps a service date, starts the
+    // statutory 15-day cure clock under MCL 600.5728, and files a court exhibit whose
+    // certificate of service swears to a tracking number. A test key produces all of
+    // that from a letter that was never printed and never mailed — a forfeiture clock
+    // running against a buyer who was never served, with paperwork saying otherwise.
+    // Nothing downstream can tell the difference, so it is refused here.
+    if (lob.isTestKey(co)) {
+      return res.status(400).json({
+        error: 'Your Lob key is a test key. Test letters are never printed or mailed, so this ' +
+          'would start a cure period on a notice that was never served. Add your live Lob key in ' +
+          'Settings before serving a DC 101.',
+      });
+    }
     const loan = get('SELECT * FROM loans WHERE id=?', n.loan_id);
     const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
     const tenant = loan.tenant_user_id ? get('SELECT * FROM users WHERE id=?', loan.tenant_user_id) : null;
-    if (!property || !property.address) return res.status(400).json({ error: 'No property address to serve at' });
+    const to = mailingAddressFor({ property, tenant, borrowers: borrowersFor(loan, property, tenant) });
+    if (!to) return res.status(400).json({ error: 'No address to serve at' });
 
     const values = dc101ValuesFrom(n, req.body && req.body.values);
     // Service date and signer are stamped at the moment of service, not before.
@@ -4956,7 +5742,11 @@ app.post('/api/admin/notices/:id/serve-dc101', adminOnly, async (req, res, next)
     const serviceDate = today();
     const usService = `${Number(serviceDate.slice(5, 7))}/${Number(serviceDate.slice(8, 10))}/${serviceDate.slice(0, 4)}`;
     values['date'] = usService;
-    if (!values['signature']) values['signature'] = `${req.user.name || 'Agent'}, agent for seller`;
+    // The signature on a served forfeiture notice is the company's, not whoever happened
+    // to be logged in when the button was pressed. A staff member's personal name on a
+    // document served on a buyer is not something the app should decide to do.
+    // A DC 101 is a legal notice, and it comes from Legal.
+    if (!values['signature']) values['signature'] = `${tpl.outboundName(co)}, Legal Department`;
 
     // Court details and the contract date, remembered for the next time this house —
     // or this loan — needs paperwork.
@@ -4968,8 +5758,7 @@ app.post('/api/admin/notices/:id/serve-dc101', adminOnly, async (req, res, next)
 
     const buyerPdf = dc101.render(values);
     const sent = await lob.sendLetter(co, {
-      to: { name: (tenant && tenant.name) || 'Occupant', address_line1: property.address,
-            address_city: property.city, address_state: property.state, address_zip: property.zip },
+      to,
       pdf: buyerPdf, pdfPages: 2,
       description: `DC 101 forfeiture notice — loan ${loan.id}`,
       idempotencyKey: `dc101-${n.id}`, service: 'certified',
@@ -4982,7 +5771,7 @@ app.post('/api/admin/notices/:id/serve-dc101', adminOnly, async (req, res, next)
 
     run(`UPDATE notices SET prepared=0, served_at=?, cure_deadline=?, fill_json=?,
           subject=?, body=?, lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=?,
-          delivery_json=? WHERE id=?`,
+          lob_test=0, delivery_json=? WHERE id=?`,
       serviceDate, cureDeadline, JSON.stringify(values),
       `Forfeiture Notice (DC 101) — ${property.address}`,
       `Served by certified mail on ${usService}. Cure deadline ${cureDeadline}. Tracking ${sent.tracking_number || sent.id}.`,
@@ -5195,9 +5984,31 @@ app.put('/api/admin/tenants/:id', adminOnly, (req, res) => {
   if (email !== u.email && get('SELECT id FROM users WHERE email=?', email)) {
     return res.status(400).json({ error: 'That email is already in use' });
   }
-  run('UPDATE users SET name=?, email=?, phone=? WHERE id=?',
-    b.name || u.name, email, b.phone !== undefined ? addr.formatPhone(b.phone) : u.phone, u.id);
-  res.json(get('SELECT id, name, email, phone FROM users WHERE id=?', u.id));
+  // Where this buyer gets mail, when it is not the house. Sent as a set: any field
+  // present replaces the whole address, and clearing line 1 clears it back to "mail
+  // it to the property". A half-saved address is an undeliverable one.
+  const setMail = ['mail_line1', 'mail_line2', 'mail_city', 'mail_state', 'mail_zip']
+    .some(f => b[f] !== undefined);
+  const mail = setMail
+    ? {
+        line1: String(b.mail_line1 || '').trim() || null,
+        line2: String(b.mail_line2 || '').trim() || null,
+        city: String(b.mail_city || '').trim() || null,
+        state: String(b.mail_state || '').trim().toUpperCase().slice(0, 2) || null,
+        zip: String(b.mail_zip || '').trim() || null,
+      }
+    : { line1: u.mail_line1, line2: u.mail_line2, city: u.mail_city, state: u.mail_state, zip: u.mail_zip };
+  if (setMail && mail.line1 && !(mail.city && mail.state && mail.zip)) {
+    return res.status(400).json({ error: 'A mailing address needs a city, state and ZIP as well as a street line.' });
+  }
+  if (setMail && !mail.line1) { mail.line2 = mail.city = mail.state = mail.zip = null; }
+
+  run(`UPDATE users SET name=?, email=?, phone=?,
+        mail_line1=?, mail_line2=?, mail_city=?, mail_state=?, mail_zip=? WHERE id=?`,
+    b.name || u.name, email, b.phone !== undefined ? addr.formatPhone(b.phone) : u.phone,
+    mail.line1, mail.line2, mail.city, mail.state, mail.zip, u.id);
+  res.json(get(`SELECT id, name, email, phone, mail_line1, mail_line2, mail_city, mail_state, mail_zip
+    FROM users WHERE id=?`, u.id));
 });
 
 app.post('/api/admin/tenants/:id/reset-password', adminOnly, (req, res) => {
@@ -5417,9 +6228,12 @@ function escrowUpdateStatement(before, after) {
   const newTotal = (after.payment_cents || 0) + (after.escrow_cents || 0);
   const body = escrowUpdateText({ before, after, property, effective });
 
+  // Routine servicing, whatever state the house is in — an escrow analysis is not a
+  // default document and never comes from Legal.
   const buf = pdfDoc.letter({
     company: co, subject: 'Escrow Update — Taxes and Insurance', sentAt: today(),
     logo: companyLogo(co), bodyText: body,
+    contactLine: tpl.departmentFor(co, 'servicing').contactLine,
   });
   const stored = crypto.randomUUID() + '.pdf';
   fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf);
@@ -5850,7 +6664,8 @@ function mergeContextForLoan(req, loanId) {
     status = loanEngine.loanStatus(loan, ledger, today());
     payoff = loanEngine.payoffQuote(loan, today());
   }
-  return { company, buyer, loan, property, status, payoff, baseUrl: baseUrlOf(req) };
+  return { company, buyer, loan, property, status, payoff, baseUrl: baseUrlOf(req),
+    borrowers: loan ? borrowersFor(loan, property, buyer) : [] };
 }
 
 // ---------- the two template areas ----------
@@ -5888,6 +6703,7 @@ app.get('/api/admin/doc-templates', adminOnly, (req, res) => res.json(DOC_TEMPLA
 function samplePreviewData(req, { city = 'Flint', structure = 'piti' } = {}) {
   const co = myCompany(req);
   const property = { address: '123 Sample St', city, state: 'MI', zip: '48503', county: '',
+    legal_description: 'LOT 14, BLOCK 2, SAMPLE STREET SUBDIVISION, CITY OF FLINT, GENESEE COUNTY, MICHIGAN',
     trust_name: 'Sample Street Trust', trustee: co.mgmt_company_name || co.name };
   const tenant = { name: 'Jordan Q. Buyer', email: 'buyer@example.com' };
   const loan = { id: 0, company_id: req.companyId, property_id: 0, escrow_structure: structure,
@@ -5917,7 +6733,8 @@ app.get('/api/admin/doc-templates/:key.pdf', adminOnly, (req, res, next) => {
       case 'late5_notice': {
         const w = noticeRules.miLateNoticeWording({ company: co, loan, property, tenant, status,
           dueDate: monthStart, missedDates: [monthStart], feeCharged: true, todayIso: today() });
-        buf = pdfDoc.letter({ company: co, subject: w.subject, bodyText: w.body, sentAt: today(), logo });
+        buf = pdfDoc.letter({ company: co, subject: w.subject, bodyText: w.body, sentAt: today(), logo,
+          contactLine: tpl.departmentFor(co, 'servicing').contactLine });
         break;
       }
       case 'delivery_certificate': {
@@ -5956,7 +6773,8 @@ Signature: _______________________________
 Printed name: ____________________________
 
 Generated by Seller's servicing platform on ${stamp}.`;
-        buf = pdfDoc.letter({ company: co, subject: 'CERTIFICATE OF DELIVERY — Notice of Late Payment and Default',
+        buf = pdfDoc.letter({ contactLine: tpl.departmentFor(co, 'servicing').contactLine,
+          company: co, subject: 'CERTIFICATE OF DELIVERY — Notice of Late Payment and Default',
           sentAt: today(), logo, bodyText: body,
           meta: [['Deal', 'Loan #—'], ['Property', `${property.address}, ${property.city}, MI ${property.zip}`],
                  ['Purchaser(s)', tenant.name], ['Arrears month', today().slice(0, 7)]] });
@@ -5967,14 +6785,16 @@ Generated by Seller's servicing platform on ${stamp}.`;
           method: 'cash', owedBefore: 103000,
           alloc: { to_fees_cents: 5000, to_interest_cents: 10000, to_escrow_cents: 5000, unapplied_cents: 0, to_principal_cents: 0 },
           dc: { served_at: plus(-5), cure_deadline: plus(10) } });
-        buf = pdfDoc.letter({ company: co, subject: 'Partial Payment Acknowledgment and Non-Waiver Receipt',
+        buf = pdfDoc.letter({ contactLine: tpl.departmentFor(co, 'legal').contactLine,
+          company: co, subject: 'Partial Payment Acknowledgment and Non-Waiver Receipt',
           sentAt: today(), logo, bodyText: 'SAMPLE PREVIEW — generated with example data.\n\n' + body });
         break;
       }
       case 'escrow_update': {
         const before = { payment_cents: 75000, escrow_cents: 20000, monthly_taxes_cents: 13000, monthly_insurance_cents: 7000 };
         const body = escrowUpdateText({ before, after: loan, property, effective: plus(30).slice(0, 8) + '01' });
-        buf = pdfDoc.letter({ company: co, subject: 'Escrow Update — Taxes and Insurance', sentAt: today(),
+        buf = pdfDoc.letter({ contactLine: tpl.departmentFor(co, 'servicing').contactLine,
+          company: co, subject: 'Escrow Update — Taxes and Insurance', sentAt: today(),
           logo, bodyText: 'SAMPLE PREVIEW — generated with example data.\n\n' + body });
         break;
       }
@@ -5989,6 +6809,7 @@ Generated by Seller's servicing platform on ${stamp}.`;
       }
       case 'dc101': {
         const values = dc101.buildValues({ company: co, property, tenant,
+          borrowers: ['Jordan Q. Buyer', 'Alex R. Buyer'],
           missedDueDates: [plus(-40), plus(-10)], pastDueCents: 98000, feesCents: 5000,
           courtDistrict: '67th', courtAddress: '630 S. Saginaw St., Flint, MI 48502', courtPhone: '',
           contractDate: '2025-03-15', cureDays: 15, signerName: 'SAMPLE — not for service', serviceDate: today() });
@@ -6772,6 +7593,10 @@ async function runReminderSweep() {
       const status = loanEngine.loanStatus(loan, ledger, today_);
       const due = status.next_due_date || loanEngine.nextDueDate(loan, today_);
       if (!due) continue;
+      // Seed here, the way the notice sweep seeds its ladder. These used to be created
+      // only when somebody opened Settings → Reminders, so on a company where nobody
+      // ever had, the payment reminders silently never fired at all.
+      seedReminders(loan.company_id);
       const rules = all('SELECT * FROM reminder_rules WHERE company_id=? AND enabled=1', loan.company_id);
       if (!rules.length) continue;
 
@@ -6780,7 +7605,8 @@ async function runReminderSweep() {
       const buyer = get('SELECT * FROM users WHERE id=?', loan.tenant_user_id);
       if (!buyer || buyer.deleted_at || buyer.archived_at) continue;
       const values = tpl.buildMergeValues({ company, buyer, loan, property, status,
-        payoff: loanEngine.payoffQuote(loan, today_), baseUrl: process.env.BASE_URL || '' });
+        payoff: loanEngine.payoffQuote(loan, today_), baseUrl: process.env.BASE_URL || '',
+        borrowers: borrowersFor(loan, property, buyer) });
 
       for (const rule of rules) {
         // The day this rule wants to fire, relative to the due date.

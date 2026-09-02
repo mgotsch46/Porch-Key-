@@ -12,6 +12,7 @@ const { get, all, run } = require('./db');
 const MERGE_FIELDS = [
   { key: 'first_name',        label: "Buyer's first name",        example: 'Jane' },
   { key: 'buyer_name',        label: "Buyer's full name",         example: 'Jane Buyer' },
+  { key: 'borrower_names',    label: 'All borrowers, including co-buyers', example: 'Jane Buyer and John Buyer' },
   { key: 'property_address',  label: 'Property address',          example: '123 Oak St' },
   { key: 'company_name',      label: 'Your management company name', example: 'RenewEQ Management' },
   { key: 'balance',           label: 'Current loan balance',      example: '$98,450.12' },
@@ -23,7 +24,7 @@ const MERGE_FIELDS = [
   { key: 'interest_rate',     label: 'Interest rate',             example: '9.50%' },
   { key: 'payoff_amount',     label: 'Estimated payoff',          example: '$99,120.00' },
   { key: 'app_link',          label: 'Link to the buyer app',     example: 'https://…' },
-  { key: 'rep_name',          label: 'Your representative name',  example: 'Marisa Gotsch' },
+  { key: 'rep_name',          label: 'Your representative name',  example: 'Servicing Department' },
   { key: 'rep_phone',         label: 'Representative phone',      example: '(555) 555-5555' },
   { key: 'mgmt_company',      label: 'Management company name',   example: 'RenewEQ Management' },
 ];
@@ -34,6 +35,30 @@ const MERGE_FIELDS = [
 const outboundName = (company) =>
   (company && (company.mgmt_company_name || company.name)) || 'Your servicer';
 
+// ---------- which department a document comes from ----------
+// Everything through the day-6 default notice comes from Servicing. Everything after
+// it — the Michigan DC 101, the Illinois notice of intent to forfeit, the notice to
+// quit — comes from Legal, because by then the conversation has changed and the
+// purchaser should be able to see that from the letterhead alone.
+//
+// The addresses are the ones already configured for the two email identities, so a
+// letter and the email carrying it never disagree about who sent it.
+function departmentFor(company, identity) {
+  const legal = identity === 'legal';
+  const co = company || {};
+  const email = legal
+    ? (co.email_from_legal || co.email_from_servicing || co.contact_email || '')
+    : (co.email_from_servicing || co.contact_email || '');
+  return {
+    identity: legal ? 'legal' : 'servicing',
+    name: legal ? 'Legal Department' : 'Servicing Department',
+    email,
+    // What the letterhead prints under the company name.
+    contactLine: [legal ? 'Legal Department' : 'Servicing Department',
+                  co.rep_phone, email].filter(Boolean).join('  ·  '),
+  };
+}
+
 const money = (c) => '$' + ((c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const niceDate = (d) => d ? new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 
@@ -43,11 +68,16 @@ function rateStr(bps) {
   return d >= 2 ? s : s.endsWith('.') ? s + '00' : s + '0';
 }
 
-function buildMergeValues({ company, buyer, loan, property, status, payoff, baseUrl }) {
+function buildMergeValues({ company, buyer, loan, property, status, payoff, baseUrl, borrowers }) {
   const full = (buyer && buyer.name) || '';
+  // Everyone who signed, for the templates that are addressed to all of them. Falls
+  // back to the buyer alone when the caller has not looked the co-buyers up.
+  const all = (borrowers && borrowers.length) ? borrowers : (full ? [full] : []);
   return {
     first_name: full.trim().split(/\s+/)[0] || 'there',
     buyer_name: full,
+    borrower_names: all.length <= 1 ? (all[0] || full)
+      : all.slice(0, -1).join(', ') + ' and ' + all[all.length - 1],
     property_address: (property && property.address) || 'your home',
     company_name: outboundName(company),
     balance: loan ? money(loan.principal_balance_cents) : '',
@@ -310,6 +340,6 @@ function seedTemplates(companyId) {
 
 module.exports = {
   outboundName,
-  MERGE_FIELDS, buildMergeValues, applyMerge, sanitizeHtml, brandedShell, emailShell, contactBlock,
+  MERGE_FIELDS, departmentFor, buildMergeValues, applyMerge, sanitizeHtml, brandedShell, emailShell, contactBlock,
   htmlToText, seedTemplates, escapeHtml, STARTERS,
 };

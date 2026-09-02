@@ -39,6 +39,11 @@ function winAnsi(s) {
   for (const ch of String(s)) {
     const f = FOLD[ch];
     if (f) { out += f; continue; }
+    // A newline is a layout instruction, not a character to encode — the field
+    // placement below splits on it to fill a two-line box. Folding it to "?" here put
+    // a stray question mark in the middle of the certificate of service on every
+    // court copy, which is not a thing to hand a judge.
+    if (ch === '\n') { out += ch; continue; }
     const c = ch.codePointAt(0);
     out += (c >= 32 && c <= 255 && c !== 127) ? ch : '?';
   }
@@ -145,12 +150,23 @@ function usDate(iso) {
 // server passes this to the review modal so nothing is mailed sight unseen.
 function buildValues({ company, property, tenant, missedDueDates, pastDueCents,
                        courtDistrict, courtAddress, courtPhone, contractDate,
-                       cureDays, feesCents, signerName, serviceDate }) {
+                       cureDays, feesCents, signerName, serviceDate, borrowers }) {
   // The seller on a PorchPay deal is the property's trust; the company is the
   // fallback for a house held directly.
   const sellers = (property && property.trust_name) || (company && (company.mgmt_company_name || company.name)) || '';
   const sellers2 = (property && property.trust_name && property.trustee) ? `by ${property.trustee}, trustee` : '';
-  const premises1 = property ? `${property.address}, ${property.city}, ${property.state} ${property.zip}` : '';
+  const premises1 = property ? `${property.address}${property.unit ? ' ' + property.unit : ''}, ${property.city}, ${property.state} ${property.zip}` : '';
+  // The form asks for "address or legal description". An address alone is the weak
+  // answer — it identifies a mailbox, not a parcel, and it is the first thing a
+  // contested case picks at. The second line exists on the form for this, so the
+  // legal description goes there verbatim when the property carries one.
+  const premises2 = (property && String(property.legal_description || '').trim()) || '';
+  // Every purchaser who signed, not just the one with a login. MCR 4.202(C) requires
+  // joining every person claiming an interest, and a notice naming one of two is a
+  // notice to one of two.
+  const purchasers = (borrowers && borrowers.length)
+    ? borrowers.join('; ')
+    : ((tenant && tenant.name) || '');
   const v = {
     'judicial district': courtDistrict || '',
     'court address': courtAddress || '',
@@ -158,8 +174,9 @@ function buildValues({ company, property, tenant, missedDueDates, pastDueCents,
     'land contract date': usDate(contractDate),
     'land contract seller or selllers names line 1': sellers,
     'land contract seller or selllers names line 2': sellers2,
-    'land contract purchaser or purchasers names': (tenant && tenant.name) || '',
+    'land contract purchaser or purchasers names': purchasers,
     'address or legal description of the premises line 1': premises1,
+    'address or legal description of the premises line 2': premises2,
     'demanded by name': sellers,
     'seller': true,
     'sum amount': money(pastDueCents),

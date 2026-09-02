@@ -40,6 +40,11 @@ const ACCOUNTS = [
   ['4200', 'Late Fee Income',             'revenue',   'operating'],
   ['4300', 'Servicing Fee Income',        'revenue',   'operating'],
   ['4400', 'Gain on Sale',                'revenue',   'operating'],
+  // Certified mail is bought for a specific account and charged on to it. Kept on its
+  // own line rather than buried in servicing income, because at audit "what did you
+  // charge this buyer for postage" is a question with an exact answer.
+  ['4500', 'Cost Recovery — Mailing',     'revenue',   'operating'],
+  ['4900', 'Other Income',                'revenue',   'operating'],
   // expenses
   ['5100', 'PML Interest Expense',        'expense',   'operating'],
   ['5200', 'Property Taxes',              'expense',   'operating'],

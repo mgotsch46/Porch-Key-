@@ -54,12 +54,21 @@ async function lobFetch(key, path, { method = 'GET', body, idempotencyKey, pdf }
     payload = JSON.stringify(body);
   }
 
+  // A timeout, because this is called from inside the nightly notice sweep, which walks
+  // every loan in the portfolio one at a time. Without one, a single hung request to
+  // Lob stops the sweep dead and every account behind it silently goes unnoticed for
+  // the night. Twenty seconds is generous for an API that normally answers in under one.
   let r, text;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 20000);
   try {
-    r = await fetch(API + path, { method, headers, body: payload });
+    r = await fetch(API + path, { method, headers, body: payload, signal: ac.signal });
     text = await r.text();
   } catch (e) {
+    if (e.name === 'AbortError') throw new Error('Lob did not answer within 20 seconds');
     throw new Error(`Could not reach Lob: ${e.message}`);
+  } finally {
+    clearTimeout(timer);
   }
   let json = null;
   try { json = JSON.parse(text); } catch {}
@@ -102,11 +111,77 @@ const RATES = {
   err_addon_cents: 986,               // certified WITH electronic return receipt surcharge
   extra_page_cents: 10,               // each additional B/W page
 };
+// How many pages a notice will actually print to. Lob bills per page and the cost is
+// passed on to the buyer as a collection fee, so getting this wrong puts a figure in
+// the ledger that the Lob invoice will not agree with.
+//
+// It used to assume one page for every letter we compose ourselves, which is wrong for
+// most of them — the Michigan 5-day notice runs to two pages on its own, and the 30-day
+// notice with the reservation of rights is longer still.
+//
+// This counts against the layout in letterHtml: a 8.5x11 page with 0.75in margins is
+// about 88 characters wide at 12px Georgia and holds roughly 62 lines at 1.5 line
+// height. Page one loses 2.6in to the address block Lob prints, so about 46 lines. It
+// is an estimate and it is allowed to be — one page out on a 10c-per-page charge is
+// not worth fetching the rendered PDF back to count. It is far closer than "1".
+function estimatePages({ subject = '', body = '' }) {
+  const COLS = 88, FIRST_PAGE_LINES = 46, LATER_PAGE_LINES = 62;
+  let lines = Math.ceil((String(subject).length || 1) / COLS) + 1;   // heading plus its space
+  for (const para of String(body).split('\n')) {
+    lines += Math.max(1, Math.ceil(para.length / COLS));
+    if (!para.length) continue;
+    lines += 0.6;                                                    // paragraph spacing
+  }
+  if (lines <= FIRST_PAGE_LINES) return 1;
+  return 1 + Math.ceil((lines - FIRST_PAGE_LINES) / LATER_PAGE_LINES);
+}
+
 function estimateCostCents({ service = 'certified', pages = 1 } = {}) {
   let c = RATES.letter_first_class_bw_cents + Math.max(0, pages - 1) * RATES.extra_page_cents;
   if (service === 'certified') c += RATES.certified_addon_cents;
   if (service === 'certified_return_receipt') c += RATES.err_addon_cents;
   return c;
+}
+
+// ---------- is this address real ----------
+// A certified letter costs eight dollars and its whole value is the delivery scan.
+// Buying one for an address the postal service cannot deliver to spends the money and
+// produces the opposite of evidence. Lob will verify an address for free, so ask first.
+//
+// Deliverability comes back as one of a handful of values. "deliverable" is the happy
+// path. "deliverable_unnecessary_unit" and "deliverable_incorrect_unit" still arrive —
+// the building is right and the unit line is off — so those go, with a note. Missing a
+// required unit, or undeliverable outright, does not go.
+const DELIVERABLE = {
+  deliverable: null,
+  deliverable_unnecessary_unit: 'The unit line is not needed at this address; it was still mailed.',
+  deliverable_incorrect_unit: 'The unit number did not match USPS records; it was still mailed.',
+};
+const UNDELIVERABLE = {
+  deliverable_missing_unit: 'USPS needs a unit or apartment number for this address.',
+  undeliverable: 'USPS does not recognise this address.',
+};
+
+async function verifyAddress(key, to) {
+  const res = await lobFetch(key, '/us_verifications', {
+    method: 'POST',
+    body: {
+      primary_line: to.address_line1,
+      secondary_line: to.address_line2 || '',
+      city: to.address_city,
+      state: to.address_state,
+      zip_code: to.address_zip,
+    },
+  });
+  const d = res.deliverability;
+  if (Object.prototype.hasOwnProperty.call(DELIVERABLE, d)) {
+    return { ok: true, deliverability: d, note: DELIVERABLE[d] };
+  }
+  return {
+    ok: false,
+    deliverability: d,
+    reason: UNDELIVERABLE[d] || `USPS returned "${d}" for this address.`,
+  };
 }
 
 // Wrap plain notice text in the minimal HTML Lob's letter renderer wants. The top
@@ -133,12 +208,42 @@ function letterHtml({ subject, body }) {
 // our own HTML (subject + body) or a finished PDF such as a filled court form. A PDF
 // goes up as multipart with the address on an inserted page, so page one of the form
 // arrives exactly as the court published it — nothing overprinted.
-async function sendLetter(company, { to, subject, body, pdf, pdfPages = 1, description, idempotencyKey, service = 'certified' }) {
+async function sendLetter(company, { to, subject, body, pdf, pdfPages = 1, description, idempotencyKey,
+                                     service = 'certified', skipVerify = false }) {
   const c = creds(company);
   if (!c) throw new Error('Mail is not set up — add the Lob key and your mailing address in Settings.');
   if (!to || !to.address_line1 || !to.address_city || !to.address_state || !to.address_zip) {
     throw new Error('The recipient needs a full mailing address.');
   }
+
+  // Check the address before buying the postage. If the check itself cannot run —
+  // Lob down, network gone — that is not a reason to refuse to send a legal notice,
+  // so a failed verification call is noted and the letter goes anyway. A verification
+  // that runs and says undeliverable does stop it.
+  let verification = null;
+  if (c.test) {
+    // A test key does not verify addresses. Lob accepts the call and simulates a
+    // response, so asking would come back clean for an address that does not exist —
+    // which is worse than not asking, because the notice record would then claim the
+    // address was checked. Say plainly that it was not.
+    verification = { ok: true, deliverability: 'unchecked',
+      note: 'Address not verified — a test key cannot check addresses.' };
+  } else if (!skipVerify) {
+    try {
+      verification = await verifyAddress(c.key, to);
+    } catch (e) {
+      // Lob down, or the free verification allowance used up. Never a reason to refuse
+      // to send a legal notice — record that it went unchecked and mail it.
+      verification = { ok: true, deliverability: 'unchecked', note: `Address not verified: ${e.message}` };
+    }
+    if (!verification.ok) {
+      const err = new Error(verification.reason);
+      err.undeliverable = true;
+      err.deliverability = verification.deliverability;
+      throw err;
+    }
+  }
+
   const certified = service !== 'first_class';
   const fields = {
     description: (description || 'Notice').slice(0, 255),
@@ -157,8 +262,9 @@ async function sendLetter(company, { to, subject, body, pdf, pdfPages = 1, descr
     method: 'POST', idempotencyKey, pdf,
     body: fields,
   });
-  // The inserted address page is a page like any other on the bill.
-  const pages = pdf ? pdfPages + 1 : 1;
+  // The inserted address page is a page like any other on the bill. For a letter we
+  // composed ourselves, count what it will print to rather than assuming one sheet.
+  const pages = pdf ? pdfPages + 1 : estimatePages({ subject, body });
   return {
     id: letter.id,
     tracking_number: letter.tracking_number || null,
@@ -166,6 +272,7 @@ async function sendLetter(company, { to, subject, body, pdf, pdfPages = 1, descr
     pdf_url: letter.url || null,
     test: c.test,
     service,
+    verification_note: verification ? verification.note : null,
     cost_cents: c.costCents > 0 ? c.costCents : estimateCostCents({ service: certified ? 'certified' : 'first_class', pages }),
   };
 }
@@ -197,4 +304,13 @@ async function verifyKey(key) {
   return { test: /^test_/.test(key) };
 }
 
-module.exports = { lobEnabled, creds, sendLetter, sendCertifiedLetter, getLetterStatus, verifyKey, letterHtml, estimateCostCents, RATES };
+// Whether this company's key is a Lob test key. A test letter renders, tracks and
+// returns a tracking number exactly like a real one, and is never printed or mailed —
+// so anything that treats a letter as service of process has to ask this first.
+function isTestKey(company) {
+  const c = creds(company);
+  return !!c && c.test;
+}
+
+module.exports = { lobEnabled, creds, isTestKey, sendLetter, sendCertifiedLetter, getLetterStatus,
+  verifyKey, verifyAddress, letterHtml, estimateCostCents, estimatePages, RATES };
