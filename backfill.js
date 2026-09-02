@@ -57,6 +57,9 @@ function migrateLoan(loan, report) {
   for (const r of rows) {
     const key = `bf:ledger:${r.id}`;
     if (alreadyDone(key)) continue;
+    // A payment that has not cleared is not money the books have received. It is on
+    // the ledger as initiated and belongs in the journal only once it lands.
+    if (r.status === 'pending' || r.status === 'returned') continue;
     const common = { ...base, date: r.entry_date, source_type: 'payment',
                      source_id: r.id, idempotency_key: key,
                      description: r.memo || `${r.type} (migrated)` };

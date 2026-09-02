@@ -62,6 +62,29 @@ workflows:
           # The app uses only standard HTTPS, which is exempt.
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" ios/App/App/Info.plist || \
             /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" ios/App/App/Info.plist
+          # Without this string iOS terminates the app the moment location is requested.
+          # It has to say what the data is for, in words a reviewer accepts.
+          /usr/libexec/PlistBuddy -c "Add :NSLocationWhenInUseUsageDescription string 'PorchPay can share your approximate location with your loan servicer for account verification and delivery of documents. This is optional and every feature works without it.'" ios/App/App/Info.plist || \
+            /usr/libexec/PlistBuddy -c "Set :NSLocationWhenInUseUsageDescription 'PorchPay can share your approximate location with your loan servicer for account verification and delivery of documents. This is optional and every feature works without it.'" ios/App/App/Info.plist
+          # Push. The remote-notification background mode lets a notification arriving
+          # while the app is closed update the badge.
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" ios/App/App/Info.plist || true
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string remote-notification" ios/App/App/Info.plist || true
+          # The aps-environment entitlement is what actually enables APNs on the build.
+          ENT=ios/App/App/App.entitlements
+          if [ ! -f "$ENT" ]; then
+            /usr/libexec/PlistBuddy -c "Save" "$ENT"
+          fi
+          /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$ENT" || \
+            /usr/libexec/PlistBuddy -c "Set :aps-environment production" "$ENT"
+          # Firebase needs its plist inside the app bundle. Upload GoogleService-Info.plist
+          # to Codemagic as the environment variable GOOGLE_SERVICE_INFO_PLIST (base64).
+          if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > ios/App/App/GoogleService-Info.plist
+            echo "GoogleService-Info.plist written"
+          else
+            echo "WARNING: GOOGLE_SERVICE_INFO_PLIST is not set — this build cannot receive push."
+          fi
           # Apple requires a minimum of iOS 15 from Spring 2027 (ITMS-90068).
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' ios/App/App.xcodeproj/project.pbxproj
           sed -i '' "s/platform :ios, '[0-9.]*'/platform :ios, '15.0'/" ios/App/Podfile || true
@@ -106,6 +129,29 @@ workflows:
           # The app uses only standard HTTPS, which is exempt.
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" ios/App/App/Info.plist || \
             /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" ios/App/App/Info.plist
+          # Without this string iOS terminates the app the moment location is requested.
+          # It has to say what the data is for, in words a reviewer accepts.
+          /usr/libexec/PlistBuddy -c "Add :NSLocationWhenInUseUsageDescription string 'PorchPay can share your approximate location with your loan servicer for account verification and delivery of documents. This is optional and every feature works without it.'" ios/App/App/Info.plist || \
+            /usr/libexec/PlistBuddy -c "Set :NSLocationWhenInUseUsageDescription 'PorchPay can share your approximate location with your loan servicer for account verification and delivery of documents. This is optional and every feature works without it.'" ios/App/App/Info.plist
+          # Push. The remote-notification background mode lets a notification arriving
+          # while the app is closed update the badge.
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" ios/App/App/Info.plist || true
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string remote-notification" ios/App/App/Info.plist || true
+          # The aps-environment entitlement is what actually enables APNs on the build.
+          ENT=ios/App/App/App.entitlements
+          if [ ! -f "$ENT" ]; then
+            /usr/libexec/PlistBuddy -c "Save" "$ENT"
+          fi
+          /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$ENT" || \
+            /usr/libexec/PlistBuddy -c "Set :aps-environment production" "$ENT"
+          # Firebase needs its plist inside the app bundle. Upload GoogleService-Info.plist
+          # to Codemagic as the environment variable GOOGLE_SERVICE_INFO_PLIST (base64).
+          if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > ios/App/App/GoogleService-Info.plist
+            echo "GoogleService-Info.plist written"
+          else
+            echo "WARNING: GOOGLE_SERVICE_INFO_PLIST is not set — this build cannot receive push."
+          fi
           # Apple requires a minimum of iOS 15 from Spring 2027 (ITMS-90068).
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' ios/App/App.xcodeproj/project.pbxproj
           sed -i '' "s/platform :ios, '[0-9.]*'/platform :ios, '15.0'/" ios/App/Podfile || true
@@ -144,6 +190,19 @@ workflows:
           cd "mobile/$APP_DIR"
           npx cap add android
           npx @capacitor/assets generate --android --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
+          # Coarse location only. FINE and BACKGROUND both trigger extra Play review and
+          # the app needs neither.
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          grep -q 'ACCESS_COARSE_LOCATION' "$MANIFEST" || \
+            sed -i 's|<application|<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n\n    <application|' "$MANIFEST"
+          # Firebase config for FCM. Upload google-services.json to Codemagic as the
+          # environment variable GOOGLE_SERVICES_JSON (base64).
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            echo "$GOOGLE_SERVICES_JSON" | base64 --decode > android/app/google-services.json
+            echo "google-services.json written"
+          else
+            echo "WARNING: GOOGLE_SERVICES_JSON is not set — this build cannot receive push."
+          fi
           npx cap sync android
       - name: Wire release signing into the generated project
         script: |
@@ -186,6 +245,19 @@ workflows:
           cd "mobile/$APP_DIR"
           npx cap add android
           npx @capacitor/assets generate --android --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
+          # Coarse location only. FINE and BACKGROUND both trigger extra Play review and
+          # the app needs neither.
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          grep -q 'ACCESS_COARSE_LOCATION' "$MANIFEST" || \
+            sed -i 's|<application|<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n\n    <application|' "$MANIFEST"
+          # Firebase config for FCM. Upload google-services.json to Codemagic as the
+          # environment variable GOOGLE_SERVICES_JSON (base64).
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            echo "$GOOGLE_SERVICES_JSON" | base64 --decode > android/app/google-services.json
+            echo "google-services.json written"
+          else
+            echo "WARNING: GOOGLE_SERVICES_JSON is not set — this build cannot receive push."
+          fi
           npx cap sync android
       - name: Wire release signing into the generated project
         script: |

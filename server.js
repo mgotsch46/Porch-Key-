@@ -163,11 +163,25 @@ app.post('/api/stripe/webhook', express.raw({ type: '*/*' }), (req, res) => {
   }
   try {
     const event = JSON.parse(payload);
-    if (event.type === 'checkout.session.completed') {
-      const s = event.data.object;
-      if (s.payment_status === 'paid' && s.metadata && s.metadata.loan_id) {
-        postStripePayment(s);
-      }
+    const s = event.data && event.data.object;
+    const mine = s && s.metadata && s.metadata.loan_id;
+
+    // A session completes whether or not the money has arrived. Card and Cash App
+    // arrive immediately; ACH completes as unpaid and is settled later by one of the
+    // two async events below.
+    if (event.type === 'checkout.session.completed' && mine) {
+      postStripePayment(s);
+    }
+    // The bank paid. Apply the payment that has been sitting as initiated.
+    if (event.type === 'checkout.session.async_payment_succeeded' && mine) {
+      const row = pendingRowForSession(s.id);
+      if (row) clearPendingPayment(row.id, { reason: 'bank transfer cleared' });
+      else postStripePayment({ ...s, payment_status: 'paid' });   // never saw the first event
+    }
+    // The bank refused it. Nothing was applied, so nothing needs unwinding.
+    if (event.type === 'checkout.session.async_payment_failed' && mine) {
+      const row = pendingRowForSession(s.id);
+      if (row) returnPendingPayment(row.id, { reason: 'the bank returned the debit' });
     }
     res.json({ received: true });
   } catch (e) {
@@ -411,7 +425,13 @@ function assessRecurringCharges(loan) {
   return get('SELECT * FROM loans WHERE id=?', loan.id);
 }
 
-function postPayment(loanId, amountCents, method, entryDate, externalId, memo, createdBy, feeCents) {
+// pending: the money has been initiated but has not arrived. An ACH debit is posted
+// this way and applied for real only when Stripe says it cleared. A pending row is
+// written to the ledger so the buyer and the servicer can both see it, and it changes
+// nothing else — no balance, no journal entry, no effect on whether the loan is past
+// due.
+function postPayment(loanId, amountCents, method, entryDate, externalId, memo, createdBy, feeCents, opts = {}) {
+  const pending = !!opts.pending;
   let loan = get('SELECT * FROM loans WHERE id=?', loanId);
   if (!loan) throw new Error('Loan not found');
   loan = assessRecurringCharges(loan);
@@ -432,13 +452,42 @@ function postPayment(loanId, amountCents, method, entryDate, externalId, memo, c
   const newUnapplied = (loan.unapplied_cents || 0) + alloc.unapplied_cents;
   const newFees = loan.fees_due_cents - alloc.to_fees_cents;
   const newInterestDue = alloc.interest_shortfall_cents;
-  run(`INSERT INTO ledger (loan_id, entry_date, type, method, amount_cents, to_interest_cents,
-        to_principal_cents, to_escrow_cents, to_fees_cents, principal_balance_after_cents, memo, external_id, created_by)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  // The allocation is recorded on a pending row too, so clearing it later is a matter
+  // of applying what was already worked out rather than recomputing against a loan that
+  // may have moved in the meantime.
+  const ins = run(`INSERT INTO ledger (loan_id, entry_date, type, method, amount_cents, to_interest_cents,
+        to_principal_cents, to_escrow_cents, to_fees_cents, principal_balance_after_cents, memo,
+        external_id, created_by, status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     loanId, entryDate, 'payment', method, amountCents, alloc.to_interest_cents,
     alloc.to_principal_cents, alloc.to_escrow_cents + alloc.unapplied_cents, alloc.to_fees_cents,
-    newPrincipal, memo || null, externalId || null, createdBy || null);
-  if (feeCents) run('UPDATE ledger SET fee_cents=? WHERE id=(SELECT MAX(id) FROM ledger WHERE loan_id=?)', feeCents, loanId);
+    pending ? null : newPrincipal, memo || null, externalId || null, createdBy || null,
+    pending ? 'pending' : 'cleared');
+  const ledgerId = ins.lastInsertRowid;
+
+  // A payment that has only been initiated stops here. Everything below moves money.
+  if (pending) {
+    if (feeCents) run('UPDATE ledger SET fee_cents=? WHERE id=?', feeCents, ledgerId);
+    if (loan.tenant_user_id) {
+      notify.notify(loan.tenant_user_id, {
+        kind: 'payment_received', title: 'Payment started',
+        body: `Your bank payment of $${(amountCents / 100).toFixed(2)} is on its way. Bank transfers ` +
+          `take a few business days to arrive — your balance updates when it does.`,
+        url: '/?tab=activity',
+      }).catch(() => {});
+    }
+    try {
+      const propAddr = get('SELECT address FROM properties WHERE id=?', loan.property_id);
+      notifyAdmins(loan.company_id, {
+        kind: 'payment_received', title: `$${(amountCents / 100).toFixed(2)} initiated — not yet cleared`,
+        body: `${propAddr ? propAddr.address : 'Loan #' + loanId} — bank transfer started. The account stays ` +
+          `past due until it clears.`,
+        url: '/staff', dedupeKey: `pay-init-${loanId}-${externalId || ledgerId}`,
+      });
+    } catch (e) { /* notification only */ }
+    return { alloc, pending: true, ledger_id: ledgerId };
+  }
+  if (feeCents) run('UPDATE ledger SET fee_cents=? WHERE id=?', feeCents, ledgerId);
   if (loan.tenant_user_id) {
     notify.notify(loan.tenant_user_id, {
       kind: 'payment_received', title: 'Payment received',
@@ -484,14 +533,96 @@ function postPayment(loanId, amountCents, method, entryDate, externalId, memo, c
   return { alloc, newPrincipal };
 }
 
+// ---------- a delayed payment arrives, or does not ----------
+// The bank has said yes. Apply the allocation that was worked out when the payment was
+// initiated — using the figures on the row rather than recomputing, because the loan may
+// have moved since and the buyer paid against what they were told they owed.
+function clearPendingPayment(ledgerId, { reason } = {}) {
+  const row = get("SELECT * FROM ledger WHERE id=? AND type='payment' AND status='pending'", ledgerId);
+  if (!row) return { ok: false, error: 'No payment waiting to clear' };
+  const loan = get('SELECT * FROM loans WHERE id=?', row.loan_id);
+  if (!loan) return { ok: false, error: 'Loan not found' };
+
+  const toPrincipal = row.to_principal_cents || 0;
+  const toEscrow = row.to_escrow_cents || 0;
+  const toFees = row.to_fees_cents || 0;
+  const newPrincipal = Math.max(0, loan.principal_balance_cents - toPrincipal);
+
+  run(`UPDATE ledger SET status='cleared', cleared_at=datetime('now'),
+        principal_balance_after_cents=? WHERE id=?`, newPrincipal, ledgerId);
+  run(`UPDATE loans SET principal_balance_cents=?, escrow_balance_cents=?, fees_due_cents=?,
+        status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
+    newPrincipal, loan.escrow_balance_cents + toEscrow,
+    Math.max(0, loan.fees_due_cents - toFees), newPrincipal, loan.id);
+
+  if (loan.tenant_user_id) {
+    notify.notify(loan.tenant_user_id, {
+      kind: 'payment_received', title: 'Payment cleared',
+      body: `Your payment of $${(row.amount_cents / 100).toFixed(2)} has cleared and been applied. ` +
+        `Balance is now $${(newPrincipal / 100).toFixed(2)}.`,
+      url: '/?tab=activity',
+    }).catch(() => {});
+  }
+  try {
+    const propAddr = get('SELECT address FROM properties WHERE id=?', loan.property_id);
+    notifyAdmins(loan.company_id, {
+      kind: 'payment_received', title: `💵 $${(row.amount_cents / 100).toFixed(2)} cleared`,
+      body: `${propAddr ? propAddr.address : 'Loan #' + loan.id}${reason ? ' — ' + reason : ''}`,
+      url: '/staff', dedupeKey: `pay-clear-${ledgerId}`,
+    });
+  } catch (e) { /* notification only */ }
+  return { ok: true, ledger_id: ledgerId, principal_balance_cents: newPrincipal };
+}
+
+// The bank has said no. Nothing needs unwinding, because a pending payment never moved
+// anything — which is the whole reason for holding it. The row is marked returned so it
+// stays on the record, and everybody is told, because the account is still short and the
+// notice ladder has been running the entire time.
+function returnPendingPayment(ledgerId, { reason } = {}) {
+  const row = get("SELECT * FROM ledger WHERE id=? AND type='payment' AND status='pending'", ledgerId);
+  if (!row) return { ok: false, error: 'No payment waiting to clear' };
+  const loan = get('SELECT * FROM loans WHERE id=?', row.loan_id);
+  run(`UPDATE ledger SET status='returned', returned_at=datetime('now'), return_reason=?,
+        memo=COALESCE(memo,'') || ' — returned by the bank' WHERE id=?`, reason || null, ledgerId);
+
+  if (loan && loan.tenant_user_id) {
+    notify.notify(loan.tenant_user_id, {
+      kind: 'payment_late', title: 'Your bank payment did not go through',
+      body: `The payment of $${(row.amount_cents / 100).toFixed(2)} was returned by your bank` +
+        `${reason ? ` (${reason})` : ''}. Your balance is unchanged and the amount is still due. ` +
+        `Please make another payment in the app.`,
+      url: '/?tab=pay',
+    }).catch(() => {});
+  }
+  try {
+    const propAddr = loan ? get('SELECT address FROM properties WHERE id=?', loan.property_id) : null;
+    notifyAdmins(loan ? loan.company_id : 1, {
+      kind: 'payment_late', title: `⚠️ $${(row.amount_cents / 100).toFixed(2)} returned by the bank`,
+      body: `${propAddr ? propAddr.address : 'Loan #' + row.loan_id}${reason ? ' — ' + reason : ''}. ` +
+        `Nothing was applied, so no balance needs correcting.`,
+      url: '/staff', dedupeKey: `pay-return-${ledgerId}`,
+    });
+  } catch (e) { /* notification only */ }
+  return { ok: true, ledger_id: ledgerId };
+}
+
 function postStripePayment(session) {
   const loanId = Number(session.metadata.loan_id);
   const fee = Number((session.metadata && session.metadata.fee_cents) || 0);
   const amount = Number(session.metadata.amount_cents || ((session.amount_total || 0) - fee));
   const pmType = (session.payment_method_types && session.payment_method_types[0]) || 'card';
   const method = pmType === 'cashapp' ? 'stripe_cashapp' : pmType === 'us_bank_account' ? 'stripe_ach' : 'stripe_card';
-  return postPayment(loanId, amount, method, today(), `stripe:${session.id}`, 'Online payment', null, fee);
+  // Stripe tells us whether the money is actually here. A card or Cash App session
+  // completes as "paid"; an ACH debit completes as "unpaid" and stays that way for a
+  // few business days until the bank answers. Anything not yet paid is initiated only.
+  const pending = session.payment_status !== 'paid';
+  return postPayment(loanId, amount, method, today(), `stripe:${session.id}`,
+    pending ? 'Online payment — bank transfer initiated' : 'Online payment', null, fee, { pending });
 }
+
+// The pending row for a Checkout session, found by the id it was written with.
+const pendingRowForSession = (sessionId) =>
+  get("SELECT * FROM ledger WHERE external_id=? AND status='pending'", `stripe:${sessionId}`);
 
 // ---------- who the borrowers are ----------
 // A land contract signed by two people has two vendees, and a notice that names one of
@@ -3193,6 +3324,21 @@ app.get('/api/admin/integrations/stripe', adminOnly, (req, res) => {
     key_tail: co.stripe_secret_key ? '…' + co.stripe_secret_key.slice(-4) : null,
     webhook_secret_set: !!(co.stripe_webhook_secret || process.env.STRIPE_WEBHOOK_SECRET),
     webhook_url: baseUrlOf(req) + '/api/stripe/webhook',
+    // The methods Checkout is asked for. Each has to be switched on in the live
+    // dashboard separately — payment methods are configured per mode, so an account
+    // that takes Cash App in test will refuse it live until it is enabled there.
+    payment_methods: ['Card', 'Cash App Pay', 'US bank account (ACH)'],
+    // Going live is two keys, not one. The webhook signing secret is per-mode: swap
+    // the secret key alone and payments succeed at Stripe while every webhook fails
+    // its signature check. Nothing is lost — the reconciliation sweep picks those up
+    // within six hours — but the buyer's balance is stale until it does.
+    live_checklist: [
+      'Finish account activation in Stripe — business details, tax details and a bank account for payouts.',
+      'Switch the dashboard to live mode, then copy the live secret key (sk_live_…).',
+      'Create a NEW webhook endpoint in live mode for checkout.session.completed and copy its whsec_… — the test one does not carry over.',
+      'Enable Cash App Pay and US bank account in live mode under Settings → Payment methods.',
+      'Paste both keys here, then take one real payment on a small amount and refund it.',
+    ],
   });
 });
 app.put('/api/admin/integrations/stripe', ownerOnly, (req, res) => {
@@ -4049,7 +4195,9 @@ app.get('/.well-known/apple-app-site-association', (req, res) => {
 function paymentHistoryFor(loan) {
   const ledger = all(`SELECT * FROM ledger WHERE loan_id=? ORDER BY entry_date, id`, loan.id);
   const status = loanEngine.loanStatus(loan, ledger, today());
-  const payments = ledger.filter(l => l.type === 'payment');
+  // Only money that actually arrived pays a month down. A bank transfer still in
+  // flight appears on the ledger but must not make a due month look satisfied.
+  const payments = ledger.filter(l => l.type === 'payment' && (l.status || 'cleared') === 'cleared');
   const first = new Date(loan.first_payment_date + 'T00:00:00Z');
   const now = new Date(today() + 'T00:00:00Z');
   // A month's bill is P&I plus escrow — the same figure the status math uses.
@@ -7408,10 +7556,12 @@ app.post('/api/tenant/pay/saved', tenantReady, async (req, res, next) => {
       amountCents: amount + fee, description: `Loan payment — loan #${loan.id}`,
       idempotencyKey: `pay-${loan.id}-${Date.now()}`,
     });
+    // 'processing' on a bank debit means the money has left, not that it has arrived.
     if (pi.status === 'succeeded' || pi.status === 'processing') {
       const method = pm.type === 'card' ? 'stripe_card' : 'stripe_ach';
+      const pending = pi.status === 'processing';
       postPayment(loan.id, amount, method, today(), `stripe:${pi.id}`,
-        pi.status === 'processing' ? 'Bank payment — clearing' : 'Saved method payment', null, fee);
+        pending ? 'Bank payment — initiated' : 'Saved method payment', null, fee, { pending });
       return res.json({ ok: true, status: pi.status, fee_cents: fee });
     }
     res.status(400).json({ error: 'Payment could not be completed. Try another method.' });
@@ -7480,12 +7630,16 @@ async function runAutopaySweep() {
         idempotencyKey: `autopay-${loan.id}-${period}`,
       });
       if (pi.status === 'succeeded' || pi.status === 'processing') {
+        const autoPending = pi.status === 'processing';
         postPayment(loan.id, amount, pm.type === 'card' ? 'stripe_card' : 'stripe_ach', today(),
-          `stripe:${pi.id}`, `Autopay ${period}`, null, fee);
+          `stripe:${pi.id}`, autoPending ? `Autopay ${period} — bank transfer initiated` : `Autopay ${period}`,
+          null, fee, { pending: autoPending });
         run("UPDATE autopay SET last_run_period=?, last_error=NULL WHERE loan_id=?", period, loan.id);
         run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,1)',
           loan.id, get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') ORDER BY id LIMIT 1", loan.company_id).id,
-          `✅ Autopay processed your payment of $${(amount/100).toFixed(2)}.`);
+          autoPending
+            ? `Autopay started your payment of $${(amount/100).toFixed(2)}. Bank transfers take a few business days to clear.`
+            : `✅ Autopay processed your payment of $${(amount/100).toFixed(2)}.`);
         console.log(`Autopay charged loan ${loan.id} ${period}: $${(amount/100).toFixed(2)}`);
       }
     } catch (e) {
@@ -7646,10 +7800,58 @@ app.post('/api/admin/reminder-sweep', adminOnly, async (req, res, next) => {
 
 // ---------- notifications ----------
 app.get('/api/push/public-key', anyUser, (req, res) => res.json({ key: notify.vapid().publicKey }));
+
+// What push is actually capable of right now, and what is missing. Read by Settings so
+// the answer is on screen rather than in the server log.
+app.get('/api/admin/push-status', adminOnly, (req, res) => {
+  const pinned = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+  res.json({
+    web_push: true,
+    vapid_pinned: pinned,
+    vapid_public_key: notify.vapid().publicKey,
+    native_push: notify.nativePushEnabled(),
+    web_subscriptions: get('SELECT COUNT(*) c FROM push_subscriptions').c,
+    devices: get('SELECT COUNT(*) c FROM device_tokens').c,
+    warnings: [
+      pinned ? null
+        : 'The VAPID keys exist only on the data volume. Restore an older snapshot and every ' +
+          'existing push subscription stops working silently. Pin them as VAPID_PUBLIC_KEY and ' +
+          'VAPID_PRIVATE_KEY.',
+      notify.nativePushEnabled() ? null
+        : 'Native push is not configured, so the App Store and Play builds cannot receive ' +
+          'notifications. Set FIREBASE_SERVICE_ACCOUNT to the service-account JSON.',
+    ].filter(Boolean),
+  });
+});
 app.post('/api/push/subscribe', anyUser, (req, res, next) => {
   try { notify.subscribe(req.user.id, req.body.subscription); res.json({ ok: true }); }
   catch (e) { next(e); }
 });
+// The native shells register here instead of subscribing to web push. Called on every
+// launch, because a device token can be reissued at any time and the old one silently
+// stops working.
+app.post('/api/push/device', anyUser, (req, res) => {
+  const b = req.body || {};
+  const token = String(b.token || '').trim();
+  const platform = b.platform === 'ios' ? 'ios' : b.platform === 'android' ? 'android' : null;
+  if (!token || !platform) return res.status(400).json({ error: 'A token and a platform are needed' });
+  const app_ = b.app === 'admin' ? 'admin' : 'buyer';
+  // A token belongs to whoever most recently signed in on that device — a phone that
+  // changes hands must not keep delivering the old buyer's notices.
+  run(`INSERT INTO device_tokens (user_id, token, platform, app, device_name)
+       VALUES (?,?,?,?,?)
+       ON CONFLICT(token) DO UPDATE SET user_id=excluded.user_id, platform=excluded.platform,
+         app=excluded.app, device_name=excluded.device_name,
+         last_seen_at=datetime('now'), failures=0`,
+    req.user.id, token, platform, app_, String(b.device_name || '').slice(0, 80) || null);
+  res.json({ ok: true, native_push: notify.nativePushEnabled() });
+});
+app.delete('/api/push/device', anyUser, (req, res) => {
+  const token = String((req.body && req.body.token) || '').trim();
+  if (token) run('DELETE FROM device_tokens WHERE token=? AND user_id=?', token, req.user.id);
+  res.json({ ok: true });
+});
+
 app.post('/api/push/unsubscribe', anyUser, (req, res) => {
   if (req.body.endpoint) notify.unsubscribe(req.body.endpoint);
   res.json({ ok: true });
@@ -7853,7 +8055,9 @@ app.get('/api/pay/landing', async (req, res) => {
   try {
     if (pay.stripeEnabled() && req.query.session_id) {
       const s = await stripeReadAnyAccount(() => pay.retrieveSession(String(req.query.session_id)));
-      if (s && s.payment_status === 'paid' && s.metadata && Number(s.metadata.loan_id)) {
+      // A bank transfer lands here as unpaid and is recorded as initiated, so the buyer
+      // sees it on their account straight away rather than wondering if it worked.
+      if (s && s.metadata && Number(s.metadata.loan_id)) {
         const r = postStripePayment(s);
         if (!r.duplicate) console.log(`Stripe payment posted at landing — session ${s.id}, loan ${s.metadata.loan_id}`);
       }
@@ -7877,11 +8081,21 @@ async function reconcileStripePayments() {
     try { sessions.push(...await pay.withCompany(co, () => pay.listRecentSessions(100))); }
     catch (e) { console.error('Stripe reconciliation (account):', e.message); }
   }
-  let posted = 0, checked = 0;
+  let posted = 0, cleared = 0, checked = 0;
   for (const s of sessions) {
     if (s.payment_status !== 'paid' || !s.metadata || !Number(s.metadata.loan_id)) continue;
     checked++;
     try {
+      // A bank transfer that has since cleared may already be sitting here as initiated.
+      // Clear it rather than posting a second row — the async_payment_succeeded webhook
+      // normally does this, and this is the backstop for when it did not arrive.
+      const waiting = pendingRowForSession(s.id);
+      if (waiting) {
+        clearPendingPayment(waiting.id, { reason: 'confirmed by reconciliation' });
+        cleared++;
+        console.log(`Stripe reconciliation cleared a bank transfer — session ${s.id}, loan ${s.metadata.loan_id}`);
+        continue;
+      }
       const r = postStripePayment(s);
       if (!r.duplicate) {
         posted++;
@@ -7890,7 +8104,7 @@ async function reconcileStripePayments() {
       }
     } catch (e) { console.error(`Stripe reconciliation, session ${s.id}:`, e.message); }
   }
-  return { checked, posted };
+  return { checked, posted, cleared };
 }
 setTimeout(() => { reconcileStripePayments().catch(e => console.error('Stripe reconciliation:', e.message)); }, 8000);
 setInterval(() => { reconcileStripePayments().catch(e => console.error('Stripe reconciliation:', e.message)); }, 6 * 60 * 60 * 1000);

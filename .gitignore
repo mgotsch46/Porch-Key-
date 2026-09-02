@@ -14,3 +14,4 @@ test.js.tmp
 
 # Signing material never enters history
 signing/
+sample-notices/

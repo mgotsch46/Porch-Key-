@@ -3035,9 +3035,26 @@ async function loadStripeCard(){
   let t; try{ t=await api('/api/admin/integrations/stripe'); }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
   el.innerHTML=`
     ${t.connected
-      ? `<p class="okmsg">Connected${t.test_mode?' — <b>test mode</b>':''} — buyers can pay by card, bank, and Cash App.
-         ${t.source==='env'?'<span class="note">(using the key set on the server)</span>':`<span class="note">(your own account ${esc(t.key_tail||'')})</span>`}</p>`
+      ? (t.test_mode
+        ? `<div class="err" style="margin-bottom:10px">
+             <b>Stripe is in test mode.</b> Buyers cannot actually pay. Cards are accepted and nothing
+             is ever charged — no money moves and no payout is made.
+             ${t.source==='env'?'<div class="note" style="margin-top:6px">The key is set on the server (Railway variable <code>STRIPE_SECRET_KEY</code>), not here. Change it there, or paste a live key below to override it.</div>':''}
+           </div>
+           <details style="margin-bottom:10px" open><summary class="note" style="cursor:pointer;font-weight:700">Going live — five steps</summary>
+             <ol class="note" style="margin:8px 0 0;padding-left:20px;line-height:1.6">
+               ${(t.live_checklist||[]).map(s=>`<li style="margin-bottom:5px">${esc(s)}</li>`).join('')}
+             </ol>
+             <p class="note" style="margin-top:8px"><b>The webhook is the one people miss.</b> Its signing secret
+               is different in live mode. Swap only the secret key and payments will succeed at Stripe while
+               every webhook fails its signature check — the reconciliation sweep catches them within six
+               hours, so nothing is lost, but balances lag until it runs.</p>
+           </details>`
+        : `<p class="okmsg">Connected — <b>live mode</b>. Buyers can pay by ${(t.payment_methods||[]).join(', ')}.
+           ${t.source==='env'?'<span class="note">(using the key set on the server)</span>':`<span class="note">(your own account ${esc(t.key_tail||'')})</span>`}</p>`)
       : '<p class="note" style="margin-bottom:8px">Not connected — buyers cannot pay online until a Stripe key is added.</p>'}
+    ${t.connected && !t.webhook_secret_set
+      ? '<div class="err" style="margin-bottom:10px"><b>No webhook signing secret.</b> Payments will be picked up by the reconciliation sweep within six hours rather than immediately.</div>' : ''}
     <details style="margin:8px 0"><summary class="note" style="cursor:pointer;font-weight:700">${t.source==='company'?'Replace the connected account':'Connect your own Stripe account'}</summary>
       <div class="field" style="margin-top:8px"><label>Secret key <span class="note">— sk_live_… from dashboard.stripe.com → Developers → API keys</span></label>
         <input id="st-key" type="password" placeholder="sk_live_…" autocomplete="off"></div>
@@ -5778,16 +5795,29 @@ async function openLoan(id){
   </div>
   <div class="card"><h2>Ledger
       <button class="small" style="float:right" onclick="openLedgerPage()">Open the full ledger →</button></h2>
-    ${(()=>{ const led=f.ledger; const pays=led.filter(e=>e.type==='payment');
+    ${(()=>{ const led=f.ledger;
+      // Totals count money that arrived. A bank transfer in flight is shown in the rows
+      // below but never counted as received.
+      const pays=led.filter(e=>e.type==='payment'&&(e.status||'cleared')==='cleared');
+      const inflight=led.filter(e=>e.type==='payment'&&e.status==='pending');
       return `<div class="cards" style="margin-bottom:10px">
         <div class="stat"><div class="n">${led.length}</div><div class="l">Entries</div></div>
         <div class="stat"><div class="n">${fmt(pays.reduce((s,e)=>s+e.amount_cents,0))}</div><div class="l">Payments received</div></div>
         <div class="stat"><div class="n">${fmt(pays.reduce((s,e)=>s+e.to_interest_cents,0))}</div><div class="l">Interest collected</div></div>
         <div class="stat"><div class="n">${fmt(pays.reduce((s,e)=>s+e.to_principal_cents,0))}</div><div class="l">Principal paid down</div></div>
-      </div>`; })()}
+      </div>
+      ${inflight.length?`<div class="err" style="margin-bottom:10px">
+        <b>${fmt(inflight.reduce((s,e)=>s+e.amount_cents,0))} initiated, not yet cleared.</b>
+        Bank transfers take a few business days. Nothing has been applied and the account is
+        still counted as owing this.</div>`:''}`; })()}
     <p class="note" style="margin-bottom:6px">Most recent activity:</p>
     <div style="overflow-x:auto"><table>
-    <tbody>${f.ledger.slice(-3).reverse().map(e=>`<tr><td>${fdate(e.entry_date)}</td><td>${e.type==='late_fee'?'Late fee':e.type}</td><td class="note">${esc(methodLabel(e.method))}</td>
+    <tbody>${f.ledger.slice(-3).reverse().map(e=>`<tr><td>${fdate(e.entry_date)}</td><td>${
+        e.type==='late_fee'?'Late fee'
+        : e.type==='payment'&&e.status==='pending'?'<b>Payment initiated</b>'
+        : e.type==='payment'&&e.status==='returned'?'<b>Payment returned</b>'
+        : e.type==='payment'?'Payment cleared'
+        : e.type}</td><td class="note">${esc(methodLabel(e.method))}</td>
       <td class="right" style="color:${e.amount_cents<0?'var(--red)':'var(--green)'}">${fmt(Math.abs(e.amount_cents))}</td>
       <td class="note">${esc(e.memo||'')}</td></tr>`).join('')||'<tr><td class="note">No entries yet.</td></tr>'}</tbody>
     </table></div></div>

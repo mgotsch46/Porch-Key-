@@ -723,7 +723,7 @@ function render(){
   payTotal();
 
   // recent
-  const pays=ledger.filter(l=>l.type==='payment').slice(-4).reverse();
+  const pays=ledger.filter(l=>l.type==='payment'&&(l.status||'cleared')==='cleared').slice(-4).reverse();
   $('h-recent').innerHTML = pays.length ? pays.map(p=>
     `<div class="row"><span class="k">${fdate(p.entry_date)}<small>${methodName(p.method)}</small></span>
      <span class="v">${fmt(p.amount_cents)}</span></div>`).join('')
@@ -771,9 +771,21 @@ function render(){
   // history
   loadDueHistory();
   $('a-list').innerHTML = ledger.length ? ledger.slice().reverse().map(p=>{
-    if(p.type==='payment') return `<div class="row"><span class="k">${fdate(p.entry_date)} · ${methodName(p.method)}
+    if(p.type==='payment'){
+      const st=p.status||'cleared';
+      // A bank transfer is shown from the moment it starts, so the buyer can see it is
+      // under way — but it is not described as applied until the money has arrived.
+      if(st==='pending') return `<div class="row"><span class="k">${fdate(p.entry_date)} · ${methodName(p.method)}
+        <small><b>Payment initiated</b> — bank transfers take a few business days to clear. Your balance
+        updates when it does.</small></span>
+        <span class="v" style="color:var(--muted,#888)">${fmt(p.amount_cents)}</span></div>`;
+      if(st==='returned') return `<div class="row"><span class="k">${fdate(p.entry_date)} · ${methodName(p.method)}
+        <small><b>Returned by your bank</b>${p.return_reason?' — '+esc(p.return_reason):''}. This amount is still due.</small></span>
+        <span class="v" style="color:var(--red)">${fmt(p.amount_cents)}</span></div>`;
+      return `<div class="row"><span class="k">${fdate(p.entry_date)} · ${methodName(p.method)}
       <small>Interest ${fmt(p.to_interest_cents)} · Principal ${fmt(p.to_principal_cents)}${p.to_escrow_cents?' · Escrow '+fmt(p.to_escrow_cents):''}${p.to_fees_cents?' · Fees '+fmt(p.to_fees_cents):''}</small></span>
       <span class="v" style="color:var(--brand)">${fmt(p.amount_cents)}</span></div>`;
+    }
     const lbl=(p.memo||'').startsWith('charge:')?'Monthly charge':(p.type==='late_fee'?'Late fee':esc(p.memo||p.type));
     return `<div class="row"><span class="k">${fdate(p.entry_date)} · ${lbl}</span><span class="v" style="color:var(--red)">${fmt(Math.abs(p.amount_cents))}</span></div>`;
   }).join('') : '<p class="note">No activity yet.</p>';
@@ -1177,7 +1189,52 @@ function urlBase64ToUint8Array(b64){
   const raw=atob((b64+pad).replace(/-/g,'+').replace(/_/g,'/'));
   return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)));
 }
+// Inside a store app the page runs in a Capacitor WebView, where web push does not
+// exist on either platform. The same button registers a device token with Firebase
+// instead, so one deployed page serves the browser, the home-screen PWA and both
+// store builds without knowing which it is until it looks.
+const isNativeApp = () =>
+  !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
+     && window.Capacitor.isNativePlatform());
+
+async function enableNativePush(){
+  const Push = window.Capacitor.Plugins && window.Capacitor.Plugins.PushNotifications;
+  if (!Push) { $('notif-state').textContent = 'Notifications are not available in this build.'; return; }
+  try{
+    let perm = await Push.checkPermissions();
+    if (perm.receive !== 'granted') perm = await Push.requestPermissions();
+    if (perm.receive !== 'granted'){
+      $('notif-state').textContent = 'Notifications are off. Turn them on for PorchPay in your phone settings.';
+      return;
+    }
+    // The token arrives asynchronously, so the listener goes on before registering.
+    Push.addListener('registration', async (t)=>{
+      try{
+        await api('/api/push/device',{method:'POST',body:JSON.stringify({
+          token: t.value,
+          platform: window.Capacitor.getPlatform(),
+          app: 'buyer',
+          device_name: navigator.userAgent.slice(0,80),
+        })});
+        $('notif-state').innerHTML='Notifications are <b>on</b>. You will hear about messages, new documents and payment reminders.';
+        $('notif-btn').classList.add('hidden');
+        $('notif-prefs').classList.remove('hidden'); loadPrefs();
+      }catch(e){ $('notif-state').textContent='Could not finish turning on notifications: '+e.message; }
+    });
+    Push.addListener('registrationError', (e)=>{
+      $('notif-state').textContent='Could not turn on notifications: '+(e && e.error || 'registration failed');
+    });
+    // Tapping a notification should land on the screen it is about.
+    Push.addListener('pushNotificationActionPerformed', (a)=>{
+      const url = a && a.notification && a.notification.data && a.notification.data.url;
+      if (url) location.href = url;
+    });
+    await Push.register();
+  }catch(e){ $('notif-state').textContent='Could not turn on notifications: '+e.message; }
+}
+
 async function enablePush(){
+  if (isNativeApp()) return enableNativePush();
   if (!('Notification' in window) || !('serviceWorker' in navigator)) {
     $('notif-state').textContent = 'This device cannot show notifications. Your in-app badges still work.';
     return;
@@ -1197,6 +1254,13 @@ async function enablePush(){
 }
 function notifUi(){
   const el=$('notif-state'), btn=$('notif-btn'), prefs=$('notif-prefs');
+  // A store app has no Notification API, but it can absolutely show notifications —
+  // it just asks the operating system rather than the browser.
+  if (isNativeApp()) {
+    el.textContent='Tap below to turn on notifications for messages, documents and payment reminders.';
+    btn.classList.remove('hidden');
+    return;
+  }
   if (!('Notification' in window)) {
     el.textContent='This device cannot show notifications. Badges inside the app still work.';
     btn.classList.add('hidden'); return;

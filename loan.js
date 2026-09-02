@@ -78,22 +78,34 @@ function nextDueDate(loan, asOf, paymentsMade) {
   return addMonthsUTC(first, n).toISOString().slice(0, 10);
 }
 
+// A payment counts only once the money has actually arrived. An ACH debit sits as
+// 'pending' for up to four business days and can be returned after that, so counting it
+// early would tell a buyer they are current and quietly stop the notice ladder on a
+// default that is still running. Rows written before this existed have no status and
+// were final when they were taken, so a missing value reads as cleared.
+const isCleared = (l) => l.type === 'payment' && (l.status || 'cleared') === 'cleared';
+
 // Current status: amount owed now (past-due scheduled payments + fees minus what's been paid).
 function loanStatus(loan, ledgerRows, asOf) {
   const due = paymentsDue(loan, asOf);
   const scheduledDueCents = due * (loan.payment_cents + loan.escrow_cents);
   const paidCents = ledgerRows
-    .filter(l => l.type === 'payment')
+    .filter(isCleared)
     .reduce((s, l) => s + (l.to_interest_cents + l.to_principal_cents + l.to_escrow_cents + l.to_fees_cents), 0);
   const feesAssessed = ledgerRows
     .filter(l => l.type === 'late_fee' || l.type === 'fee')
     .reduce((s, l) => s + Math.abs(l.amount_cents), 0);
-  const feesPaid = ledgerRows.filter(l => l.type === 'payment').reduce((s, l) => s + l.to_fees_cents, 0);
+  const feesPaid = ledgerRows.filter(isCleared).reduce((s, l) => s + l.to_fees_cents, 0);
   const owedNow = Math.max(0, scheduledDueCents + feesAssessed - paidCents);
   const paymentsMade = Math.floor(
-    ledgerRows.filter(l => l.type === 'payment')
+    ledgerRows.filter(isCleared)
       .reduce((s, l) => s + l.to_interest_cents + l.to_principal_cents, 0) / Math.max(1, loan.payment_cents)
   );
+  // Money the buyer has sent that has not landed yet. Shown to them so a payment in
+  // flight is visible, and never counted against what is owed.
+  const pendingCents = ledgerRows
+    .filter(l => l.type === 'payment' && l.status === 'pending')
+    .reduce((s, l) => s + l.amount_cents, 0);
   return {
     payments_due: due,
     owed_now_cents: owedNow,
@@ -101,6 +113,7 @@ function loanStatus(loan, ledgerRows, asOf) {
     next_due_date: nextDueDate(loan, asOf, paymentsMade),
     is_past_due: owedNow > 0 && due > 0,
     payments_made_equiv: paymentsMade,
+    pending_cents: pendingCents,
   };
 }
 

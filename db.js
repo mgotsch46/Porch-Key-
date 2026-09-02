@@ -344,6 +344,30 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Where a notification goes when the app came from a store rather than a browser.
+--
+-- Web push and native push are different transports for the same thing. A browser or
+-- an installed PWA hands over a subscription endpoint, encrypted with VAPID keys, and
+-- push_subscriptions above holds it. A Capacitor app cannot use that at all — iOS
+-- restricts web push to Safari's own home-screen apps and Android's WebView does not
+-- expose the API — so the native shells register an APNs or FCM device token instead
+-- and it lives here.
+--
+-- One person can have several: a phone from the App Store, a tablet from Play, and the
+-- web app on a laptop. A notification goes to all of them.
+CREATE TABLE IF NOT EXISTS device_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  token TEXT NOT NULL UNIQUE,
+  platform TEXT NOT NULL CHECK (platform IN ('ios','android')),
+  app TEXT NOT NULL DEFAULT 'buyer' CHECK (app IN ('buyer','admin')),
+  device_name TEXT,
+  last_seen_at TEXT DEFAULT (datetime('now')),
+  failures INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id);
+
 -- Payment reminder rules. The admin decides when they fire and what they say.
 -- offset_days is relative to the due date: -3 means three days before, +5 means five after.
 CREATE TABLE IF NOT EXISTS reminder_rules (
@@ -519,6 +543,26 @@ addColumnIfMissing('properties', 'owner_name', 'TEXT');
 addColumnIfMissing('properties', 'owner_type', "TEXT DEFAULT 'llc'");
 // What the buyer pays each month, broken out. Taxes and insurance are escrowed —
 // that money is held for them. The other three are fees to the servicer.
+// Whether the money has actually arrived.
+//
+// A card or Cash App payment is final the moment Stripe accepts it. An ACH debit is
+// not: Stripe reports it as processing and the bank can return it up to four business
+// days later for insufficient funds, and up to sixty for an unauthorised debit. Posting
+// it as paid on the day it starts credits the loan for money that may never come, and —
+// worse — stops the notice ladder on a buyer who has not actually paid.
+//
+// So a delayed payment lands as 'pending'. It shows on the ledger as initiated, it
+// moves no balance, it posts nothing to the journal, and the loan stays exactly as past
+// due as it was. When Stripe says it cleared, it is applied for real.
+//
+// Everything already in the table is money that was taken as final at the time, so the
+// default is 'cleared' and no existing row changes meaning.
+addColumnIfMissing('ledger', 'status', "TEXT NOT NULL DEFAULT 'cleared'");
+addColumnIfMissing('ledger', 'cleared_at', 'TEXT');
+addColumnIfMissing('ledger', 'returned_at', 'TEXT');
+addColumnIfMissing('ledger', 'return_reason', 'TEXT');
+db.exec('CREATE INDEX IF NOT EXISTS idx_ledger_status ON ledger(loan_id, status)');
+
 // Money received that nobody has said what to do with yet. It used to be added to the
 // buyer's escrow balance, which was wrong twice over: it is not escrow, and escrow is
 // trust money held for a named person, so parking odd amounts there quietly overstates
