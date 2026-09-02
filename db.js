@@ -1063,6 +1063,24 @@ CREATE INDEX IF NOT EXISTS idx_notes_property ON notes(property_id, id);
 CREATE INDEX IF NOT EXISTS idx_notes_loan ON notes(loan_id, id);
 `);
 
+// ---------- late fee: 10% of P&I ----------
+// The old default was zero, and the automatic late charge is gated on the fee being
+// greater than zero — so every loan where nobody typed a number has silently never
+// been charged one. Backfill those to the contractual 10% of principal and interest.
+//
+// Escrow is deliberately excluded: the fee is on the note payment, not on the taxes
+// and insurance collected alongside it. On an $800 P&I with $50 escrow the fee is $80.
+//
+// Guarded by a settings row so it runs exactly once. Re-running would refill any loan
+// an admin had deliberately set back to zero, which is a real choice on some deals.
+if (!db.prepare("SELECT value FROM settings WHERE key='late_fee_10pct_backfill'").get()) {
+  const n = db.prepare(`UPDATE loans SET late_fee_cents = CAST(ROUND(payment_cents * 0.10) AS INTEGER)
+                        WHERE (late_fee_cents IS NULL OR late_fee_cents = 0) AND payment_cents > 0`).run().changes;
+  db.prepare("INSERT INTO settings (key, value) VALUES ('late_fee_10pct_backfill', ?)")
+    .run(new Date().toISOString() + ` (${n} loans)`);
+  if (n) console.log(`Late fee defaulted to 10% of P&I on ${n} loan(s) that had none set.`);
+}
+
 // ---------- communications: who has seen what ----------
 // One row per staff member per property, holding the moment they last opened that
 // house's thread. "New" is anything that arrived after it, which keeps the count

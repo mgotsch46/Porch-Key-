@@ -382,6 +382,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 const today = () => new Date().toISOString().slice(0, 10);
 const money = c => (c / 100).toFixed(2);
 
+// The contractual late charge is 10% of the note payment. Escrow is excluded on
+// purpose — the fee is on principal and interest, not on the taxes and insurance
+// collected alongside them, so $800 P&I plus $50 escrow carries an $80 fee, not $85.
+// Anything an admin types wins; this only fills the blank.
+const defaultLateFeeCents = (paymentCents) => Math.round((Number(paymentCents) || 0) * 0.10);
+
 // ---------- servicing helpers ----------
 function assessRecurringCharges(loan) {
   const charges = all('SELECT * FROM charges WHERE loan_id=? AND recurring=1 AND active=1', loan.id);
@@ -2745,7 +2751,7 @@ app.post('/api/admin/properties/:id/sell', adminOnly, async (req, res, next) => 
       req.companyId, prop.id, u.lastInsertRowid, b.loan_type || 'land_contract',
       b.sale_price_cents, b.down_payment_cents || 0, b.principal_cents, b.interest_rate_bps,
       b.term_months, payment, escrow,
-      b.late_fee_cents ?? prop.late_fee_cents ?? 0,
+      b.late_fee_cents ?? prop.late_fee_cents ?? defaultLateFeeCents(payment),
       b.grace_days ?? prop.grace_days ?? 5,
       b.first_payment_date,
       b.due_day ?? prop.due_day ?? Number(String(b.first_payment_date).slice(8, 10)),
@@ -5273,7 +5279,7 @@ app.post('/api/admin/loans', adminOnly, (req, res) => {
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     req.companyId, b.property_id, b.tenant_user_id || null, b.loan_type || 'land_contract', b.sale_price_cents,
     b.down_payment_cents || 0, b.principal_cents, b.interest_rate_bps, b.term_months, payment,
-    b.escrow_cents || 0, b.late_fee_cents || 0, b.grace_days ?? 5, b.first_payment_date,
+    b.escrow_cents || 0, b.late_fee_cents ?? defaultLateFeeCents(payment), b.grace_days ?? 5, b.first_payment_date,
     b.due_day || Number(b.first_payment_date.slice(8, 10)), b.principal_cents, b.beneficial_interest_pct || null,
     b.escrow_structure === 'pit' ? 'pit' : 'piti');
   // A buyer already in the app gets this loan's welcome guide now — city from the

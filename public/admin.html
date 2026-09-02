@@ -6248,7 +6248,9 @@ function editLoanModal(){
     </div>
     <h3 style="font-size:14px;margin:16px 0 10px">Late payments</h3>
     <div class="grid3">
-      <div class="field"><label>Late fee ($)</label><input id="el-late" type="number" step="0.01" value="${d(L.late_fee_cents)}"></div>
+      <div class="field"><label>Late fee ($) <span class="note">— 10% of P&amp;I is ${fmt(Math.round((L.payment_cents||0)*0.10))}</span></label>
+        <input id="el-late" type="number" step="0.01" value="${d(L.late_fee_cents)}">
+        <p class="note" style="margin-top:4px">Calculated on principal and interest only, not escrow. Set to 0 to charge no late fee on this loan.</p></div>
       <div class="field"><label>Grace period (days)</label><input id="el-grace" type="number" value="${L.grace_days||0}"></div>
       <div class="field"><label>Status</label><select id="el-status">
         ${['active','paid_off','defaulted','cancelled'].map(v=>`<option value="${v}"${L.status===v?' selected':''}>${v.replace('_',' ')}</option>`).join('')}
