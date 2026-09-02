@@ -1125,6 +1125,11 @@ a{color:var(--brand);font-weight:600}
       </div>
 
       <div class="card">
+        <h2>&#128276; Notifications</h2>
+        <div id="set-push"><p class="note">Loading…</p></div>
+      </div>
+
+      <div class="card">
         <h2>&#128736;&#65039; File recovery</h2>
         <div id="set-orphans"><p class="note">Loading…</p></div>
       </div>
@@ -1433,7 +1438,7 @@ function nav(pg){
   if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();}
   if(pg==='msgs')openMsgs();
   if(pg==='pml'){loadProps();loadPML();}
-  if(pg==='settings'){loadSettings();loadTexting();loadEmail();loadBooks();loadNotices();loadLob();loadOrphans();wireAddressFields();}
+  if(pg==='settings'){loadSettings();loadTexting();loadEmail();loadBooks();loadNotices();loadLob();loadPush();loadOrphans();wireAddressFields();}
   if(pg==='invites')loadInvites();
   if(pg==='reports')loadReports();
   if(pg==='calc')calcSolve();
@@ -3296,6 +3301,47 @@ async function saveNoticePause(){
     $('np-err').textContent=e.message; $('np-err').classList.remove('hidden'); return;
   }
   closeModal(); loadNoticesAdmin();
+}
+
+// What push can actually do right now, and the two keys that have to be copied into
+// Railway to keep it that way. The VAPID private key exists nowhere else — it is
+// generated onto the data volume and never shown — so it is offered here until it is
+// pinned, and then never again.
+async function loadPush(){
+  const el=$('set-push'); if(!el) return;
+  let d; try{ d=await api('/api/admin/push-status'); }
+  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  el.innerHTML=`
+    <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+      <span class="note">Web app and home-screen installs</span><b>${d.web_subscriptions} subscribed</b></div>
+    <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+      <span class="note">App Store and Play installs</span>
+      <b>${d.native_push?`${d.devices} device${d.devices===1?'':'s'}`:'not configured'}</b></div>
+
+    ${(d.warnings||[]).map(w=>`<div class="err" style="margin-top:10px">${esc(w)}</div>`).join('')}
+
+    ${d.vapid_private_key?`
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+        <h3 style="font-size:14px;margin:0 0 4px">Pin these in Railway</h3>
+        <p class="note" style="margin:0 0 10px">Copy both into your Railway variables, then redeploy.
+          After that this section stops showing them, because they will be coming from the environment.</p>
+        <div class="field"><label>VAPID_PUBLIC_KEY</label>
+          <input readonly onclick="this.select()" value="${esc(d.vapid_public_key)}"></div>
+        <div class="field"><label>VAPID_PRIVATE_KEY</label>
+          <input readonly onclick="this.select()" value="${esc(d.vapid_private_key)}"></div>
+        <div class="field"><label>VAPID_SUBJECT</label>
+          <input readonly onclick="this.select()" value="mailto:servicing@saapm.com"></div>
+      </div>`:`
+      <p class="note" style="margin-top:12px">VAPID keys are pinned in the environment. Nothing to copy.</p>`}
+
+    ${d.native_push?'':`
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+        <h3 style="font-size:14px;margin:0 0 4px">Turning on notifications for the store apps</h3>
+        <p class="note" style="margin:0">In Firebase → Project settings → Service accounts, generate a
+          private key, and paste the whole JSON into Railway as <b>FIREBASE_SERVICE_ACCOUNT</b>.
+          Until then the App Store and Play builds cannot receive notifications — text, email and the
+          in-app feed are unaffected.</p>
+      </div>`}`;
 }
 
 async function loadLob(){

@@ -7803,12 +7803,18 @@ app.get('/api/push/public-key', anyUser, (req, res) => res.json({ key: notify.va
 
 // What push is actually capable of right now, and what is missing. Read by Settings so
 // the answer is on screen rather than in the server log.
-app.get('/api/admin/push-status', adminOnly, (req, res) => {
+app.get('/api/admin/push-status', ownerOnly, (req, res) => {
   const pinned = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+  // The private half lives only in the settings table on the data volume, which means
+  // there is no way to pin it in the environment without being able to read it back.
+  // Owner only, and only while it is still unpinned — once it is in the environment
+  // there is nothing here worth showing.
+  const stored = pinned ? null : get("SELECT value FROM settings WHERE key='vapid_private'");
   res.json({
     web_push: true,
     vapid_pinned: pinned,
     vapid_public_key: notify.vapid().publicKey,
+    vapid_private_key: stored ? stored.value : null,
     native_push: notify.nativePushEnabled(),
     web_subscriptions: get('SELECT COUNT(*) c FROM push_subscriptions').c,
     devices: get('SELECT COUNT(*) c FROM device_tokens').c,
