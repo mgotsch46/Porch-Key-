@@ -171,7 +171,7 @@ function inviteMessage({ buyerName, companyName, address, url, email, tempPasswo
   const first = (buyerName || '').trim().split(/\s+/)[0] || 'there';
   return `Hi ${first} — congratulations on ${address}!
 
-${companyName} uses Porch Pay to handle your payments and paperwork.
+${companyName} uses this app to handle your payments and paperwork.
 
 Open this on your phone:
 ${url}
@@ -189,7 +189,7 @@ This is an automated message from an unmonitored number — please don't reply h
 
 // What anyone who texts the number back receives. Sent once per conversation by Twilio's
 // webhook, so a buyer who replies is not left thinking nobody heard them.
-const AUTO_REPLY = `This number doesn't receive messages. To reach ${'{company}'}, open the Porch Pay app and use Messages — we answer there. Reply STOP to opt out.`;
+const AUTO_REPLY = `This number doesn't receive messages. To reach ${'{company}'}, open the app and use Messages — we answer there. Reply STOP to opt out.`;
 
 function autoReplyTwiml(companyName) {
   const body = AUTO_REPLY.replace('{company}', companyName || 'your servicer');

@@ -417,7 +417,8 @@ async function sendEmail(to, { subject, text, html, kind, daysPastDue, identity:
     throw new Error('Email is not connected yet — add your mail settings under Settings → Email');
   }
 
-  const fromName = (company && (company.mgmt_company_name || company.name)) || process.env.COMPANY_NAME || 'Porch Pay';
+  // Never the vendor name: this is the display name a buyer sees in their inbox.
+  const fromName = (company && (company.mgmt_company_name || company.name)) || process.env.COMPANY_NAME || 'Your servicer';
 
   let messageId = null;
   try {

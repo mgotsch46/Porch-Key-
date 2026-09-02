@@ -280,7 +280,7 @@ class Doc {
     return this;
   }
   letterhead(company, { subtitle, logo } = {}) {
-    const name = (company && (company.mgmt_company_name || company.name)) || 'Porch Pay';
+    const name = (company && (company.mgmt_company_name || company.name)) || 'Your servicer';
     // Logo on the left, company details to the right of it — a normal letterhead.
     // Without a logo the text simply starts at the margin.
     let textX = MARGIN.left;
@@ -352,7 +352,7 @@ class Doc {
     // The page objects were written pointing at pagesId; make that the real one.
     for (const id of pageIds) objs[id - 1] = objs[id - 1].replace(`/Parent ${pagesId} 0 R`, `/Parent ${realPagesId} 0 R`);
     const catalogId = add(`<< /Type /Catalog /Pages ${realPagesId} 0 R >>`);
-    const infoId = add(`<< /Title (${esc(this.title)}) /Producer (Porch Pay) /CreationDate (D:${
+    const infoId = add(`<< /Title (${esc(this.title)}) /CreationDate (D:${
       new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}Z) >>`);
 
     let out = '%PDF-1.4\n';
@@ -388,7 +388,7 @@ function htmlToBlocks(html) {
 function letter({ company, subject, bodyHtml, bodyText, meta = [], sentAt, footer, logo }) {
   const d = new Doc({
     title: subject || 'Letter',
-    footer: footer || `Sent through Porch Pay${sentAt ? ' · ' + String(sentAt).slice(0, 10) : ''}`,
+    footer: footer || `${(company && (company.mgmt_company_name || company.name)) || 'Your servicer'}${sentAt ? ' · ' + String(sentAt).slice(0, 10) : ''}`,
   });
   d.letterhead(company, { logo });
   d.space(6);

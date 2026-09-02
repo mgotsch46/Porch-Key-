@@ -2,8 +2,8 @@
 // piece of correspondence goes out in.
 //
 // Branding rule, applied everywhere: the servicing company's name and logo lead the
-// message — buyers are dealing with them, not with us. A small "Powered by Porch Pay"
-// line sits at the bottom.
+// message — buyers are dealing with them, not with us. No vendor attribution
+// appears anywhere a buyer can see.
 
 const { get, all, run } = require('./db');
 
@@ -98,7 +98,7 @@ const escapeHtml = (s) => String(s == null ? '' : s)
   .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // ---------- branded shell ----------
-// Company identity on top, Porch Pay small at the bottom, on every message.
+// Company identity on top; no vendor attribution anywhere a buyer can see it.
 // Who to call and where to write, on the bottom of every piece of correspondence.
 function contactBlock(company) {
   if (!company) return '';
@@ -129,10 +129,6 @@ function brandedShell({ company, bodyHtml, subject, baseUrl }) {
   ${subject ? `<div class="pp-subject">${escapeHtml(subject)}</div>` : ''}
   <div class="pp-body">${bodyHtml}</div>
   ${contactBlock(company)}
-  <div class="pp-footer">
-    <img src="${baseUrl || ''}/logo-mark.png" alt="" class="pp-ppmark">
-    <span>Sent through <b>Porch Pay</b></span>
-  </div>
 </div>`;
 }
 
@@ -195,7 +191,7 @@ ${preheader ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0">
   ${contact.length ? `<tr><td style="padding:16px 24px;border-top:1px solid ${MAIL.line};font-family:${MAIL.font};font-size:13px;line-height:1.6;color:${MAIL.mut}">${contact.map(c => `<div>${c}</div>`).join('')}</td></tr>` : ''}
 
   <tr><td style="padding:14px 24px 18px;background:${MAIL.bg};border-top:1px solid ${MAIL.line};font-family:${MAIL.font};font-size:12px;color:${MAIL.mut}">
-    Sent through <b style="color:${MAIL.mut}">Porch Pay</b>${base ? ` · <a href="${base}" style="color:${MAIL.brand};text-decoration:none">Open the app</a>` : ''}
+    ${name}${base ? ` · <a href="${base}" style="color:${MAIL.brand};text-decoration:none">Open the app</a>` : ''}
   </td></tr>
 
 </table>
