@@ -1510,6 +1510,39 @@ async function runNoticeSweep() {
       const due = noticeRules.dueRule(loan.company_id, loan.id, period, daysPast);
       if (!due) continue;
 
+      // A legal notice in a state whose track has not been written is held, not sent.
+      // The generic wording is not drawn from any particular state's statute, and day 31
+      // goes certified over the Legal department's name — exactly the document a court
+      // reads back to you later. Courtesy reminders are unaffected and still go out.
+      if (due.fire.notice_type === 'legal_notice' && !noticeRules.hasLegalTrack(property)) {
+        const st = noticeRules.stateOf(property) || 'no state on the property';
+        // Recorded against the stage so the rung does not come round again every sweep
+        // and pester somebody hourly about the same decision.
+        run(`INSERT INTO notices (loan_id, type, period, stage, subject, body, days_past_due, delivery_json)
+          VALUES (?,?,?,?,?,?,?,?)`, loan.id, 'legal_notice', period, due.fire.stage,
+          `${due.fire.label} — HELD, no legal track for ${st}`,
+          `Not sent. This rung is a legal notice, and PorchPay only has a researched ` +
+          `default sequence for Michigan and Illinois. Sending the generic wording into ` +
+          `${st} could put a defective notice on the record.\n\n` +
+          `Handle this account by hand, with counsel licensed in ${st}.`,
+          daysPast, JSON.stringify({ held: true, reason: 'no_legal_track', state: st }));
+        for (const skipped of due.skip) {
+          run(`INSERT INTO notices (loan_id, type, period, stage, subject, body, days_past_due, delivery_json)
+            VALUES (?,?,?,?,?,?,?,?)`, loan.id, skipped.notice_type, period, skipped.stage,
+            `${skipped.label} (superseded)`,
+            `Not sent: the account had already reached ${due.fire.label} by the time this was evaluated.`,
+            daysPast, JSON.stringify({ skipped: true }));
+        }
+        const addr = property ? property.address : 'loan #' + loan.id;
+        notifyAdmins(loan.company_id, {
+          kind: 'notice', title: `⚖️ Legal notice held — ${st} has no track`,
+          body: `${addr}: ${due.fire.label} was not sent. Handle by hand with local counsel.`,
+          url: '/staff', dedupeKey: `notrack-${loan.id}-${period}-${due.fire.stage}`,
+        });
+        console.warn(`Held ${due.fire.stage} for loan ${loan.id}: no legal track for ${st}`);
+        continue;
+      }
+
       // Rungs that came due while nothing was running are recorded, not sent. Four
       // notices arriving together about one missed payment helps nobody.
       for (const skipped of due.skip) {

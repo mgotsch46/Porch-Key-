@@ -30,6 +30,55 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
+>>"%MSGFILE%" echo Green the suite: the five long-standing failures were stale tests
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Five tests had been failing for long enough to be treated as furniture.
+>>"%MSGFILE%" echo None of them was a bug. Every one asserted behaviour the app had
+>>"%MSGFILE%" echo deliberately moved away from, and left standing they hid real regressions
+>>"%MSGFILE%" echo in the noise.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Four were the same root cause: the app is white-labelled. A buyer sees
+>>"%MSGFILE%" echo their servicer's name, not the software's. The tests still demanded the
+>>"%MSGFILE%" echo string "Porch Pay" in the call whisper, both SMS auto-replies and the
+>>"%MSGFILE%" echo letterhead - so they were asserting a branding leak, not preventing one.
+>>"%MSGFILE%" echo They now assert the behaviour: the whisper names the caller, the auto-reply
+>>"%MSGFILE%" echo points at the app and carries the STOP opt-out, and correspondence carries
+>>"%MSGFILE%" echo the servicing company.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo The fifth expected a blank late fee to stay zero. That was changed on
+>>"%MSGFILE%" echo purpose in "Late fee defaults to 10%% of P&I instead of nothing" - the old
+>>"%MSGFILE%" echo behaviour meant a loan nobody typed a fee into was never charged one. It
+>>"%MSGFILE%" echo now asserts the fill-in, computed from the payment rather than hardcoded.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo 774 passed, 0 failed. First green run.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Hold legal notices in states that have no researched track
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo The notice sweep dispatches on the property's state: MI gets the forfeiture
+>>"%MSGFILE%" echo ladder, IL gets its own, and everything else fell through to the generic
+>>"%MSGFILE%" echo one. That generic ladder is not harmless. Days 6 and 16 are courtesy
+>>"%MSGFILE%" echo reminders, but days 31, 46 and 61 are legal notices over the Legal
+>>"%MSGFILE%" echo department's name, and day 31 goes certified - written to no state's
+>>"%MSGFILE%" echo statute in particular. A property in Ohio or Missouri would quietly start
+>>"%MSGFILE%" echo receiving them, with no error and no warning.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo - notices.js gains LEGAL_TRACK_STATES, currently MI and IL only.
+>>"%MSGFILE%" echo - A legal rung in any other state is recorded as HELD, naming the state and
+>>"%MSGFILE%" echo   saying to handle it with local counsel. Nothing is mailed.
+>>"%MSGFILE%" echo - The servicer is notified, once per rung per period - it is recorded
+>>"%MSGFILE%" echo   against the stage so the sweep does not pester hourly.
+>>"%MSGFILE%" echo - Deliberately narrow: courtesy reminders still go out anywhere, since they
+>>"%MSGFILE%" echo   carry no legal weight. A blank or missing state counts as no track.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Adding a state is now a deliberate act - research the statute, write the
+>>"%MSGFILE%" echo letters, add it to the set - rather than a side effect of typing an address.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo 10 new tests, including one proving the courtesy rung still sends.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Fail the build if a flagged permission ever reaches the manifest
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Neither app needs contacts, storage, media, phone numbers, the installed

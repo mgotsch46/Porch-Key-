@@ -329,6 +329,20 @@ function dueRule(companyId, loanId, period, daysPast) {
 // has run, which is why nothing is filed before it.
 const isIllinois = (property) => !!property && String(property.state || '').trim().toUpperCase() === 'IL';
 
+// ---------- which states have a researched legal track ----------
+// Michigan and Illinois have had their forfeiture sequences written to the statute, with
+// the cure periods, the certified-mail steps and the court forms that go with them.
+// Nowhere else has. The generic ladder's later rungs are legal notices from the Legal
+// department and one of them goes certified, but the wording belongs to no state in
+// particular — so in a state without a track those rungs are held rather than mailed.
+// Courtesy late reminders still go out anywhere; they carry no legal weight.
+//
+// Adding a state means researching its statute, writing its letters, and adding it here
+// — deliberately, not by typing an address into a new property.
+const LEGAL_TRACK_STATES = new Set(['MI', 'IL']);
+const stateOf = (property) => String((property && property.state) || '').trim().toUpperCase();
+const hasLegalTrack = (property) => LEGAL_TRACK_STATES.has(stateOf(property));
+
 const IL_LADDER = [
   { stage: 'il_default',   day: 6,  label: 'Notice of Default',                        certified: 1 },
   { stage: 'il_forfeit',   day: 46, label: 'Notice of Intent to Declare Forfeiture',   certified: 1 },
@@ -559,6 +573,7 @@ function ilMissingFields(property) {
 }
 
 module.exports = { initSchema, seedLadder, rulesFor, defaultWording, dueRule, DEFAULT_LADDER,
+  LEGAL_TRACK_STATES, stateOf, hasLegalTrack,
   isMichigan, miCourtFor, MI_COURTS, MI_NON_WAIVER, MI_PARTIAL_NON_WAIVER, miLateNoticeWording,
   miMissingFields, isIllinois, IL_LADDER, IL_PREP_DAY, IL_FILE_DAY, IL_CONTRACT_CURE_DAYS, IL_FORFEIT_CURE_DAYS,
   ilDefaultWording, ilForfeitureWording, ilFiveDayWording, ilMissingFields };

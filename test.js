@@ -828,7 +828,8 @@ async function main() {
 
     // The screen itself: names the caller, offers 1 to answer, hangs up on silence.
     xml = await (await signedForm('/api/voice/staff-screen?co=' + co.id + '&who=Jane%20Buyer&parent=CA' + '7'.repeat(32), {})).text();
-    ok(/Porch Pay call from Jane Buyer/.test(xml), 'the whisper says it is a PorchPay call and from whom');
+    ok(/Loan Servicing call from Jane Buyer/.test(xml),
+      'the whisper says what kind of call it is and who is calling');
     ok(/Press 1 to answer/.test(xml) && /<Hangup\/>/.test(xml),
       'press 1 answers; silence hangs the leg so carrier voicemail cannot steal the call');
 
@@ -1409,6 +1410,75 @@ async function main() {
     ok(r.json.pml.property_id === pb.json.id, 'move persisted');
   }
 
+  console.log('— legal notices held where there is no state track');
+  {
+    const D = require('./db.js');
+    // A property in a state PorchPay has never researched. The courtesy reminders should
+    // still go; the certified legal rung should not.
+    let rp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({
+      address: '900 Elm St', city: 'Springfield', state: 'MO', zip: '65801' }) });
+    const moProp = rp.json.id;
+    rp = await req('/api/admin/tenants', { method: 'POST', body: JSON.stringify({
+      name: 'Sam Missouri', email: 'sam.mo@test.com', phone: '555-0177' }) });
+    const moTb = rp.json.id;
+    rp = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+      property_id: moProp, tenant_user_id: moTb, loan_type: 'land_contract',
+      sale_price_cents: 6000000, down_payment_cents: 1000000, principal_cents: 5000000,
+      interest_rate_bps: 900, term_months: 240, escrow_cents: 20000, late_fee_cents: 4000,
+      grace_days: 5, first_payment_date: '2026-01-01' }) });
+    const moLoan = rp.json.loan && rp.json.loan.id;
+    ok(!!moLoan, 'a Missouri loan can be created');
+
+    await req('/api/admin/notice-sweep', { method: 'POST' });
+    const notices = D.all('SELECT * FROM notices WHERE loan_id=? ORDER BY id', moLoan);
+    const held = notices.filter(n => (n.delivery_json || '').includes('no_legal_track'));
+    ok(held.length > 0, 'the legal rung is held in a state with no track');
+    ok(/HELD/.test(held[0].subject) && /MO/.test(held[0].subject), 'the held notice names the state');
+    const sentLegal = notices.filter(n =>
+      n.type === 'legal_notice' && !(n.delivery_json || '').includes('held')
+        && !(n.delivery_json || '').includes('skipped'));
+    ok(sentLegal.length === 0, 'no generic legal notice was actually sent into Missouri');
+
+    // Courtesy reminders must still work — the guard is meant to be narrow.
+    const NR = require('./notices.js');
+    ok(NR.hasLegalTrack({ state: 'MI' }) && NR.hasLegalTrack({ state: 'il' }),
+      'Michigan and Illinois still have a track, case-insensitively');
+    ok(!NR.hasLegalTrack({ state: 'MO' }) && !NR.hasLegalTrack({ state: '' }) && !NR.hasLegalTrack(null),
+      'Missouri, a blank state and a missing property all count as no track');
+    ok(NR.stateOf({ state: ' oh ' }) === 'OH', 'state is trimmed and upper-cased before matching');
+
+    // The guard must be narrow. A loan only a few days past due in the same untracked
+    // state should still get its courtesy reminder — that rung is a servicing nudge with
+    // no legal effect, and blocking it would be over-correcting.
+    rp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({
+      address: '902 Elm St', city: 'Springfield', state: 'MO', zip: '65801' }) });
+    const moProp2 = rp.json.id;
+    rp = await req('/api/admin/tenants', { method: 'POST', body: JSON.stringify({
+      name: 'Dana Missouri', email: 'dana.mo@test.com', phone: '555-0178' }) });
+    const moTb2 = rp.json.id;
+    const soon = new Date(Date.now() - 8 * 86400000).toISOString().slice(0, 10);
+    rp = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+      property_id: moProp2, tenant_user_id: moTb2, loan_type: 'land_contract',
+      sale_price_cents: 6000000, down_payment_cents: 1000000, principal_cents: 5000000,
+      interest_rate_bps: 900, term_months: 240, escrow_cents: 20000, late_fee_cents: 4000,
+      grace_days: 0, first_payment_date: soon }) });
+    const moLoan2 = rp.json.loan && rp.json.loan.id;
+    await req('/api/admin/notice-sweep', { method: 'POST' });
+    const n2 = D.all('SELECT * FROM notices WHERE loan_id=? ORDER BY id', moLoan2);
+    const courtesySent = n2.filter(n => n.type === 'late_notice'
+      && !(n.delivery_json || '').includes('held')
+      && !(n.delivery_json || '').includes('skipped'));
+    ok(courtesySent.length > 0, 'a courtesy late notice still goes out in an untracked state');
+    ok(!n2.some(n => (n.delivery_json || '').includes('no_legal_track')),
+      'and nothing was held for a loan that never reached a legal rung');
+
+    // Running the sweep again must not pile up duplicates.
+    const before = D.get('SELECT COUNT(*) c FROM notices WHERE loan_id=?', moLoan).c;
+    await req('/api/admin/notice-sweep', { method: 'POST' });
+    const after = D.get('SELECT COUNT(*) c FROM notices WHERE loan_id=?', moLoan).c;
+    ok(after === before, 'a held rung is not re-held on the next sweep');
+  }
+
   console.log('— location removed');
   // The feature was withdrawn before the store submission. These assert it is actually
   // gone rather than merely hidden in the UI — a route left listening would make the
@@ -1565,7 +1635,8 @@ async function main() {
   ok(r.json.messages[1].property_id === propId, 'the reply is filed against the property last discussed');
   inbound = await signedForm('/sms/incoming', { From: '+19995550000', Body: 'who is this' });
   xml = await inbound.text();
-  ok(/<Message>/.test(xml) && /Porch Pay app/.test(xml), 'an unknown number still gets the app auto-reply');
+  ok(/<Message>/.test(xml) && /open the app and use Messages/.test(xml) && /STOP/.test(xml),
+    'an unknown number still gets the auto-reply, pointing at the app and carrying the opt-out');
   r = await req('/api/admin/contact-inbox');
   ok(r.json.unread.length === 0, 'opening the thread marks vendor replies read');
 
@@ -1691,7 +1762,8 @@ async function main() {
   const buyerXml = await twiml.text();
   ok(twiml.status === 200 && !/<Message>/.test(buyerXml), 'a known buyer’s text is threaded, not auto-replied');
   const strangerXml = await (await signedForm('/sms/incoming', { From: '+15550009999', Body: 'hello' })).text();
-  ok(/<Response><Message>/.test(strangerXml) && /Porch Pay app/.test(strangerXml), 'a stranger still gets the automatic pointer into the app');
+  ok(/<Response><Message>/.test(strangerXml) && /open the app and use Messages/.test(strangerXml),
+    'a stranger still gets the automatic pointer into the app');
 
   console.log('— correspondence carries the management company name');
   await req('/api/admin/company', { method: 'PUT', body: JSON.stringify({ name: 'Renew EQ LLC' }) });
@@ -1802,7 +1874,14 @@ async function main() {
     buyer_name: 'Eli Buyer', buyer_email: 'eli@test.com', sale_price_cents: 6000000,
     principal_cents: 5500000, interest_rate_bps: 900, term_months: 180, first_payment_date: '2026-10-01' }) });
   r = await req('/api/admin/loans/' + r.json.loan_id);
-  ok(r.json.loan.late_fee_cents === 0, 'property with no late fee set carries none, not a company default');
+  // Changed deliberately in "Late fee defaults to 10% of P&I instead of nothing": a loan
+  // nobody typed a fee into was never charged one, because the charge is gated on the fee
+  // being above zero. A blank now fills in at 10% of the note payment, escrow excluded.
+  {
+    const L = r.json.loan;
+    ok(L.late_fee_cents === Math.round(L.payment_cents * 0.10),
+      `a blank late fee fills in at 10% of P&I (got $${(L.late_fee_cents/100).toFixed(2)} on a $${(L.payment_cents/100).toFixed(2)} payment)`);
+  }
 
   console.log('— property phases, doc sets, agreement types, lender scheduling');
   r = await req(`/api/admin/properties/${p2}`);
@@ -1890,7 +1969,10 @@ async function main() {
   ok(r.json.html.includes('Servicing Dept') && r.json.html.includes('555-222-3333'),
     'representative details merge in, phone normalised to dashes');
   ok(r.json.html.includes('pp-letterhead'), 'message wrapped in company letterhead');
-  ok(r.json.html.includes('Porch Pay'), 'Porch Pay mark present on correspondence');
+  // White-labelled on purpose: a buyer's letter carries their servicer's name, not the
+  // software's. Asserting "Porch Pay" here was asserting a leak.
+  ok(r.json.html.includes('RenewEQ Management'),
+    'correspondence carries the servicing company, not the software vendor');
   ok(r.json.html.includes('PO Box 9'), 'mailing address appears on correspondence');
   ok(!r.json.html.includes('{{'), 'no unresolved merge fields left');
 
