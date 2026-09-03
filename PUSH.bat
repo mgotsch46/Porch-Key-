@@ -30,6 +30,23 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
+>>"%MSGFILE%" echo Let the Android builds see the Firebase config
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo GOOGLE_SERVICES_JSON lives in the appstore variable group, but only the
+>>"%MSGFILE%" echo two iOS workflows imported that group. The Android builds would have run
+>>"%MSGFILE%" echo clean, produced a signed AAB, and shipped without push - the step only
+>>"%MSGFILE%" echo warns when the variable is missing, so nothing would have failed.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Both Android workflows now import the group alongside their keystore.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Also: FIREBASE-FILES is now a PowerShell script rather than a batch file,
+>>"%MSGFILE%" echo and it verifies each config file actually contains com.porchpay.app before
+>>"%MSGFILE%" echo using it. Chrome saves a repeat download as "google-services (1).json"
+>>"%MSGFILE%" echo instead of overwriting, and the first run picked up Deal Flow Pro's config
+>>"%MSGFILE%" echo from July by name. Matching on filename alone was not safe.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Green the suite: the five long-standing failures were stale tests
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Five tests had been failing for long enough to be treated as furniture.

@@ -15,3 +15,16 @@ test.js.tmp
 # Signing material never enters history
 signing/
 sample-notices/
+
+# Firebase config + the generated paste-file. Not secret (they ship inside the app
+# binary) but there is no reason for them to be in the repo, and the paste-file is
+# meant to be deleted once the values are in Codemagic.
+google-services.json
+GoogleService-Info.plist
+firebase-codemagic-values.txt
+*.p8
+
+# Scratch output from the helper scripts, and one stray file created by a broken
+# PowerShell-in-batch attempt whose variable never expanded.
+p8-search-results.txt
+$($f.Name)

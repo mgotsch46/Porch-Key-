@@ -203,6 +203,11 @@ workflows:
     name: PorchPay Android → signed AAB
     environment:
       <<: *android_env
+      # The Firebase config lives in the appstore group alongside the signing material.
+      # Without this the Android builds cannot see GOOGLE_SERVICES_JSON and ship without
+      # push — silently, since the step only warns.
+      groups:
+        - appstore
       android_signing:
         - porchpay_keystore
       vars:
@@ -282,6 +287,11 @@ workflows:
     name: PorchPay Admin Android → signed AAB
     environment:
       <<: *android_env
+      # The Firebase config lives in the appstore group alongside the signing material.
+      # Without this the Android builds cannot see GOOGLE_SERVICES_JSON and ship without
+      # push — silently, since the step only warns.
+      groups:
+        - appstore
       android_signing:
         - porchpay_keystore
       vars:
