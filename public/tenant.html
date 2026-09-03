@@ -553,7 +553,17 @@ async function api(path, opts={}) {
   if (!res.ok) throw new Error(json.error || 'Something went wrong');
   return json;
 }
-function show(id){ for(const v of ['v-login','v-newpw','v-terms','v-loc','v-app']) $(v).classList.toggle('hidden', v!==id); }
+// Skips a view that is not in the document instead of throwing on it. This list used to
+// name v-loc, the location screen; when that screen was removed the name stayed, $() came
+// back null, and .classList threw before the loop ever reached v-app — so every buyer got
+// a white screen the moment they signed in. A missing view should never be able to take
+// the whole app down with it.
+function show(id){
+  for(const v of ['v-login','v-newpw','v-terms','v-app']){
+    const el = $(v);
+    if (el) el.classList.toggle('hidden', v!==id);
+  }
+}
 
 // ---------- boot & auth ----------
 async function boot(){

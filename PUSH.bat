@@ -30,40 +30,24 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
->>"%MSGFILE%" echo A way to prove notifications actually arrive
+>>"%MSGFILE%" echo Fix the white screen every buyer got at sign-in
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Every notification in the app fires as a side effect of something real -
->>"%MSGFILE%" echo money landing, an autopay switched off, a notice held. So the only way to
->>"%MSGFILE%" echo prove delivery worked was to stage a real event on a real loan, which
->>"%MSGFILE%" echo leaves a message in that buyer's thread forever.
+>>"%MSGFILE%" echo Removing the location feature deleted the v-loc screen but left its id in
+>>"%MSGFILE%" echo the list show() iterates. $('v-loc') returned null and .classList threw -
+>>"%MSGFILE%" echo before the loop reached v-app. So the app never un-hid itself and every
+>>"%MSGFILE%" echo buyer, on web and on iOS, got a white screen the moment they signed in.
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Settings - Notifications now has "Send myself a test notification". It goes
->>"%MSGFILE%" echo to the caller alone and records nothing against any loan.
+>>"%MSGFILE%" echo The parse check I ran at the time could not have caught this: the file was
+>>"%MSGFILE%" echo syntactically perfect. It only failed when the line actually ran. Nor did
+>>"%MSGFILE%" echo grepping for "location" - the dead reference was the string 'v-loc' and the
+>>"%MSGFILE%" echo functions were named locUi and sendPing, none of which contain that word.
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo It reports the transports separately from the record, because those are
->>"%MSGFILE%" echo different failures. A notification is always written to the feed, so a
->>"%MSGFILE%" echo plain 200 would look like success even when there is no subscribed device
->>"%MSGFILE%" echo to send it to - which is exactly the state the account was in. It now says
->>"%MSGFILE%" echo "recorded, but no device is subscribed" and explains where to turn them on.
+>>"%MSGFILE%" echo show() now skips a view that is not in the document instead of throwing on
+>>"%MSGFILE%" echo it, so a missing screen can never take the whole app down again.
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo 6 tests: recorded against the sender, honest when undeliverable, never
->>"%MSGFILE%" echo reaches a buyer, and buyers cannot fire one.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo ---
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Make the held-notice test assert the invariant, not a row count
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo The test counted notice rows before and after a manual sweep and required
->>"%MSGFILE%" echo them to be equal. But the app runs its own notice sweep five seconds after
->>"%MSGFILE%" echo boot and its autopay sweep at twenty, both well inside a suite run, so a
->>"%MSGFILE%" echo background sweep could add a row between the two counts. It failed about
->>"%MSGFILE%" echo one run in seven - the worst kind of test, since a real regression looks
->>"%MSGFILE%" echo identical to a bad roll of the dice.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo It now runs the sweep twice and asserts what actually matters: no stage is
->>"%MSGFILE%" echo ever recorded twice in the same period.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo 780 passed, 0 failed.
+>>"%MSGFILE%" echo Swept all three pages for the same class of bug - every id referenced
+>>"%MSGFILE%" echo through $() against every id defined in the markup. tenant, admin and staff
+>>"%MSGFILE%" echo are clean; v-loc was the only one.
 
 echo  Staging changes...
 git add -A
