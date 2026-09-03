@@ -30,6 +30,50 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
+>>"%MSGFILE%" echo Stop one bad request from taking the whole server down
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Found by driving the app rather than reading it: asking to send an
+>>"%MSGFILE%" echo invitation that does not exist threw a TypeError and KILLED THE NODE
+>>"%MSGFILE%" echo PROCESS. Everyone signed out, every in-flight payment redirect dropped,
+>>"%MSGFILE%" echo the buyer app down - from a stale tab or a mistyped URL.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo The not-found check sat BELOW the already-sent check, which read d.inv on
+>>"%MSGFILE%" echo a null d. But the one-line fix is not the fix. Express 4 catches a handler
+>>"%MSGFILE%" echo that throws synchronously; an ASYNC handler that throws returns a rejected
+>>"%MSGFILE%" echo promise, which Express ignores and Node turns into a fatal error. Twelve
+>>"%MSGFILE%" echo async routes had no try/catch. Any of them was an outage waiting.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo - Every handler is now wrapped once, where routes are registered, so a
+>>"%MSGFILE%" echo   rejection reaches the error middleware instead of the process. This does
+>>"%MSGFILE%" echo   not depend on ~130 route bodies each remembering their own try/catch.
+>>"%MSGFILE%" echo - Anything rejecting outside a request - a sweep, a timer, a webhook retry -
+>>"%MSGFILE%" echo   is logged loudly and the server keeps serving.
+>>"%MSGFILE%" echo - /api/admin/comms/attach returned a 500 and a stack trace when asked to
+>>"%MSGFILE%" echo   attach nothing. It now says which call or text you meant.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo THE PLATFORM ACCOUNT. super_admin was admitted to the admin and staff UIs
+>>"%MSGFILE%" echo but excluded from ADMIN_ROLES on the server, so it signed in successfully
+>>"%MSGFILE%" echo and got a fully rendered dashboard with NOTHING IN IT - every panel 403,
+>>"%MSGFILE%" echo silently. It now gets told plainly that it maintains companies and owns
+>>"%MSGFILE%" echo none, with a sign-out button.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo THE PUBLIC PAGES. Support was telling buyers to "turn off location sharing"
+>>"%MSGFILE%" echo in a screen that no longer exists, and the deletion page promised to delete
+>>"%MSGFILE%" echo location history the app never collects - both contradicting the privacy
+>>"%MSGFILE%" echo policy one link away, on the exact pages a store reviewer opens. Fixed, and
+>>"%MSGFILE%" echo now guarded by a test that scans all four pages for any claim about
+>>"%MSGFILE%" echo location that is not a denial. A stale assertion in verify-features.js went
+>>"%MSGFILE%" echo with them.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ISOLATION, measured rather than assumed: a second company was signed up and
+>>"%MSGFILE%" echo pointed at company A's ids across all 209 admin and staff routes - 435
+>>"%MSGFILE%" echo probes, reads then writes. ZERO leaks. A's loan, property, buyer, ledger and
+>>"%MSGFILE%" echo notices were all intact afterwards. Buyer-to-buyer: 18 tenant reads, zero.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo 30 new tests. 861 passed, 0 failed.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Nothing goes in the post until a person has read it
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo The ladder handed a certified letter straight to Lob the moment the rung

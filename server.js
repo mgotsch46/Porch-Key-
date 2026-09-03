@@ -53,6 +53,45 @@ const noticeRules = require('./notices');
 noticeRules.initSchema();
 
 const app = express();
+
+// One bad request must not take the server down.
+//
+// Express 4 catches a handler that throws synchronously, but an `async` handler that
+// throws returns a REJECTED PROMISE, which Express ignores entirely. Node then treats
+// it as an unhandled rejection and, since Node 15, kills the process. So a single
+// missing null check in any one of the async routes — asking to send an invitation
+// that does not exist was the one that found this — logs everybody out, drops every
+// in-flight payment redirect, and takes the buyer app down with it.
+//
+// Wrapping every handler once, here, is the fix that does not depend on a hundred
+// route bodies each remembering their own try/catch. A rejection now reaches the error
+// middleware and the person gets a 500 for their request instead of an outage.
+for (const verb of ['get', 'post', 'put', 'delete', 'patch', 'all', 'use']) {
+  const orig = app[verb].bind(app);
+  app[verb] = (...args) => orig(...args.map(a => {
+    // Arity 4 is error middleware; leave its signature alone or Express stops
+    // recognising it. Anything else that is a function gets the net.
+    if (typeof a !== 'function' || a.length >= 4) return a;
+    return function wrapped(req, res, next) {
+      try {
+        const out = a.call(this, req, res, next);
+        if (out && typeof out.then === 'function') out.catch(next);
+        return out;
+      } catch (e) { next(e); }
+    };
+  }));
+}
+
+// Even so: if something rejects outside a request — a sweep, a timer, a webhook
+// retry — log it loudly and keep serving. A servicing app going dark is worse than a
+// task that failed.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection (server kept running):', (reason && reason.stack) || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (server kept running):', (err && err.stack) || err);
+});
+
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
@@ -4632,6 +4671,12 @@ app.post('/api/admin/comms/seen', adminOnly, (req, res) => {
 app.post('/api/admin/comms/attach', adminOnly, (req, res, next) => {
  try {
   const { message_id, call_id, property_id, contact_id, new_contact_name } = req.body || {};
+  // Attaching nothing to something is not a request. Without this, message_id fell
+  // through as undefined to a bound query and SQLite refused the parameter — a 500 and
+  // a stack trace where "say which call or text you mean" was the honest answer.
+  if (!message_id && !call_id) {
+    return res.status(400).json({ error: 'Say which call or text to attach' });
+  }
   if (property_id) {
     const p = get('SELECT id FROM properties WHERE id=? AND company_id=?', property_id, req.companyId);
     if (!p) return res.status(400).json({ error: 'That property is not yours' });
@@ -6411,17 +6456,24 @@ app.get('/api/admin/invitations/:id/preview', adminOnly, (req, res) => {
 });
 app.post('/api/admin/invitations/:id/send', adminOnly, async (req, res, next) => {
   const d = inviteBody(req, req.params.id);
+  // The not-found check has to come FIRST. It used to sit below the already-sent check,
+  // which read d.inv on a null d — so asking to send an invitation that does not exist
+  // (a stale tab, another company's id, a typo in a URL) threw a TypeError outside any
+  // try block and took the whole Node process down with it. A 404 is the answer here,
+  // not an outage.
+  if (!d) return res.status(404).json({ error: 'Not found' });
+  const body = req.body || {};
   // One text per buyer. Resending needs a deliberate override so a stray double-click
   // cannot text somebody twice — and so a temporary password is not sprayed around.
-  if (d.inv && d.inv.status === 'sent' && !req.body.resend) {
+  if (d.inv && d.inv.status === 'sent' && !body.resend) {
     return res.status(409).json({
       error: 'This buyer was already texted their invitation on ' + (d.inv.sent_at || 'a previous date') +
              '. Send it again only if it never arrived.',
       already_sent: true,
     });
   }
-  if (!d) return res.status(404).json({ error: 'Not found' });
-  const phone = sms.normalizePhone(req.body.phone || d.inv.phone);
+  if (!d.inv) return res.status(404).json({ error: 'Not found' });
+  const phone = sms.normalizePhone(body.phone || d.inv.phone);
   if (!phone) return res.status(400).json({ error: 'No mobile number on file for this buyer' });
   if (!sms.smsEnabled(myCompany(req))) {
     return res.status(400).json({ error: 'Texting is not set up yet. Copy the message and send it from your phone, or add your Twilio details.', text: d.text });

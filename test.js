@@ -1606,6 +1606,102 @@ async function main() {
     }
   }
 
+  console.log('— the public pages a store reviewer opens');
+  {
+    // These four pages are the ones Apple and Google actually read, and they are the
+    // ones that drift: the app changed, the pages did not. Support was still telling
+    // buyers to turn off location sharing in a screen that no longer exists, and the
+    // deletion page still promised to delete location history the app never collects —
+    // both flatly contradicting the privacy policy on the next link over.
+    for (const p of ['/privacy', '/terms', '/support', '/delete-account']) {
+      const res = await fetch(BASE + p);
+      const body = await res.text();
+      ok(res.status === 200, `${p} loads`);
+      ok(body.length > 1200, `${p} has real content`);
+      ok(/<title>/i.test(body), `${p} has a title`);
+
+      // No page may describe collecting, sharing or deleting location data. Saying we
+      // do NOT collect it is the one allowed mention.
+      // Tags are stripped first. Scanning the raw HTML split "<b>Location</b> — we do
+      // not collect it" into a bare "Location" and flagged the reassurance itself.
+      const text = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+      const claims = (text.match(/[^.]*\blocation\b[^.]*/gi) || [])
+        .filter(s => !/do(es)? not (ask|collect|store)|no location|requests no|was removed|nothing to turn off/i.test(s));
+      ok(claims.length === 0,
+        `${p} makes no claim about collecting location${claims.length ? ' — found: ' + claims[0].trim().slice(0, 90) : ''}`);
+    }
+    // The deletion route Google requires must be reachable without signing in.
+    const del = await fetch(BASE + '/delete-account', { redirect: 'manual' });
+    ok(del.status === 200, 'the account-deletion page is public, as Play requires');
+  }
+
+  console.log('— a bad request must not take the server down');
+  {
+    // Express 4 ignores a rejected promise from an async handler, and Node then kills
+    // the process. Every one of these used to be, or could become, an outage: the whole
+    // server going dark because somebody opened a stale tab.
+    let r = await req('/api/admin/invitations/999999/send', { method: 'POST', body: JSON.stringify({}) });
+    ok(r.status === 404, 'sending an invitation that does not exist is a 404, not a crash');
+
+    r = await req('/api/admin/comms/attach', { method: 'POST', body: JSON.stringify({}) });
+    ok(r.status === 400 && /which call or text/i.test(r.json.error || ''),
+      'attaching nothing asks which call or text you meant');
+
+    // Malformed ids across the routes that take one. None may throw past the handler.
+    const junk = ['999999', 'abc', '0', '-1'];
+    const paths = [
+      (i) => `/api/admin/invitations/${i}/send`,
+      (i) => `/api/admin/invitations/${i}/preview`,
+      (i) => `/api/admin/notices/${i}/letter`,
+      (i) => `/api/admin/notices/${i}/letter/approve`,
+      (i) => `/api/admin/notices/${i}/mail`,
+      (i) => `/api/admin/pml/${i}`,
+      (i) => `/api/admin/loans/${i}/notices`,
+    ];
+    let crashed = 0, ok5xx = 0;
+    for (const p of paths) {
+      for (const i of junk) {
+        const method = /send|approve|mail$/.test(p(i)) ? 'POST' : 'GET';
+        const res = await req(p(i), { method, body: method === 'POST' ? '{}' : undefined });
+        if (res.status === 0) crashed++;
+        if (res.status >= 500) ok5xx++;
+      }
+    }
+    ok(crashed === 0, 'no malformed id killed the connection');
+    ok(ok5xx === 0, `no malformed id produced a 500 (${ok5xx} did)`);
+
+    // The server is still answering after all of that — the point of the whole block.
+    r = await req('/api/me');
+    ok(r.status === 200, 'the server is still up after being fed junk');
+  }
+
+  console.log('— the platform account is not a company admin');
+  {
+    const D = require('./db.js');
+    const hash = D.get("SELECT password_hash FROM users WHERE role='owner' ORDER BY id LIMIT 1").password_hash;
+    D.run(`INSERT INTO users (company_id, email, password_hash, role, name, must_change_password)
+           VALUES (NULL,?,?,'super_admin','Platform Admin',0)`, 'platform@test.com', hash);
+    let r = await req('/api/login', { method: 'POST',
+      body: JSON.stringify({ email: 'platform@test.com', password: 'TestAdmin123!' }) }, '');
+    ok(r.status === 200 && r.json.role === 'super_admin', 'the platform account can sign in');
+    const pc = r.cookie;
+    const who = await req('/api/me', {}, pc);
+    ok(who.json.company_id === null, 'and owns no company');
+
+    // It must not be able to read any servicing company's data through the admin API.
+    // Letting it into the admin UI rendered a fully blank dashboard, every panel 403.
+    for (const p of ['/api/admin/summary', '/api/admin/properties', '/api/admin/loans', '/api/admin/tasks']) {
+      const res = await req(p, {}, pc);
+      ok(res.status === 403, `the platform account is refused ${p}`);
+    }
+    r = await req('/api/super/companies', {}, pc);
+    ok(r.status === 200 && Array.isArray(r.json), 'but it can list the companies it maintains');
+
+    // And a company admin must not be able to reach the platform API.
+    r = await req('/api/super/companies');
+    ok(r.status === 403, 'a company owner cannot reach the platform API');
+  }
+
   console.log('— test notification');
   {
     const D = require('./db.js');

@@ -60,11 +60,9 @@ if(inv){
   ok(r.status===409,'a second invite send is blocked');
 } else { ok(false,'invitation created on sale'); }
 
-console.log('\n4. LOCATION');
-r=await q('/api/admin/tenants/'+tid+'/location');
-ok(r.json.home&&r.json.home.geocoded,'property geocoded for distance');
-ok(Array.isArray(r.json.history),'location history returned');
-ok(!r.json.consent_at,'nothing recorded without opt-in');
+// 4. LOCATION was here. The feature was removed before the store submission and this
+// script was still asserting that location history came back, so running it failed on a
+// endpoint that no longer exists. Left as a marker rather than silently renumbering.
 
 console.log('\n5. TASKS');
 r=await q('/api/admin/tasks',{method:'POST',body:JSON.stringify({title:'Winterize',property_id:pid,category:'bog',due_date:'2026-11-01',repeat_every:'yearly',remind_days_before:7})});

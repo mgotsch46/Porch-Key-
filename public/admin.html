@@ -1258,7 +1258,11 @@ a{color:var(--brand);font-weight:600}
 </div>
 
 <script>
-const ADMIN_ROLES = ['owner','admin','super_admin'];
+// The platform account is deliberately NOT in this list. It has company_id NULL, so
+// every /api/admin route answers it 403 — letting it into this shell produced a fully
+// rendered dashboard with nothing in it and no explanation, which reads as "the app is
+// broken" rather than "you are signed in as the wrong account".
+const ADMIN_ROLES = ['owner','admin'];
 // Type an address, pick a match, and the city/state/ZIP fill themselves.
 // Every address field in the app, in one place. Add a line here and it gets lookup
 // everywhere it appears — no chance of a form quietly missing out, which is exactly
@@ -1417,6 +1421,9 @@ async function api(path,opts={}){
 async function boot(){
   try{
     const me = await api('/api/me');
+    // Sending the platform account to '/' would bounce it back here and loop, so it is
+    // answered here instead — plainly, rather than with an empty screen.
+    if(me.role==='super_admin'){ showPlatformNotice(me); return; }
     if(!ADMIN_ROLES.includes(me.role)){ location.href='/'; return; }
     $('v-login').classList.add('hidden'); $('v-app').classList.remove('hidden');
     loadDash();
@@ -1428,10 +1435,26 @@ async function boot(){
     startSoftphoneListener().catch(()=>{});
   }catch{ $('v-login').classList.remove('hidden'); }
 }
+// The platform account maintains other people's companies; it has none of its own, so
+// there is nothing for this screen to show it. Say that, instead of rendering an empty
+// dashboard and leaving the person to guess.
+function showPlatformNotice(me){
+  $('v-login').classList.remove('hidden');
+  $('v-login').innerHTML=`<div class="card">
+    <div style="text-align:center;margin-bottom:16px"><img src="/logo-full.png" alt="Porch Pay" style="width:190px;max-width:80%;height:auto"></div>
+    <h2 style="margin-top:0">Signed in as the platform account</h2>
+    <p class="note">${esc(me.email||'')} maintains the servicing companies on this system. It does not own
+      properties, loans or buyers of its own, so this portal has nothing to show it.</p>
+    <p class="note" style="margin-top:10px">To work on a company's data, sign in with that company's own
+      owner or admin account.</p>
+    <button class="primary" style="width:100%;margin-top:14px" onclick="logout()">Sign out</button>
+  </div>`;
+}
 async function doLogin(){
   $('login-err').classList.add('hidden');
   try{
     const me = await api('/api/login',{method:'POST',body:JSON.stringify({email:$('li-email').value,password:$('li-pw').value})});
+    if(me.role==='super_admin'){ showPlatformNotice(me); return; }
     if(!ADMIN_ROLES.includes(me.role)){ location.href='/'; return; }
     location.reload();
   }catch(e){ $('login-err').textContent=e.message; $('login-err').classList.remove('hidden'); }

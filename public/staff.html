@@ -243,7 +243,10 @@ let OV=null, tab='home', CUR=null, CURV=null, composeMode='sms';
 async function boot(){
   try{
     const me=await api('/api/me');
-    if(!['owner','admin','super_admin'].includes(me.role)){ location.href='/'; return; }
+    // The platform account has no company, so every staff route answers it 403. Letting
+    // it in produced a shell with nothing in it and no reason given.
+    if(me.role==='super_admin'){ platformNotice(me); return; }
+    if(!['owner','admin'].includes(me.role)){ location.href='/'; return; }
     $('v-login').classList.add('hidden'); $('v-app').classList.remove('hidden');
     await refresh();
     registerPush().catch(()=>{});
@@ -254,9 +257,18 @@ async function doLogin(){
   $('li-err').classList.add('hidden');
   try{
     const me=await api('/api/login',{method:'POST',body:JSON.stringify({email:$('li-email').value,password:$('li-pw').value})});
-    if(!['owner','admin','super_admin'].includes(me.role)) throw new Error('This app is for servicer staff.');
+    if(me.role==='super_admin'){ platformNotice(me); return; }
+    if(!['owner','admin'].includes(me.role)) throw new Error('This app is for servicer staff.');
     location.reload();
   }catch(e){ $('li-err').textContent=e.message; $('li-err').classList.remove('hidden'); }
+}
+function platformNotice(me){
+  $('v-login').classList.remove('hidden');
+  $('v-login').innerHTML=`<div class="card"><h2 style="margin-top:0">Signed in as the platform account</h2>
+    <p class="note">This account maintains the servicing companies on this system and owns no properties or
+      buyers itself, so there is nothing here for it.</p>
+    <p class="note" style="margin-top:10px">Sign in with a company's own staff account to use this app.</p>
+    <button class="primary" style="width:100%;margin-top:14px" onclick="logout()">Sign out</button></div>`;
 }
 async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
 
