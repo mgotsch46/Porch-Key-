@@ -3094,9 +3094,11 @@ async function loadStripeCard(){
   el.innerHTML=`
     ${t.connected
       ? (t.test_mode
-        ? `<div class="err" style="margin-bottom:10px">
-             <b>Stripe is in test mode.</b> Buyers cannot actually pay. Cards are accepted and nothing
-             is ever charged — no money moves and no payout is made.
+        ? `<div class="warnbox" style="margin-bottom:10px;border:1px solid #f5c344;background:#fffdf4;border-radius:9px;padding:12px 14px">
+             <b>Stripe is in test mode.</b> Checkout works and test cards are accepted — nothing is ever
+             charged, no money moves, no payout is made.
+             <div class="note" style="margin-top:6px">This is <b>correct</b> for a demo or an app-store
+             review account, and <b>wrong</b> for a company with real buyers, who would be unable to pay.</div>
              ${t.source==='env'?'<div class="note" style="margin-top:6px">The key is set on the server (Railway variable <code>STRIPE_SECRET_KEY</code>), not here. Change it there, or paste a live key below to override it.</div>':''}
            </div>
            <details style="margin-bottom:10px" open><summary class="note" style="cursor:pointer;font-weight:700">Going live — five steps</summary>
@@ -3112,10 +3114,21 @@ async function loadStripeCard(){
            ${t.source==='env'?'<span class="note">(using the key set on the server)</span>':`<span class="note">(your own account ${esc(t.key_tail||'')})</span>`}</p>`)
       : '<p class="note" style="margin-bottom:8px">Not connected — buyers cannot pay online until a Stripe key is added.</p>'}
     ${t.connected && !t.webhook_secret_set
-      ? '<div class="err" style="margin-bottom:10px"><b>No webhook signing secret.</b> Payments will be picked up by the reconciliation sweep within six hours rather than immediately.</div>' : ''}
+      ? `<div style="margin-bottom:10px;border:1px solid var(--line);border-radius:9px;padding:12px 14px;background:#fafbfc">
+           <b>No webhook signing secret.</b> Card and Cash App payments still post immediately — the
+           return trip from Stripe verifies the session and records it before the buyer sees the
+           confirmation.
+           <div class="note" style="margin-top:6px"><b>Bank transfers need the webhook.</b> Those clear
+           days later with nobody's browser open to come back, so without it they sit as <i>initiated</i>
+           until the reconciliation sweep finds them, within six hours.</div>
+         </div>` : ''}
     <details style="margin:8px 0"><summary class="note" style="cursor:pointer;font-weight:700">${t.source==='company'?'Replace the connected account':'Connect your own Stripe account'}</summary>
-      <div class="field" style="margin-top:8px"><label>Secret key <span class="note">— sk_live_… from dashboard.stripe.com → Developers → API keys</span></label>
-        <input id="st-key" type="password" placeholder="sk_live_…" autocomplete="off"></div>
+      <div class="field" style="margin-top:8px"><label>Secret key
+        <span class="note">— dashboard.stripe.com → Developers → API keys</span></label>
+        <input id="st-key" type="password" placeholder="sk_live_… or sk_test_…" autocomplete="off">
+        <p class="note" style="margin-top:4px">Both are accepted. <b>sk_live_…</b> takes real money.
+          <b>sk_test_…</b> (from a Stripe sandbox) accepts test cards and charges nobody — that is the
+          right one for a demo or an app-store review account.</p></div>
       <div class="field"><label>Webhook signing secret <span class="note">— whsec_…, from a webhook endpoint pointed at the URL below</span></label>
         <input id="st-wh" type="password" placeholder="whsec_…" autocomplete="off"></div>
       <p class="note" style="margin-bottom:8px">In Stripe → Developers → Webhooks → Add endpoint, event
