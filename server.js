@@ -610,12 +610,22 @@ function postStripePayment(session) {
   const loanId = Number(session.metadata.loan_id);
   const fee = Number((session.metadata && session.metadata.fee_cents) || 0);
   const amount = Number(session.metadata.amount_cents || ((session.amount_total || 0) - fee));
-  const pmType = (session.payment_method_types && session.payment_method_types[0]) || 'card';
-  const method = pmType === 'cashapp' ? 'stripe_cashapp' : pmType === 'us_bank_account' ? 'stripe_ach' : 'stripe_card';
   // Stripe tells us whether the money is actually here. A card or Cash App session
   // completes as "paid"; an ACH debit completes as "unpaid" and stays that way for a
   // few business days until the bank answers. Anything not yet paid is initiated only.
   const pending = session.payment_status !== 'paid';
+
+  // Which method the buyer actually used. NOT payment_method_types — that is the list we
+  // ALLOW, with card first, so reading [0] labelled every payment "Card" including the
+  // bank transfers. The charge knows the truth; the webhook payload does not carry it,
+  // so fall back to the one thing that is certain there: only a delayed-notification
+  // method leaves a completed session unpaid, and the only one we offer is ACH.
+  const pi = session.payment_intent && typeof session.payment_intent === 'object' ? session.payment_intent : null;
+  const charge = pi && pi.latest_charge && typeof pi.latest_charge === 'object' ? pi.latest_charge : null;
+  const actual = charge && charge.payment_method_details && charge.payment_method_details.type;
+  const pmType = actual || (pending ? 'us_bank_account'
+    : ((session.payment_method_types || []).length === 1 ? session.payment_method_types[0] : 'card'));
+  const method = pmType === 'cashapp' ? 'stripe_cashapp' : pmType === 'us_bank_account' ? 'stripe_ach' : 'stripe_card';
   return postPayment(loanId, amount, method, today(), `stripe:${session.id}`,
     pending ? 'Online payment — bank transfer initiated' : 'Online payment', null, fee, { pending });
 }

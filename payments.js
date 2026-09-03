@@ -89,8 +89,12 @@ async function listRecentSessions(limit = 100) {
   return json.data || [];
 }
 
+// Expands the charge so the caller can read which method the buyer actually used.
+// session.payment_method_types is the list we ALLOW, not the one they picked — and card
+// is first in it, so reading [0] labelled every payment "Card", bank transfers included.
 async function retrieveSession(sessionId) {
-  const res = await fetch(`https://api.stripe.com/v1/checkout/sessions/${sessionId}`, {
+  const q = 'expand[]=payment_intent.latest_charge';
+  const res = await fetch(`https://api.stripe.com/v1/checkout/sessions/${sessionId}?${q}`, {
     headers: { Authorization: `Bearer ${STRIPE_KEY()}` },
   });
   const json = await res.json();

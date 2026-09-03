@@ -139,8 +139,8 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--brand)}
   border-radius:16px;background:#fff;cursor:pointer;text-align:left;width:100%}
 .method.sel{border-color:var(--brand);background:var(--brand-pale)}
 .method .ico{font-size:26px}
-.method .t{font-weight:700;font-size:15.5px}
-.method .d{font-size:13px;color:var(--mut);margin-top:1px}
+.method .t{display:block;font-weight:700;font-size:15.5px}
+.method .d{display:block;font-size:13px;color:var(--mut);margin-top:2px}
 .method .tick{margin-left:auto;font-size:20px;color:var(--brand);opacity:0}
 .method.sel .tick{opacity:1}
 
@@ -732,8 +732,9 @@ function render(){
       // A bank transfer is shown from the moment it starts, so the buyer can see it is
       // under way — but it is not described as applied until the money has arrived.
       if(st==='pending') return `<div class="row"><span class="k">${fdate(p.entry_date)} · ${methodName(p.method)}
-        <small><b>Payment initiated</b> — bank transfers take a few business days to clear. Your balance
-        updates when it does.</small></span>
+        <small><b>Payment initiated</b> — ${p.method==='stripe_ach'
+          ? 'bank transfers take a few business days to clear. Your balance updates when it does.'
+          : 'this is still being processed. Your balance updates when it completes.'}</small></span>
         <span class="v" style="color:var(--muted,#888)">${fmt(p.amount_cents)}</span></div>`;
       if(st==='returned') return `<div class="row"><span class="k">${fdate(p.entry_date)} · ${methodName(p.method)}
         <small><b>Returned by your bank</b>${p.return_reason?' — '+esc(p.return_reason):''}. This amount is still due.</small></span>

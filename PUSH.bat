@@ -30,6 +30,32 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
+>>"%MSGFILE%" echo Stop labelling every online payment "Card"
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo postStripePayment read session.payment_method_types[0] to decide how the
+>>"%MSGFILE%" echo buyer paid. That array is the list of methods we ALLOW, with card first -
+>>"%MSGFILE%" echo not the one they chose. So every online payment was recorded as Card,
+>>"%MSGFILE%" echo including the bank transfers, and the buyer's history showed a row reading
+>>"%MSGFILE%" echo "Card - bank transfers take a few business days to clear".
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Wrong in the ledger, not just on screen: the method is what tells a buyer
+>>"%MSGFILE%" echo how they paid and what the servicer sees on the row.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo - retrieveSession now expands payment_intent.latest_charge, so the redirect
+>>"%MSGFILE%" echo   path reads the method off the charge, which is the only place it is true.
+>>"%MSGFILE%" echo - The webhook payload does not carry the charge, so it falls back to the one
+>>"%MSGFILE%" echo   thing that is certain there: only a delayed-notification method leaves a
+>>"%MSGFILE%" echo   completed session unpaid, and the only one we offer is ACH.
+>>"%MSGFILE%" echo - Six cases checked against the shapes Stripe actually sends, including the
+>>"%MSGFILE%" echo   unexpanded-id case where payment_intent is a string.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Also: the pending sentence no longer promises "bank transfers take a few
+>>"%MSGFILE%" echo business days" on a card, and the payment method label and its description
+>>"%MSGFILE%" echo were rendering as one run-together string - "New card or bankDebit, credit,
+>>"%MSGFILE%" echo or bank transfer" - because both were inline spans in a flex row.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Fix the white screen every buyer got at sign-in
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Removing the location feature deleted the v-loc screen but left its id in
