@@ -1606,6 +1606,99 @@ async function main() {
     }
   }
 
+  console.log('— a second company does not inherit the host\'s credentials');
+  {
+    const D = require('./db.js');
+    const pay = require('./payments.js'), smsM = require('./sms.js');
+    const lobM = require('./lob.js'), emailM = require('./email.js');
+
+    // The deployment's own keys, the way they sit in Railway.
+    const saved = {};
+    const env = { STRIPE_SECRET_KEY: 'sk_live_hostkey', TWILIO_ACCOUNT_SID: 'AChost',
+      TWILIO_AUTH_TOKEN: 'hosttoken', TWILIO_FROM_NUMBER: '+15550001111',
+      LOB_API_KEY: 'live_hostlob', LOB_FROM_LINE1: '1 Host St', LOB_FROM_CITY: 'Flint',
+      LOB_FROM_STATE: 'MI', LOB_FROM_ZIP: '48502',
+      RESEND_API_KEY: 're_hostkey', EMAIL_FROM_SERVICING: 'servicing@host.test' };
+    for (const [k, v] of Object.entries(env)) { saved[k] = process.env[k]; process.env[k] = v; }
+
+    const host = D.get('SELECT * FROM companies ORDER BY id LIMIT 1');
+    ok(D.hostCompanyId() === host.id, 'the first company on the server is the host');
+
+    // The host keeps everything — this deployment IS theirs. Tested with just the id,
+    // so what is being measured is inheritance and not settings an earlier test wrote
+    // onto company 1.
+    const asHost = { id: host.id, name: host.name };
+    ok(pay.stripeEnabled(asHost), 'the host still reaches Stripe through the environment');
+    ok(smsM.smsEnabled(asHost), 'the host still texts through the environment');
+    ok(!!lobM.creds(asHost), 'the host still mails through the environment');
+    ok(!!emailM.creds(asHost), 'the host still emails through the environment');
+
+    // A company created afterwards — a demo account, a white-label client — gets none
+    // of it. Before this, a stranger's checkout opened a real session on the host's
+    // Stripe account and their letters went out from the host's return address.
+    const other = { id: host.id + 9999, name: 'Someone Else LLC' };
+    ok(!pay.stripeEnabled(other), 'a second company cannot charge through the host\'s Stripe');
+    ok(!smsM.smsEnabled(other), 'a second company cannot text from the host\'s number');
+    ok(!lobM.creds(other), 'a second company cannot mail on the host\'s Lob account');
+    ok(!emailM.creds(other), 'a second company cannot send from the host\'s domain');
+
+    // With its own key it works again — this restricts inheritance, not the feature.
+    ok(pay.stripeEnabled({ ...other, stripe_secret_key: 'sk_test_theirown' }),
+      'but a second company with its own Stripe key is fine');
+    ok(smsM.smsEnabled({ ...other, twilio_sid: 'ACtheirs', twilio_token: 't', twilio_from: '+15559990000' }),
+      'and with its own Twilio details it can text');
+
+    // A caller with no company in hand is a host-level question and must not break.
+    ok(pay.stripeEnabled(), 'a server-wide Stripe check still answers yes');
+
+    // And the buyer checkout must hand Stripe the company, not null. That substitution
+    // was the actual leak: a keyless company became "no company", which meant the host.
+    const src = require('fs').readFileSync('./server.js', 'utf8');
+    ok(!/withCompany\(payCo && payCo\.stripe_secret_key \? payCo : null/.test(src),
+      'the checkout no longer swaps a keyless company for the host');
+
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+
+  console.log('— a closed server can still be given a new company');
+  {
+    // Opening signups to the whole internet for a few minutes, so one company can be
+    // added, is a worse thing to do than whatever needed adding. A token keeps the door
+    // shut and gives exactly one person a key.
+    const wasOpen = process.env.SIGNUPS_OPEN, wasTok = process.env.SIGNUP_TOKEN;
+    process.env.SIGNUPS_OPEN = 'false';
+    const body = (extra) => JSON.stringify({ company_name: 'Token Co', name: 'Tess',
+      email: `tess${Math.random().toString(36).slice(2, 8)}@tok.test`, password: 'LongEnough9!', ...extra });
+
+    delete process.env.SIGNUP_TOKEN;
+    let r = await req('/api/signup', { method: 'POST', body: body() }, '');
+    ok(r.status === 403, 'with signups closed and no token, signup is refused');
+
+    process.env.SIGNUP_TOKEN = 'a-token-at-least-sixteen-chars-long';
+    r = await req('/api/signup', { method: 'POST', body: body() }, '');
+    ok(r.status === 403, 'and still refused when the request carries no token');
+    r = await req('/api/signup', { method: 'POST', body: body({ signup_token: 'wrong-token-same-length-ish' }) }, '');
+    ok(r.status === 403, 'a wrong token is refused');
+    r = await req('/api/signup', { method: 'POST', body: body({ signup_token: '' }) }, '');
+    ok(r.status === 403, 'an empty token does not match an empty comparison');
+
+    r = await req('/api/signup', { method: 'POST', body: body({ signup_token: process.env.SIGNUP_TOKEN }) }, '');
+    ok(r.status === 200 && r.json.company_id, 'the right token creates the company');
+    const madeCo = r.json.company_id;
+    ok(madeCo !== 1, 'and it is a company of its own, not the first one');
+
+    // A short token must never be honoured — a two-character SIGNUP_TOKEN would
+    // otherwise be brute-forced in seconds.
+    process.env.SIGNUP_TOKEN = 'short';
+    r = await req('/api/signup', { method: 'POST', body: body({ signup_token: 'short' }) }, '');
+    ok(r.status === 403, 'a token shorter than 16 characters is not accepted even when it matches');
+
+    if (wasOpen === undefined) delete process.env.SIGNUPS_OPEN; else process.env.SIGNUPS_OPEN = wasOpen;
+    if (wasTok === undefined) delete process.env.SIGNUP_TOKEN; else process.env.SIGNUP_TOKEN = wasTok;
+    r = await req('/api/signup', { method: 'POST', body: body() }, '');
+    ok(r.status === 200, 'with signups open again, no token is needed');
+  }
+
   console.log('— the public pages a store reviewer opens');
   {
     // These four pages are the ones Apple and Google actually read, and they are the

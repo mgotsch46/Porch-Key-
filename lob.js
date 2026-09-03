@@ -1,3 +1,4 @@
+const { inheritsEnv } = require('./db');
 // Certified mail through Lob, with no SDK — one POST to create a letter, one GET to
 // see what the postal service has done with it. Same philosophy as sms.js: the API is
 // two endpoints, a dependency would be forty.
@@ -86,14 +87,17 @@ async function lobFetch(key, path, { method = 'GET', body, idempotencyKey, pdf }
 // mail without a deliverable from-address bounces at the print shop.
 function creds(company) {
   const co = company || {};
-  const key = co.lob_api_key || process.env.LOB_API_KEY;
+  // A letter carries a return address. Another company's letters must not go out from
+  // the host's, and must not be billed to the host's Lob account.
+  const envOk = inheritsEnv(company);
+  const key = co.lob_api_key || (envOk ? process.env.LOB_API_KEY : null);
   if (!key) return null;
   const from = {
     name: co.mgmt_company_name || co.name || 'Servicer',
-    address_line1: co.mail_address_line1 || process.env.LOB_FROM_LINE1,
-    address_city: co.mail_address_city || process.env.LOB_FROM_CITY,
-    address_state: co.mail_address_state || process.env.LOB_FROM_STATE,
-    address_zip: co.mail_address_zip || process.env.LOB_FROM_ZIP,
+    address_line1: co.mail_address_line1 || (envOk ? process.env.LOB_FROM_LINE1 : null),
+    address_city: co.mail_address_city || (envOk ? process.env.LOB_FROM_CITY : null),
+    address_state: co.mail_address_state || (envOk ? process.env.LOB_FROM_STATE : null),
+    address_zip: co.mail_address_zip || (envOk ? process.env.LOB_FROM_ZIP : null),
   };
   if (!from.address_line1 || !from.address_city || !from.address_state || !from.address_zip) return null;
   return { key, from, test: /^test_/.test(key), costCents: Number(co.lob_cost_cents) || 0 };

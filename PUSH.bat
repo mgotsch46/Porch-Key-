@@ -30,6 +30,77 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
+>>"%MSGFILE%" echo A second company must not spend the host's money
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Every integration fell back to the environment when a company had no key
+>>"%MSGFILE%" echo of its own:  (company.stripe_secret_key) ^|^| process.env.STRIPE_SECRET_KEY.
+>>"%MSGFILE%" echo Right for the company that OWNS the deployment - those Railway variables
+>>"%MSGFILE%" echo are theirs. Badly wrong for anybody else.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo A company created afterwards inherited the host's LIVE Stripe key, Twilio
+>>"%MSGFILE%" echo number, Lob account and sending domain. A buyer of that company tapping
+>>"%MSGFILE%" echo Pay opened a real Checkout session on the host's Stripe account, charging
+>>"%MSGFILE%" echo a stranger's card into the host's balance. Their letters carried the
+>>"%MSGFILE%" echo host's return address and were billed to the host's Lob account. Their
+>>"%MSGFILE%" echo email went out from the host's verified domain.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Found while building the App Store review account, which is exactly the
+>>"%MSGFILE%" echo case that would have hit it: the first thing a reviewer does is tap
+>>"%MSGFILE%" echo "Make a payment".
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo - The host is the first company on the server; it keeps the environment.
+>>"%MSGFILE%" echo   Every company created after it starts with nothing until it is set up.
+>>"%MSGFILE%" echo - A caller with NO company in hand - a sweep, a webhook, a server-wide
+>>"%MSGFILE%" echo   "is Stripe connected" check - is a host-level question and is unchanged.
+>>"%MSGFILE%" echo - The buyer checkout used to replace a keyless company with null before
+>>"%MSGFILE%" echo   calling Stripe, and null meant the host. That substitution was the leak.
+>>"%MSGFILE%" echo   The company is always passed now.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo 13 tests: the host still reaches all four services through the
+>>"%MSGFILE%" echo environment, a second company reaches none of them, and a second company
+>>"%MSGFILE%" echo with its OWN key works again - this restricts inheritance, not features.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo 882 passed, 0 failed.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Let a closed server be given one company without opening it to everyone
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Apple will not review an app it cannot sign into, and PorchPay has no
+>>"%MSGFILE%" echo self-service sign-up, so a reviewer needs a real login. Building that
+>>"%MSGFILE%" echo account inside SAA would seat a stranger's session next to real buyers'
+>>"%MSGFILE%" echo balances and default notices. It needs its own company.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo But SIGNUPS_OPEN=false, correctly - this server holds other people's loan
+>>"%MSGFILE%" echo ledgers. The only way to add a company was to open signup to the whole
+>>"%MSGFILE%" echo internet for a few minutes, which is a worse thing to do than the thing
+>>"%MSGFILE%" echo it was needed for.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo A closed server now accepts a signup carrying a matching SIGNUP_TOKEN:
+>>"%MSGFILE%" echo one secret, held by one person, revoked by changing a variable. It is
+>>"%MSGFILE%" echo also the primitive white-label onboarding wants - a client gets a key
+>>"%MSGFILE%" echo when it is their turn, and the door stays shut the rest of the time.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo - Compared in constant time, and only when the token is 16+ characters.
+>>"%MSGFILE%" echo   A blank token must not match a blank variable, and a five-character
+>>"%MSGFILE%" echo   one must not be honoured even when it is correct.
+>>"%MSGFILE%" echo - 8 tests: no token, wrong token, empty token, short token, right token,
+>>"%MSGFILE%" echo   and signups open again afterwards.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo seed-demo.js builds the review account through the public API - property,
+>>"%MSGFILE%" echo buyer, loan, 85 payments through this month, four PDFs, a message thread.
+>>"%MSGFILE%" echo Verified by signing in as a reviewer would: 17%% paid off, nothing past
+>>"%MSGFILE%" echo due, no $1.00 test rows, no SANDBOX text, and invisible to SAA.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo It also refuses a weak password before it creates anything. The first run
+>>"%MSGFILE%" echo used "testpassword" for both logins - on the production server, handed to
+>>"%MSGFILE%" echo a stranger at Apple. Under 10 characters, a guessable word, letters only,
+>>"%MSGFILE%" echo or the same password twice now stops it.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo 869 passed, 0 failed.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Stop one bad request from taking the whole server down
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Found by driving the app rather than reading it: asking to send an

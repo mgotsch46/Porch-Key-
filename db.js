@@ -997,6 +997,29 @@ function get(sql, ...params) { return db.prepare(sql).get(...params); }
 function all(sql, ...params) { return db.prepare(sql).all(...params); }
 function run(sql, ...params) { return db.prepare(sql).run(...params); }
 
+// ---------- whose credentials are these? ----------
+// Every integration falls back to the environment when a company has not set its own
+// key. That is right for the company that OWNS this deployment — its Stripe key, its
+// Twilio number and its sending domain are the ones in Railway. It is badly wrong for
+// anyone else: a second company created on the same server inherited the host's live
+// payment credentials, so a stranger's checkout would have opened a real session on the
+// host's Stripe account and their letters would have gone out under the host's name.
+//
+// The host is the first company on the server. Every company created after it starts
+// with nothing until it is set up, which is also what makes white-labelling honest —
+// a client's buyers pay the client, not us.
+function hostCompanyId() {
+  const r = get('SELECT MIN(id) AS id FROM companies');
+  return r ? r.id : null;
+}
+// A missing company means the caller had no company in hand — a sweep, a webhook, a
+// server-wide "is Stripe connected?" check. Those are host-level questions and keep the
+// old behaviour. Only a real company that is NOT the host is refused the fallback.
+function inheritsEnv(company) {
+  if (!company || !company.id) return true;
+  return company.id === hostCompanyId();
+}
+
 // Seed the first company + owner, and the platform super admin.
 function ensureSeed() {
   backfillCompany();
@@ -1261,4 +1284,4 @@ ensureSeed();
   console.log(`Password reset for ${u.email}. Remove RESET_OWNER_PASSWORD from your variables now.`);
 })();
 
-module.exports = { db, get, all, run, hashPassword, verifyPassword };
+module.exports = { db, get, all, run, hashPassword, verifyPassword, hostCompanyId, inheritsEnv };

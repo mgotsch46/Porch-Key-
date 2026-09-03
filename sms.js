@@ -9,12 +9,17 @@
 
 // A company's own Twilio details win; the environment is the fallback. This means a
 // servicer can connect texting from inside the app without touching the host.
+const { inheritsEnv } = require('./db');
+
 function creds(company) {
   if (company && company.twilio_sid && company.twilio_token && company.twilio_from) {
     return { sid: company.twilio_sid, token: company.twilio_token, from: company.twilio_from,
              source: 'company' };
   }
-  if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER) {
+  // The host's Twilio number is the host's. A second company texting from it would be
+  // impersonating them to somebody's buyer.
+  if (inheritsEnv(company) &&
+      process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER) {
     return { sid: process.env.TWILIO_ACCOUNT_SID, token: process.env.TWILIO_AUTH_TOKEN,
              from: process.env.TWILIO_FROM_NUMBER, source: 'env' };
   }

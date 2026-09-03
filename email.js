@@ -1,3 +1,4 @@
+const { inheritsEnv } = require('./db');
 // Email via SMTP. Built the same way as sms.js: no npm dependency, just a small
 // client speaking SMTP over TLS. Google Workspace, Outlook and most hosts work with
 // the same four values — host, port, username, app password.
@@ -28,9 +29,10 @@ const { get, run } = require('./db');
 // taken as intent to use it, because nobody pastes one by accident.
 function providerOf(company) {
   const co = company || {};
-  const explicit = String(co.email_provider || process.env.EMAIL_PROVIDER || '').toLowerCase();
+  const envOk = inheritsEnv(company);
+  const explicit = String(co.email_provider || (envOk ? process.env.EMAIL_PROVIDER : '') || '').toLowerCase();
   if (explicit === 'resend' || explicit === 'smtp') return explicit;
-  if (co.email_api_key || process.env.RESEND_API_KEY) return 'resend';
+  if (co.email_api_key || (envOk && process.env.RESEND_API_KEY)) return 'resend';
   return 'smtp';
 }
 
@@ -43,15 +45,18 @@ function creds(company, identity = 'servicing') {
 // on a domain the account has verified, so the legal address needs no separate secret.
 function apiCreds(company, identity = 'servicing') {
   const co = company || {};
-  const key = co.email_api_key || process.env.RESEND_API_KEY;
+  // Another company must not send from the host's verified domain — that is the host's
+  // reputation, and to a buyer it reads as a message from the host.
+  const envOk = inheritsEnv(company);
+  const key = co.email_api_key || (envOk ? process.env.RESEND_API_KEY : null);
   if (!key) return null;
-  const servicingFrom = co.email_from_servicing || process.env.EMAIL_FROM_SERVICING;
+  const servicingFrom = co.email_from_servicing || (envOk ? process.env.EMAIL_FROM_SERVICING : null);
   if (!servicingFrom) return null;
-  const legalFrom = co.email_from_legal || process.env.EMAIL_FROM_LEGAL || servicingFrom;
+  const legalFrom = co.email_from_legal || (envOk ? process.env.EMAIL_FROM_LEGAL : null) || servicingFrom;
   const source = co.email_api_key ? 'company' : 'env';
   if (identity === 'legal') {
     return { mode: 'resend', key, from: legalFrom, source,
-             replyTo: co.email_reply_to || process.env.EMAIL_REPLY_TO || servicingFrom };
+             replyTo: co.email_reply_to || (envOk ? process.env.EMAIL_REPLY_TO : null) || servicingFrom };
   }
   return { mode: 'resend', key, from: servicingFrom, replyTo: null, source };
 }

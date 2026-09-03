@@ -2086,7 +2086,23 @@ app.delete('/api/admin/linked-accounts/:id', adminOnly, (req, res) => {
 
 // ---------- company signup (new servicing company self-onboards) ----------
 app.post('/api/signup', (req, res) => {
-  if (process.env.SIGNUPS_OPEN === 'false') return res.status(403).json({ error: 'Signups are closed' });
+  // Signups being closed is the right posture for a server holding other people's loan
+  // ledgers. But "closed" used to mean the only way to add a company was to open the
+  // door to the whole internet for a few minutes — which is a worse thing to do than
+  // whatever it was you needed to add.
+  //
+  // So a closed server still accepts a signup carrying the matching SIGNUP_TOKEN. That
+  // is one secret, held by you, revocable by changing a variable, and it is also what a
+  // white-label client gets handed when it is their turn to be set up.
+  if (process.env.SIGNUPS_OPEN === 'false') {
+    const expected = process.env.SIGNUP_TOKEN || '';
+    const given = String((req.body && req.body.signup_token) || '');
+    // Compared in constant time, and only when a token is configured at all — otherwise
+    // a blank token in the request would match a blank variable and open the door.
+    const okToken = expected.length >= 16 && given.length === expected.length &&
+      crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+    if (!okToken) return res.status(403).json({ error: 'Signups are closed' });
+  }
   const { company_name, name, email, password } = req.body || {};
   if (!company_name || !name || !email || !password)
     return res.status(400).json({ error: 'Company name, your name, email, and password are required' });
@@ -8538,7 +8554,11 @@ app.post('/api/tenant/pay/checkout', tenantReady, async (req, res) => {
     const method = ['card', 'ach', 'cashapp'].includes(req.body.method) ? req.body.method : 'card';
     const fee = calcFee(loan.company_id, amount, method);
     const payCo = get('SELECT * FROM companies WHERE id=?', loan.company_id);
-    const session = await pay.withCompany(payCo && payCo.stripe_secret_key ? payCo : null, () => pay.createCheckoutSession({
+    // The company is always passed now. It used to be replaced with null whenever it
+    // had no key of its own, which sent the request straight to the host's Stripe
+    // account — the one path where a demo or client company charged a real card into
+    // somebody else's balance.
+    const session = await pay.withCompany(payCo, () => pay.createCheckoutSession({
       loan: { ...loan, address: property ? property.address : 'your home' },
       amountCents: amount, baseUrl, tenantEmail: req.user.email,
       feeCents: fee, feeLabel: feeSettings(loan.company_id).label, method,

@@ -3,7 +3,7 @@
 // admin when cash is received.
 
 const crypto = require('crypto');
-const { get, run } = require('./db');
+const { get, run, inheritsEnv } = require('./db');
 
 // Like texting and mail, Stripe is the company's own account first and the host's
 // environment second — a servicer connects their key in Settings without touching the
@@ -11,7 +11,10 @@ const { get, run } = require('./db');
 let ACTIVE_COMPANY = null;                       // set per-request by withCompany below
 const STRIPE_KEY = (company) => {
   const co = company || ACTIVE_COMPANY;
-  return (co && co.stripe_secret_key) || process.env.STRIPE_SECRET_KEY || '';
+  if (co && co.stripe_secret_key) return co.stripe_secret_key;
+  // Only the host company banks through the deployment's own Stripe account. Without
+  // this, a company created later took payments straight into the host's balance.
+  return inheritsEnv(co) ? (process.env.STRIPE_SECRET_KEY || '') : '';
 };
 const stripeEnabled = (company) => !!STRIPE_KEY(company);
 // Run fn with this company's credentials active for every Stripe call inside it.
