@@ -4,7 +4,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { db, get, all, run, hashPassword, verifyPassword } = require('./db');
+const { db, get, all, run, hashPassword, verifyPassword, inheritsEnv } = require('./db');
 const loanEngine = require('./loan');
 const pay = require('./payments');
 const ai = require('./ai');
@@ -3523,13 +3523,23 @@ app.put('/api/admin/call-mode', adminOnly, (req, res) => {
 // pastes its own keys.
 app.get('/api/admin/integrations/stripe', adminOnly, (req, res) => {
   const co = myCompany(req);
-  const key = co.stripe_secret_key || process.env.STRIPE_SECRET_KEY || '';
+  // This screen has to answer the same question the checkout does. It used to read the
+  // environment for every company, so a second company saw "connected" here while its
+  // buyers got "online payments are not enabled" at the till — the worst kind of wrong,
+  // because it looks set up.
+  const envKey = inheritsEnv(co) ? (process.env.STRIPE_SECRET_KEY || '') : '';
+  const key = co.stripe_secret_key || envKey;
   res.json({
     connected: !!key,
-    source: co.stripe_secret_key ? 'company' : (process.env.STRIPE_SECRET_KEY ? 'env' : null),
+    source: co.stripe_secret_key ? 'company' : (envKey ? 'env' : null),
     test_mode: /^(sk|rk)_test_/.test(key),
     key_tail: co.stripe_secret_key ? '…' + co.stripe_secret_key.slice(-4) : null,
-    webhook_secret_set: !!(co.stripe_webhook_secret || process.env.STRIPE_WEBHOOK_SECRET),
+    webhook_secret_set: !!(co.stripe_webhook_secret || (inheritsEnv(co) ? process.env.STRIPE_WEBHOOK_SECRET : null)),
+    // A webhook is not required to take a payment. The success redirect goes to a server
+    // route that verifies the session with Stripe and posts it before the buyer sees the
+    // confirmation, so a card payment lands either way. The webhook matters for bank
+    // transfers, which complete days later with nobody's browser open to be redirected.
+    webhook_needed_for: 'Bank transfers (ACH). Card and Cash App payments post on the return trip without it.',
     webhook_url: baseUrlOf(req) + '/api/stripe/webhook',
     // The methods Checkout is asked for. Each has to be switched on in the live
     // dashboard separately — payment methods are configured per mode, so an account

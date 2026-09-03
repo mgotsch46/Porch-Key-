@@ -1657,6 +1657,29 @@ async function main() {
     ok(!/withCompany\(payCo && payCo\.stripe_secret_key \? payCo : null/.test(src),
       'the checkout no longer swaps a keyless company for the host');
 
+    // The Settings screen must answer the same question the checkout does. Showing
+    // "connected" to a company whose buyers get "online payments are not enabled" is
+    // the worst kind of wrong, because it looks finished.
+    let r = await req('/api/signup', { method: 'POST', body: JSON.stringify({
+      company_name: 'Screen Truth LLC', name: 'Sam', email: `sam${Date.now()}@truth.test`,
+      password: 'Copper-Lantern-77' }) }, '');
+    const otherCookie = r.cookie;
+    r = await req('/api/admin/integrations/stripe', {}, otherCookie);
+    ok(r.status === 200 && r.json.connected === false && r.json.source === null,
+      'a second company\'s Stripe screen says NOT connected, matching what its buyers get');
+    r = await req('/api/admin/integrations/stripe');
+    ok(r.json.connected === true && r.json.source === 'env',
+      'and the host\'s screen still says connected through the environment');
+
+    // Once it pastes its own key the screen agrees again — including the sandbox keys
+    // Stripe now issues, which are sk_test_ under the newer "Sandbox" name.
+    r = await req('/api/admin/integrations/stripe', { method: 'PUT',
+      body: JSON.stringify({ secret_key: 'sk_test_sandboxkey1234' }) }, otherCookie);
+    ok(r.status === 200, 'a sandbox key is accepted');
+    r = await req('/api/admin/integrations/stripe', {}, otherCookie);
+    ok(r.json.connected === true && r.json.source === 'company' && r.json.test_mode === true,
+      'and it now reads as connected, in test mode, with its own key');
+
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
 
