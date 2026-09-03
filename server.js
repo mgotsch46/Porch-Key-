@@ -7905,6 +7905,31 @@ app.get('/api/admin/push-status', ownerOnly, (req, res) => {
     ].filter(Boolean),
   });
 });
+// Sends a notification to whoever asked for it. Every other notification in the system
+// fires as a side effect of something real — money landing, an autopay switched off — so
+// proving delivery used to mean staging a real event on a real loan. This goes to the
+// caller alone and changes nothing.
+app.post('/api/admin/push-test', adminOnly, async (req, res, next) => {
+  try {
+    const subs = get('SELECT COUNT(*) c FROM push_subscriptions WHERE user_id=?', req.user.id).c;
+    const devs = get('SELECT COUNT(*) c FROM device_tokens WHERE user_id=?', req.user.id).c;
+    await notify.notify(req.user.id, {
+      kind: 'general',
+      title: '✅ Notifications are working',
+      body: `Test sent at ${new Date().toLocaleTimeString('en-US')} from PorchPay Settings.`,
+      url: '/staff',
+    });
+    // The notification is always recorded, so the in-app feed and badge light up either
+    // way. Reporting the transports separately is what makes the silent failure visible:
+    // "recorded but nowhere to send it" is a different problem from "not recorded".
+    res.json({
+      ok: true, web_subscriptions: subs, devices: devs, transports: subs + devs,
+      hint: subs + devs === 0
+        ? 'Recorded in your notification feed, but no device on this account has notifications switched on yet. Open /staff (or the Admin app) on a phone, turn them on there, then run this again.'
+        : null,
+    });
+  } catch (e) { next(e); }
+});
 app.post('/api/push/subscribe', anyUser, (req, res, next) => {
   try { notify.subscribe(req.user.id, req.body.subscription); res.json({ ok: true }); }
   catch (e) { next(e); }

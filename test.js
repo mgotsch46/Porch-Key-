@@ -1410,6 +1410,36 @@ async function main() {
     ok(r.json.pml.property_id === pb.json.id, 'move persisted');
   }
 
+  console.log('— test notification');
+  {
+    const D = require('./db.js');
+    const me = D.get("SELECT id FROM users WHERE role='owner' ORDER BY id LIMIT 1").id;
+    const before = D.get('SELECT COUNT(*) c FROM notifications WHERE user_id=?', me).c;
+
+    let r = await req('/api/admin/push-test', { method: 'POST' });
+    ok(r.status === 200 && r.json.ok, 'an admin can send themselves a test notification');
+    ok(D.get('SELECT COUNT(*) c FROM notifications WHERE user_id=?', me).c === before + 1,
+      'the test notification is recorded against the sender');
+    const n = D.get('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 1', me);
+    ok(/Notifications are working/.test(n.title), 'and says plainly that it worked');
+
+    // With nothing subscribed the endpoint must say so rather than report success. A
+    // recorded-but-undeliverable notification is the exact failure this button exists
+    // to expose, so reporting 200/ok alone would defeat the point.
+    ok(r.json.transports === 0 && !!r.json.hint,
+      'with no device subscribed it says so instead of implying delivery');
+
+    // It must not leak to anyone else, and must not touch a loan.
+    const tbCount = D.get('SELECT COUNT(*) c FROM notifications WHERE user_id=?', tbId).c;
+    await req('/api/admin/push-test', { method: 'POST' });
+    ok(D.get('SELECT COUNT(*) c FROM notifications WHERE user_id=?', tbId).c === tbCount,
+      'a test notification never reaches a buyer');
+
+    // A buyer must not be able to fire one.
+    r = await req('/api/admin/push-test', { method: 'POST' }, tbCookie);
+    ok(r.status === 401 || r.status === 403, 'a buyer cannot send test notifications');
+  }
+
   console.log('— legal notices held where there is no state track');
   {
     const D = require('./db.js');
@@ -1472,11 +1502,16 @@ async function main() {
     ok(!n2.some(n => (n.delivery_json || '').includes('no_legal_track')),
       'and nothing was held for a loan that never reached a legal rung');
 
-    // Running the sweep again must not pile up duplicates.
-    const before = D.get('SELECT COUNT(*) c FROM notices WHERE loan_id=?', moLoan).c;
+    // Running the sweep again must not pile up duplicates. Assert the invariant — one
+    // row per stage per period — rather than a total row count: the app runs its own
+    // notice sweep on a timer five seconds after boot, so a count taken before and
+    // after a manual sweep can move for reasons that have nothing to do with this test.
     await req('/api/admin/notice-sweep', { method: 'POST' });
-    const after = D.get('SELECT COUNT(*) c FROM notices WHERE loan_id=?', moLoan).c;
-    ok(after === before, 'a held rung is not re-held on the next sweep');
+    await req('/api/admin/notice-sweep', { method: 'POST' });
+    const dupes = D.all(`SELECT period, stage, COUNT(*) c FROM notices
+      WHERE loan_id=? AND stage IS NOT NULL GROUP BY period, stage HAVING c > 1`, moLoan);
+    ok(dupes.length === 0,
+      `a rung is recorded once per period, however often the sweep runs (${dupes.length} duplicated)`);
   }
 
   console.log('— location removed');

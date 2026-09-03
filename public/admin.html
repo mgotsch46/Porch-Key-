@@ -3307,6 +3307,20 @@ async function saveNoticePause(){
 // Railway to keep it that way. The VAPID private key exists nowhere else — it is
 // generated onto the data volume and never shown — so it is offered here until it is
 // pinned, and then never again.
+async function sendPushTest(){
+  const out=$('push-test-result'); if(out) out.textContent='Sending…';
+  try{
+    const r=await api('/api/admin/push-test',{method:'POST'});
+    if(!out) return;
+    // Distinguish "sent to n devices" from "recorded but nowhere to send it" — the
+    // second looks like success from the server's side and is the failure people miss.
+    out.textContent = r.transports
+      ? `Sent to ${r.transports} device${r.transports===1?'':'s'}. Check your phone.`
+      : 'Recorded, but no device is subscribed on this account yet.';
+    out.style.color = r.transports ? 'var(--green)' : 'var(--amber)';
+    if(r.hint) alert(r.hint);
+  }catch(e){ if(out){ out.textContent=e.message; out.style.color='var(--red)'; } }
+}
 async function loadPush(){
   const el=$('set-push'); if(!el) return;
   let d; try{ d=await api('/api/admin/push-status'); }
@@ -3319,6 +3333,12 @@ async function loadPush(){
       <b>${d.native_push?`${d.devices} device${d.devices===1?'':'s'}`:'not configured'}</b></div>
 
     ${(d.warnings||[]).map(w=>`<div class="err" style="margin-top:10px">${esc(w)}</div>`).join('')}
+
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+      <button class="small" onclick="sendPushTest()">Send myself a test notification</button>
+      <span id="push-test-result" class="note" style="margin-left:10px"></span>
+      <p class="note" style="margin:8px 0 0">Goes to your account only. Nothing is recorded against a loan.</p>
+    </div>
 
     ${d.vapid_private_key?`
       <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">

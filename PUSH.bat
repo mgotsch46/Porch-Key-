@@ -30,134 +30,40 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
->>"%MSGFILE%" echo Let the Android builds see the Firebase config
+>>"%MSGFILE%" echo A way to prove notifications actually arrive
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo GOOGLE_SERVICES_JSON lives in the appstore variable group, but only the
->>"%MSGFILE%" echo two iOS workflows imported that group. The Android builds would have run
->>"%MSGFILE%" echo clean, produced a signed AAB, and shipped without push - the step only
->>"%MSGFILE%" echo warns when the variable is missing, so nothing would have failed.
+>>"%MSGFILE%" echo Every notification in the app fires as a side effect of something real -
+>>"%MSGFILE%" echo money landing, an autopay switched off, a notice held. So the only way to
+>>"%MSGFILE%" echo prove delivery worked was to stage a real event on a real loan, which
+>>"%MSGFILE%" echo leaves a message in that buyer's thread forever.
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Both Android workflows now import the group alongside their keystore.
+>>"%MSGFILE%" echo Settings - Notifications now has "Send myself a test notification". It goes
+>>"%MSGFILE%" echo to the caller alone and records nothing against any loan.
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Also: FIREBASE-FILES is now a PowerShell script rather than a batch file,
->>"%MSGFILE%" echo and it verifies each config file actually contains com.porchpay.app before
->>"%MSGFILE%" echo using it. Chrome saves a repeat download as "google-services (1).json"
->>"%MSGFILE%" echo instead of overwriting, and the first run picked up Deal Flow Pro's config
->>"%MSGFILE%" echo from July by name. Matching on filename alone was not safe.
+>>"%MSGFILE%" echo It reports the transports separately from the record, because those are
+>>"%MSGFILE%" echo different failures. A notification is always written to the feed, so a
+>>"%MSGFILE%" echo plain 200 would look like success even when there is no subscribed device
+>>"%MSGFILE%" echo to send it to - which is exactly the state the account was in. It now says
+>>"%MSGFILE%" echo "recorded, but no device is subscribed" and explains where to turn them on.
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo ---
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Green the suite: the five long-standing failures were stale tests
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Five tests had been failing for long enough to be treated as furniture.
->>"%MSGFILE%" echo None of them was a bug. Every one asserted behaviour the app had
->>"%MSGFILE%" echo deliberately moved away from, and left standing they hid real regressions
->>"%MSGFILE%" echo in the noise.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Four were the same root cause: the app is white-labelled. A buyer sees
->>"%MSGFILE%" echo their servicer's name, not the software's. The tests still demanded the
->>"%MSGFILE%" echo string "Porch Pay" in the call whisper, both SMS auto-replies and the
->>"%MSGFILE%" echo letterhead - so they were asserting a branding leak, not preventing one.
->>"%MSGFILE%" echo They now assert the behaviour: the whisper names the caller, the auto-reply
->>"%MSGFILE%" echo points at the app and carries the STOP opt-out, and correspondence carries
->>"%MSGFILE%" echo the servicing company.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo The fifth expected a blank late fee to stay zero. That was changed on
->>"%MSGFILE%" echo purpose in "Late fee defaults to 10%% of P&I instead of nothing" - the old
->>"%MSGFILE%" echo behaviour meant a loan nobody typed a fee into was never charged one. It
->>"%MSGFILE%" echo now asserts the fill-in, computed from the payment rather than hardcoded.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo 774 passed, 0 failed. First green run.
+>>"%MSGFILE%" echo 6 tests: recorded against the sender, honest when undeliverable, never
+>>"%MSGFILE%" echo reaches a buyer, and buyers cannot fire one.
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo ---
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Hold legal notices in states that have no researched track
+>>"%MSGFILE%" echo Make the held-notice test assert the invariant, not a row count
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo The notice sweep dispatches on the property's state: MI gets the forfeiture
->>"%MSGFILE%" echo ladder, IL gets its own, and everything else fell through to the generic
->>"%MSGFILE%" echo one. That generic ladder is not harmless. Days 6 and 16 are courtesy
->>"%MSGFILE%" echo reminders, but days 31, 46 and 61 are legal notices over the Legal
->>"%MSGFILE%" echo department's name, and day 31 goes certified - written to no state's
->>"%MSGFILE%" echo statute in particular. A property in Ohio or Missouri would quietly start
->>"%MSGFILE%" echo receiving them, with no error and no warning.
+>>"%MSGFILE%" echo The test counted notice rows before and after a manual sweep and required
+>>"%MSGFILE%" echo them to be equal. But the app runs its own notice sweep five seconds after
+>>"%MSGFILE%" echo boot and its autopay sweep at twenty, both well inside a suite run, so a
+>>"%MSGFILE%" echo background sweep could add a row between the two counts. It failed about
+>>"%MSGFILE%" echo one run in seven - the worst kind of test, since a real regression looks
+>>"%MSGFILE%" echo identical to a bad roll of the dice.
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo - notices.js gains LEGAL_TRACK_STATES, currently MI and IL only.
->>"%MSGFILE%" echo - A legal rung in any other state is recorded as HELD, naming the state and
->>"%MSGFILE%" echo   saying to handle it with local counsel. Nothing is mailed.
->>"%MSGFILE%" echo - The servicer is notified, once per rung per period - it is recorded
->>"%MSGFILE%" echo   against the stage so the sweep does not pester hourly.
->>"%MSGFILE%" echo - Deliberately narrow: courtesy reminders still go out anywhere, since they
->>"%MSGFILE%" echo   carry no legal weight. A blank or missing state counts as no track.
+>>"%MSGFILE%" echo It now runs the sweep twice and asserts what actually matters: no stage is
+>>"%MSGFILE%" echo ever recorded twice in the same period.
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Adding a state is now a deliberate act - research the statute, write the
->>"%MSGFILE%" echo letters, add it to the set - rather than a side effect of typing an address.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo 10 new tests, including one proving the courtesy rung still sends.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo ---
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Fail the build if a flagged permission ever reaches the manifest
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Neither app needs contacts, storage, media, phone numbers, the installed
->>"%MSGFILE%" echo app list or location. But the Android manifest is generated at build time
->>"%MSGFILE%" echo and a dependency can merge a permission in without anyone editing a file,
->>"%MSGFILE%" echo and on Play those permissions are what get a lending app auto-classified
->>"%MSGFILE%" echo as predatory. Reading the source is not enough; the merged manifest is.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo - Android: after bundleRelease, every merged AndroidManifest is scanned for
->>"%MSGFILE%" echo   22 flagged permissions and the build fails if one is present. It also
->>"%MSGFILE%" echo   prints the full permission list, and fails when it cannot find a manifest
->>"%MSGFILE%" echo   at all rather than passing on a missing file.
->>"%MSGFILE%" echo - iOS: the same gate on Info.plist usage-description keys, which is what
->>"%MSGFILE%" echo   lets an iOS app ask in the first place.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Remove location sharing entirely, and name every processor in the policy
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Location was optional, off by default and consented — but it was still the
->>"%MSGFILE%" echo most sensitive thing the app touched, and the least load-bearing. Removing
->>"%MSGFILE%" echo it takes a permission prompt off both stores' review, deletes a category
->>"%MSGFILE%" echo from both privacy questionnaires, and costs nothing anyone was using.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo - Gone from the buyer app: the ask screen, the Settings toggle, the pings.
->>"%MSGFILE%" echo - Gone from the server: both tenant endpoints, the admin read, the distance
->>"%MSGFILE%" echo   helper, and the location section of the data export.
->>"%MSGFILE%" echo - Gone from Admin: the "where the buyer's phone has been" card.
->>"%MSGFILE%" echo - Gone from the builds: NSLocationWhenInUseUsageDescription on iOS and
->>"%MSGFILE%" echo   ACCESS_COARSE_LOCATION on Android. Neither app asks for anything now.
->>"%MSGFILE%" echo - Deleting code does not delete data: the migration drops location_pings
->>"%MSGFILE%" echo   outright and clears every consent flag. Verified against a volume with
->>"%MSGFILE%" echo   real pings in it, and it is idempotent on reboot.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo The privacy policy named only Stripe. Twilio, Lob, Firebase, the email
->>"%MSGFILE%" echo provider and the geocoders were all hiding behind "hosting and
->>"%MSGFILE%" echo infrastructure providers". Each is now named with what it receives.
->>"%MSGFILE%" echo Terms section 5 is gone and the rest renumbered.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Six tests now assert the endpoints are gone and the table dropped, rather
->>"%MSGFILE%" echo than the fourteen that used to assert location worked.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo ---
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Autopay drafts the regular payment on the 1st, and says so when it changes
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Autopay defaulted to "everything due that month". For a buyer who is
->>"%MSGFILE%" echo behind, switching it on would draft the arrears and the late fees in one
->>"%MSGFILE%" echo go - which is how you get an NSF and a returned ACH on the same day, from
->>"%MSGFILE%" echo the person who was trying to get current.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo - The default is now the regular monthly payment, on the server and in the
->>"%MSGFILE%" echo   buyer's dropdown. "Everything due" is still there, second, and labelled
->>"%MSGFILE%" echo   so it is clear what it does.
->>"%MSGFILE%" echo - New autopay.charge_day, defaulting to the 1st, clamped to 28 so it cannot
->>"%MSGFILE%" echo   name a day that some months do not have. The sweep waits for it. The
->>"%MSGFILE%" echo   draft still never goes out before money is actually owed.
->>"%MSGFILE%" echo - The servicer is notified when a buyer turns autopay on and when they turn
->>"%MSGFILE%" echo   it off - push, the notification feed, and the loan's message thread as an
->>"%MSGFILE%" echo   unread item. Coming off autopay tends to precede a missed payment rather
->>"%MSGFILE%" echo   than follow one. Editing settings while enrolled does not re-alert, and
->>"%MSGFILE%" echo   turning off something already off does not alert at all.
->>"%MSGFILE%" echo.
->>"%MSGFILE%" echo 14 new tests. 767 passed, 5 failed - the same 5 that were already failing.
+>>"%MSGFILE%" echo 780 passed, 0 failed.
 
 echo  Staging changes...
 git add -A
