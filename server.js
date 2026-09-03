@@ -800,63 +800,122 @@ async function sendLadderNotice({ rule, loan, property, tenant, co, status, dueD
 
   // 5. Certified mail, on whichever rungs are set to carry it — the 30-day one by
   //    default. That is the notice a forfeiture case leans on, and "certified" is what
-  //    turns it from a claim into a tracking number with delivery scans. The
-  //    idempotency key means a sweep that crashes and reruns cannot mail — or bill —
-  //    the same notice twice.
+  //    turns it from a claim into a tracking number with delivery scans.
+  //
+  //    It is drafted here and mailed nowhere. Every other channel above is a message;
+  //    this one is a physical object that gets billed to the buyer, filed as evidence,
+  //    and cannot be recalled. The first person to read it should not be the buyer. So
+  //    it waits on the task list until an admin has looked at it, fixed anything that
+  //    reads wrong, and pressed the button.
   if (rule.certified) {
-    const to = mailingAddressFor({ property, tenant, borrowers: borrowersFor(loan, property, tenant) });
-    if (!lob.lobEnabled(co)) {
-      // Silence here used to be indistinguishable from a rung that was never meant to
-      // mail. On a rung that was, the record should say so.
-      delivery.mail = { ok: false, error: 'Certified mail is not set up — add the Lob key and return address in Settings' };
-    } else if (!to) {
-      delivery.mail = { ok: false, error: 'No address to mail to' };
-    } else {
-      try {
-        const sent = await lob.sendCertifiedLetter(co, {
-          to,
-          subject: wording.subject, body: wording.body,
-          description: `${rule.label} — loan ${loan.id} ${period}`,
-          idempotencyKey: `notice-${loan.id}-${rule.stage}-${period}`,
-        });
-        run(`UPDATE notices SET lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=?, lob_test=? WHERE id=?`,
-          sent.id, sent.tracking_number, sent.expected_delivery_date, sent.cost_cents || null,
-          sent.test ? 1 : 0, noticeId);
-        delivery.mail = { ok: true, lob_id: sent.id, tracking: sent.tracking_number, test: sent.test,
-          addressed_to: to.source, note: sent.verification_note || undefined };
-
-        // A copy of what was mailed, filed on the loan. Evidence, not correspondence
-        // for the buyer — they got the notice itself through every other channel.
-        try {
-          const pdfBuf = pdfDoc.letter({ company: co, subject: wording.subject, bodyText: wording.body,
-            sentAt: today(), contactLine: tpl.departmentFor(co, rule.email_identity).contactLine });
-          const stored = crypto.randomUUID() + '.pdf';
-          fs.writeFileSync(path.join(UPLOAD_DIR, stored), pdfBuf);
-          run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
-               VALUES (?,?,?,?,?,?,?,?,?,0)`,
-            loan.company_id, loan.id, loan.property_id, 'other', 'private',
-            `Certified mail — ${rule.label} (${sent.tracking_number || sent.id})`,
-            `certified-${rule.stage}-${period}.pdf`, stored, 'application/pdf');
-        } catch (e) { console.error('Certified copy not filed:', e.message); }
-
-        // The pass-through: what Lob charges becomes a collection fee on the loan,
-        // tagged with the tracking number so the ledger line is auditable. Only when
-        // a real cost is configured, and never for test-mode letters.
-        if (sent.cost_cents > 0 && !sent.test) {
-          run(`INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo)
-               VALUES (?,?, 'fee', ?, ?)`, loan.id, today(), -sent.cost_cents,
-            `Collection fee — certified mail, 30-day notice (${sent.tracking_number || sent.id})`);
-          run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', sent.cost_cents, loan.id);
-        }
-      } catch (e) { delivery.mail = { ok: false, error: e.message }; }
-    }
+    delivery.mail = queueLetterForReview({
+      noticeId, loan, property, tenant, co,
+      service: 'certified',
+      subject: wording.subject, body: wording.body,
+      label: rule.label,
+    });
   }
 
   run('UPDATE notices SET delivery_json=? WHERE id=?', JSON.stringify(delivery), noticeId);
-  const failed = Object.entries(delivery).filter(([, v]) => !v.ok).map(([k]) => k);
+  // A letter waiting for review has not failed. Saying it "did not go" in the same
+  // breath as an email that bounced would train whoever reads these logs to ignore both.
+  const failed = Object.entries(delivery).filter(([, v]) => !v.ok && !v.pending_review).map(([k]) => k);
+  const held = Object.entries(delivery).filter(([, v]) => v.pending_review).map(([k]) => k);
   console.log(`${rule.label} sent for loan ${loan.id} (${period}, day ${daysPast})` +
-    (failed.length ? ` — ${failed.join(' and ')} did not go` : ''));
+    (failed.length ? ` — ${failed.join(' and ')} did not go` : '') +
+    (held.length ? ` — ${held.join(' and ')} waiting for review` : ''));
   return noticeId;
+}
+
+// ---------- letters wait for a person ----------
+// Park a letter in the review queue instead of mailing it. Returns the delivery record
+// the caller files on the notice, so the reason a letter is not in the post is written
+// down in the same place as the reason an email bounced.
+function queueLetterForReview({ noticeId, loan, property, tenant, co, service, subject, body, label }) {
+  const to = mailingAddressFor({ property, tenant, borrowers: borrowersFor(loan, property, tenant) });
+  // Two things make a letter impossible rather than merely unapproved. Both belong on
+  // the record: a rung meant to mail that silently mailed nothing is the bug this
+  // whole field exists to prevent.
+  if (!lob.lobEnabled(co)) {
+    return { ok: false, error: 'Certified mail is not set up — add the Lob key and return address in Settings' };
+  }
+  if (!to) return { ok: false, error: 'No address to mail to' };
+
+  run(`UPDATE notices SET mail_review_state='pending', mail_service=?, mail_subject=?, mail_body=?,
+        mail_queued_at=datetime('now'), mail_edited=0 WHERE id=?`,
+    service, subject, body, noticeId);
+
+  const addr = property ? property.address : `loan ${loan.id}`;
+  const charge = mailChargeCents(loan.company_id, service);
+  const certified = service === 'certified';
+  try {
+    run(`INSERT INTO tasks (company_id, property_id, loan_id, title, notes, category, priority, due_date, source_key)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+      loan.company_id, loan.property_id, loan.id,
+      `Review & mail ${certified ? 'certified' : 'first-class'} letter — ${addr}`,
+      `${label || 'A notice'} is drafted and waiting to be mailed. Read it for accuracy — the amount and ` +
+      `the dates especially — edit anything that reads wrong, then approve it. ${certified
+        ? 'Nothing is printed, tracked or billed until you do.'
+        : 'Nothing is printed or billed until you do.'} ` +
+      `The buyer is charged ${(charge / 100).toFixed(2)} when it goes.`,
+      'legal', 'high', today(), `mail-review-${noticeId}`);
+  } catch (e) { /* the task is already there */ }
+
+  notifyAdmins(loan.company_id, {
+    kind: 'notice',
+    title: `Letter ready to review — ${addr}`,
+    body: `${label || 'A notice'} is drafted and will not be mailed until you approve it.`,
+    url: '/admin', dedupeKey: `mail-review-${noticeId}`,
+  });
+  console.log(`Letter queued for review: notice ${noticeId} (loan ${loan.id}, ${service})`);
+  return { ok: false, pending_review: true, service, addressed_to: to.source,
+    error: 'Drafted — waiting for someone to review it before it is mailed' };
+}
+
+// Hand an approved letter to Lob, file the copy, and bill the buyer. One routine for
+// every path that puts paper in the post, because the three things that must happen
+// together — the send, the evidence copy, and the ledger line — were previously
+// written out three times, and a fix to one of them was a fix to one of them.
+async function mailNoticeLetter({ notice, loan, property, tenant, co, service, subject, body,
+                                  description, idempotencyKey, feeMemo, docTitle, docFilename, contactIdentity }) {
+  const to = mailingAddressFor({ property, tenant, borrowers: borrowersFor(loan, property, tenant) });
+  if (!to) throw Object.assign(new Error('No address to mail to'), { status: 400 });
+
+  const sent = await lob.sendLetter(co, {
+    to, subject, body, description, idempotencyKey,
+    service: service === 'first_class' ? 'first_class' : 'certified',
+  });
+
+  run(`UPDATE notices SET lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=?, lob_test=? WHERE id=?`,
+    sent.id, sent.tracking_number, sent.expected_delivery_date, sent.cost_cents || null,
+    sent.test ? 1 : 0, notice.id);
+
+  // A copy of what was mailed, filed on the loan. Evidence, not correspondence for the
+  // buyer — they got the notice itself through every other channel. It renders the
+  // approved wording, not the notice's, so the exhibit matches the envelope.
+  try {
+    const pdfBuf = pdfDoc.letter({ company: co, subject, bodyText: body, sentAt: today(),
+      contactLine: tpl.departmentFor(co, contactIdentity || 'servicing').contactLine });
+    const stored = crypto.randomUUID() + '.pdf';
+    fs.writeFileSync(path.join(UPLOAD_DIR, stored), pdfBuf);
+    run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
+         VALUES (?,?,?,?,?,?,?,?,?,0)`,
+      loan.company_id, loan.id, loan.property_id, 'other', 'private',
+      `${docTitle} (${sent.tracking_number || sent.id})`,
+      docFilename, stored, 'application/pdf');
+  } catch (e) { console.error('Mailed copy not filed:', e.message); }
+
+  // The pass-through: a flat published rate, tagged with the tracking number so the
+  // ledger line is auditable. Never for a test letter — nothing was printed or posted,
+  // so there is nothing to pass through.
+  const charge = mailChargeCents(loan.company_id, service);
+  if (charge > 0 && !sent.test) {
+    run(`INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo) VALUES (?,?, 'fee', ?, ?)`,
+      loan.id, today(), -charge, `${feeMemo} (${sent.tracking_number || sent.id})`);
+    run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', charge, loan.id);
+    run('UPDATE notices SET buyer_charged_cents=? WHERE id=?', charge, notice.id);
+  }
+  return { sent, charge_cents: sent.test ? 0 : charge, addressed_to: to.source };
 }
 
 // ---------- the Michigan forfeiture track ----------
@@ -1566,6 +1625,34 @@ async function runNoticeSweep() {
       await sendLadderNotice({ rule: due.fire, loan, property, tenant, co, status, dueDate, period, daysPast });
     } catch (e) { console.error('Notice sweep error for loan', loan.id, e.message); }
   }
+  nudgeUnreviewedLetters();
+}
+
+// A letter that waits forever is worse than one that went out unread — the 30-day
+// notice is the document a forfeiture leans on, and its value is in its date. Holding
+// it for review is right; letting it sit silently is not. So the sweep keeps asking,
+// once a day, for as long as it is unresolved. It never mails anything on its own:
+// auto-sending after a timeout would quietly undo the whole point of the review.
+function nudgeUnreviewedLetters() {
+  const stale = all(`SELECT n.id, n.mail_service, n.mail_queued_at, l.company_id, p.address
+    FROM notices n
+    JOIN loans l ON l.id = n.loan_id
+    LEFT JOIN properties p ON p.id = l.property_id
+    WHERE n.mail_review_state = 'pending'
+      AND n.mail_queued_at <= datetime('now','-24 hours')
+      AND (n.mail_nudged_at IS NULL OR n.mail_nudged_at <= datetime('now','-24 hours'))`);
+  for (const s of stale) {
+    const days = Math.max(1, Math.round((Date.now() - new Date(s.mail_queued_at + 'Z').getTime()) / 86400000));
+    notifyAdmins(s.company_id, {
+      kind: 'notice',
+      title: `Letter still not mailed — ${s.address || 'loan #' + s.id}`,
+      body: `A ${s.mail_service === 'first_class' ? 'first-class' : 'certified'} letter has been waiting ` +
+        `${days} day${days === 1 ? '' : 's'} for review. It will not go out until you approve it.`,
+      url: '/admin', dedupeKey: `mail-nudge-${s.id}-${days}`,
+    });
+    run("UPDATE notices SET mail_nudged_at=datetime('now') WHERE id=?", s.id);
+  }
+  if (stale.length) console.warn(`${stale.length} letter(s) still waiting for review`);
 }
 // A payoff statement is only good through its date; sweep the expired ones with the notices.
 setInterval(() => { try { payoff.expireStale(); } catch (e) { console.error('Payoff expiry:', e.message); } },
@@ -1783,9 +1870,26 @@ app.get('/api/admin/company', adminOnly, (req, res) => {
 });
 app.put('/api/admin/company', ownerOnly, (req, res) => {
   const c = get('SELECT * FROM companies WHERE id=?', req.companyId);
-  run('UPDATE companies SET name=?, contact_email=?, contact_phone=? WHERE id=?',
-    req.body.name || c.name, req.body.contact_email ?? c.contact_email,
-    req.body.contact_phone !== undefined ? addr.formatPhone(req.body.contact_phone) : c.contact_phone, c.id);
+  const b = req.body || {};
+  // What a buyer is charged for a mailed notice. These were previously only settable in
+  // the setup wizard, which meant they could never be changed again once a company was
+  // running — and postage rates move. An omitted field keeps its current value; a blank
+  // or negative one is refused rather than quietly making mail free.
+  for (const k of ['mail_charge_first_cents', 'mail_charge_certified_cents']) {
+    if (b[k] === undefined) continue;
+    const n = Number(b[k]);
+    if (!Number.isFinite(n) || n < 0) {
+      return res.status(400).json({ error: 'Mail charges must be zero or more' });
+    }
+  }
+  run(`UPDATE companies SET name=?, contact_email=?, contact_phone=?,
+        mail_charge_first_cents=?, mail_charge_certified_cents=? WHERE id=?`,
+    b.name || b.company_name || c.name,
+    b.contact_email ?? c.contact_email,
+    b.contact_phone !== undefined ? addr.formatPhone(b.contact_phone) : c.contact_phone,
+    b.mail_charge_first_cents === undefined ? c.mail_charge_first_cents : Math.round(Number(b.mail_charge_first_cents)),
+    b.mail_charge_certified_cents === undefined ? c.mail_charge_certified_cents : Math.round(Number(b.mail_charge_certified_cents)),
+    c.id);
   res.json(get('SELECT * FROM companies WHERE id=?', c.id));
 });
 app.post('/api/admin/staff', ownerOnly, (req, res) => {
@@ -1851,11 +1955,16 @@ app.post('/api/admin/setup', adminOnly, (req, res, next) => {
     const c = get('SELECT * FROM companies WHERE id=?', req.companyId);
     run(`UPDATE companies SET name=?, contact_email=?, contact_phone=?,
           pass_fees_to_buyer=?, fee_label=?,
+          mail_charge_first_cents=?, mail_charge_certified_cents=?,
           mgmt_company_name=?, rep_name=?, rep_phone=?,
           mailing_address=?, mailing_city=?, mailing_state=?, mailing_zip=? WHERE id=?`,
       b.company_name || c.name, b.contact_email ?? c.contact_email, b.contact_phone ?? c.contact_phone,
       b.pass_fees_to_buyer === undefined ? c.pass_fees_to_buyer : (b.pass_fees_to_buyer ? 1 : 0),
       b.fee_label || c.fee_label,
+      // What a buyer is charged for a letter. Blank keeps the current value rather than
+      // zeroing it — a mis-typed field should not quietly make mail free.
+      b.mail_charge_first_cents ?? c.mail_charge_first_cents,
+      b.mail_charge_certified_cents ?? c.mail_charge_certified_cents,
       b.mgmt_company_name ?? c.mgmt_company_name, b.rep_name ?? c.rep_name,
       b.rep_phone !== undefined ? addr.formatPhone(b.rep_phone) : c.rep_phone,
       b.mailing_address ?? c.mailing_address, b.mailing_city ?? c.mailing_city,
@@ -5702,38 +5811,227 @@ app.post('/api/admin/notices/:id/mail', adminOnly, async (req, res, next) => {
     const loan = get('SELECT * FROM loans WHERE id=?', n.loan_id);
     const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
     const tenant = loan.tenant_user_id ? get('SELECT * FROM users WHERE id=?', loan.tenant_user_id) : null;
-    const to = mailingAddressFor({ property, tenant, borrowers: borrowersFor(loan, property, tenant) });
-    if (!to) return res.status(400).json({ error: 'No address to mail to' });
-    const sent = await lob.sendLetter(co, {
-      to,
-      subject: n.subject, body: n.body,
-      description: `${n.stage || n.type} — loan ${loan.id}`, service,
+
+    // The wording the admin approved on screen, if they changed it. The notice itself
+    // is left alone: the buyer has already read it through the app, and rewriting a
+    // notice after it has been read is not an edit, it is a different notice.
+    const edited = letterEdits(req.body, n);
+    const sent = await mailNoticeLetter({
+      notice: n, loan, property, tenant, co, service,
+      subject: edited.subject, body: edited.body,
+      description: `${n.stage || n.type} — loan ${loan.id}`,
       idempotencyKey: `manual-${n.id}-${service}`,
+      feeMemo: `Collection fee — ${service === 'certified' ? 'certified' : 'first-class'} mail`,
+      docTitle: `${service === 'certified' ? 'Certified' : 'First-class'} mail — ${edited.subject || 'notice'}`,
+      docFilename: `mailed-notice-${n.id}.pdf`,
+      contactIdentity: n.type === 'legal_notice' ? 'legal' : 'servicing',
     });
-    run(`UPDATE notices SET lob_id=?, lob_tracking=?, lob_status='created', lob_expected=?, lob_cost_cents=?, lob_test=? WHERE id=?`,
-      sent.id, sent.tracking_number, sent.expected_delivery_date, sent.cost_cents || null,
-      sent.test ? 1 : 0, n.id);
-    // The same evidence trail the automatic send keeps: a PDF copy of what was
-    // mailed, filed on the loan, so nothing about mail ever requires Lob's website.
-    try {
-      const pdfBuf = pdfDoc.letter({ company: co, subject: n.subject, bodyText: n.body, sentAt: today(),
-        contactLine: tpl.departmentFor(co, n.type === 'legal_notice' ? 'legal' : 'servicing').contactLine });
-      const stored = crypto.randomUUID() + '.pdf';
-      fs.writeFileSync(path.join(UPLOAD_DIR, stored), pdfBuf);
-      run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title, filename, stored_name, mime, visible_to_tenant)
-           VALUES (?,?,?,?,?,?,?,?,?,0)`,
-        loan.company_id, loan.id, loan.property_id, 'other', 'private',
-        `${service === 'certified' ? 'Certified' : 'First-class'} mail — ${n.subject || 'notice'} (${sent.tracking_number || sent.id})`,
-        `mailed-notice-${n.id}.pdf`, stored, 'application/pdf');
-    } catch (e) { console.error('Mailed copy not filed:', e.message); }
-    if (sent.cost_cents > 0 && !sent.test) {
-      run(`INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo) VALUES (?,?, 'fee', ?, ?)`,
-        loan.id, today(), -sent.cost_cents,
-        `Collection fee — ${service === 'certified' ? 'certified' : 'first-class'} mail (${sent.tracking_number || sent.id})`);
-      run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', sent.cost_cents, loan.id);
-    }
-    res.json({ ok: true, service, tracking: sent.tracking_number, cost_cents: sent.cost_cents, test: sent.test });
+    run(`UPDATE notices SET mail_review_state='approved', mail_service=?, mail_subject=?, mail_body=?,
+          mail_edited=?, mail_reviewed_by=?, mail_reviewed_at=datetime('now') WHERE id=?`,
+      service, edited.subject, edited.body, edited.changed ? 1 : 0, req.user.id, n.id);
+    closeMailReviewTask(n.id);
+    res.json({ ok: true, service, tracking: sent.sent.tracking_number,
+      cost_cents: sent.sent.cost_cents, charged_cents: sent.charge_cents, test: sent.sent.test });
   } catch (e) { next(e); }
+});
+
+// The letter's wording: whatever the reviewer typed, falling back to the copy made when
+// it was queued, falling back to the notice itself. Blank is not an edit — an empty
+// textarea posts an empty string, and mailing a blank page because a field failed to
+// populate is a failure that costs postage and proves nothing.
+function letterEdits(body, n) {
+  const pick = (typed, queued, original) => {
+    const t = typeof typed === 'string' ? typed.trim() : '';
+    return t || queued || original || '';
+  };
+  const subject = pick(body && body.subject, n.mail_subject, n.subject);
+  const text = pick(body && body.body, n.mail_body, n.body);
+  return { subject, body: text, changed: subject !== (n.subject || '') || text !== (n.body || '') };
+}
+
+// The review task is done the moment the letter is resolved, whichever way it went.
+function closeMailReviewTask(noticeId) {
+  try {
+    run(`UPDATE tasks SET status='done', completed_at=datetime('now')
+         WHERE source_key=? AND status='open'`, `mail-review-${noticeId}`);
+  } catch (e) { /* no task to close */ }
+}
+
+// ---------- the letter review queue ----------
+// Everything drafted and not yet resolved, newest first, with what it will cost the
+// buyer. This is the screen that stands between the ladder and the post office.
+app.get('/api/admin/mail-queue', adminOnly, (req, res) => {
+  const rows = all(`SELECT n.id, n.loan_id, n.stage, n.type, n.subject, n.mail_subject, n.mail_body,
+      n.mail_service, n.mail_queued_at, n.days_past_due, n.period,
+      p.address, p.city, p.state, u.name AS buyer_name
+    FROM notices n
+    JOIN loans l ON l.id = n.loan_id
+    LEFT JOIN properties p ON p.id = l.property_id
+    LEFT JOIN users u ON u.id = l.tenant_user_id
+    WHERE l.company_id = ? AND n.mail_review_state = 'pending'
+    ORDER BY n.id DESC`, req.companyId);
+  res.json({
+    letters: rows.map(r => ({ ...r, charge_cents: mailChargeCents(req.companyId, r.mail_service) })),
+    count: rows.length,
+  });
+});
+
+// Letters that have gone, so the Lob invoice can be reconciled against them in one
+// pass. When the invoice arrives it is a list of letters, not a single letter, and
+// hunting each one down through its loan is how the reconciliation stops happening.
+app.get('/api/admin/mail-sent', adminOnly, (req, res) => {
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  const rows = all(`SELECT n.id, n.loan_id, n.subject, n.mail_subject, n.mail_service, n.stage,
+      n.lob_id, n.lob_tracking, n.lob_status, n.lob_expected, n.lob_cost_cents,
+      n.lob_cost_actual_cents, n.buyer_charged_cents, n.lob_test, n.mail_reviewed_at,
+      p.address, u.name AS buyer_name
+    FROM notices n
+    JOIN loans l ON l.id = n.loan_id
+    LEFT JOIN properties p ON p.id = l.property_id
+    LEFT JOIN users u ON u.id = l.tenant_user_id
+    WHERE l.company_id = ? AND n.lob_id IS NOT NULL
+    ORDER BY n.id DESC LIMIT ?`, req.companyId, limit);
+  const letters = rows.map(r => ({
+    ...r,
+    subject: r.mail_subject || r.subject,
+    // Null margin, not zero. A letter whose invoice has not been typed in yet has an
+    // unknown margin, and showing it as break-even would make the total read as if
+    // every letter had been reconciled.
+    margin_cents: r.lob_cost_actual_cents == null ? null
+      : (r.buyer_charged_cents || 0) - r.lob_cost_actual_cents,
+  }));
+  const priced = letters.filter(l => l.lob_cost_actual_cents != null);
+  res.json({
+    letters,
+    awaiting_invoice: letters.length - priced.length,
+    totals: {
+      charged_cents: priced.reduce((s, l) => s + (l.buyer_charged_cents || 0), 0),
+      actual_cents: priced.reduce((s, l) => s + l.lob_cost_actual_cents, 0),
+      margin_cents: priced.reduce((s, l) => s + l.margin_cents, 0),
+      counted: priced.length,
+    },
+  });
+});
+
+// One drafted letter, with the address it would go to — because the wording being right
+// and the envelope being right are two different checks, and the second one is the one
+// nobody remembers to make.
+app.get('/api/admin/notices/:id/letter', adminOnly, (req, res) => {
+  const n = get(`SELECT n.* FROM notices n JOIN loans l ON l.id=n.loan_id
+                 WHERE n.id=? AND l.company_id=?`, req.params.id, req.companyId);
+  if (!n) return res.status(404).json({ error: 'Not found' });
+  const loan = get('SELECT * FROM loans WHERE id=?', n.loan_id);
+  const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+  const tenant = loan.tenant_user_id ? get('SELECT * FROM users WHERE id=?', loan.tenant_user_id) : null;
+  const to = mailingAddressFor({ property, tenant, borrowers: borrowersFor(loan, property, tenant) });
+  const service = n.mail_service || 'certified';
+  res.json({
+    id: n.id, loan_id: n.loan_id, stage: n.stage, type: n.type,
+    state: n.mail_review_state, service,
+    subject: n.mail_subject || n.subject, body: n.mail_body || n.body,
+    notice_subject: n.subject, notice_body: n.body,
+    edited: !!n.mail_edited, queued_at: n.mail_queued_at,
+    days_past_due: n.days_past_due, period: n.period,
+    property_address: property ? property.address : null,
+    to, charge_cents: mailChargeCents(req.companyId, service),
+    // Both rates, so the by-hand screen can price either choice without a second call.
+    charge_certified_cents: mailChargeCents(req.companyId, 'certified'),
+    charge_first_cents: mailChargeCents(req.companyId, 'first_class'),
+    already_mailed: !!n.lob_id, tracking: n.lob_tracking || null,
+    test_mode: lob.lobEnabled(myCompany(req)) ? lob.isTestKey(myCompany(req)) : null,
+  });
+});
+
+// Save an edit without mailing. Reviewing a letter at 11pm and sending it in the
+// morning should not mean retyping it.
+app.put('/api/admin/notices/:id/letter', adminOnly, (req, res) => {
+  const n = get(`SELECT n.* FROM notices n JOIN loans l ON l.id=n.loan_id
+                 WHERE n.id=? AND l.company_id=?`, req.params.id, req.companyId);
+  if (!n) return res.status(404).json({ error: 'Not found' });
+  if (n.mail_review_state !== 'pending') {
+    return res.status(400).json({ error: 'This letter has already been resolved — it cannot be edited now' });
+  }
+  const edited = letterEdits(req.body, n);
+  run('UPDATE notices SET mail_subject=?, mail_body=?, mail_edited=? WHERE id=?',
+    edited.subject, edited.body, edited.changed ? 1 : 0, n.id);
+  res.json({ ok: true, subject: edited.subject, body: edited.body, edited: edited.changed });
+});
+
+// Approve: this is the click that spends money and creates evidence.
+app.post('/api/admin/notices/:id/letter/approve', adminOnly, async (req, res, next) => {
+  try {
+    const n = get(`SELECT n.* FROM notices n JOIN loans l ON l.id=n.loan_id
+                   WHERE n.id=? AND l.company_id=?`, req.params.id, req.companyId);
+    if (!n) return res.status(404).json({ error: 'Not found' });
+    if (n.lob_id) return res.status(400).json({ error: 'This letter has already gone — its tracking is on the notice' });
+    if (n.mail_review_state !== 'pending') {
+      return res.status(400).json({ error: 'This letter is not waiting for review' });
+    }
+    const co = myCompany(req);
+    if (!lob.lobEnabled(co)) {
+      return res.status(400).json({ error: 'Certified mail is not set up — add the Lob key and return address in Settings' });
+    }
+    const loan = get('SELECT * FROM loans WHERE id=?', n.loan_id);
+    const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
+    const tenant = loan.tenant_user_id ? get('SELECT * FROM users WHERE id=?', loan.tenant_user_id) : null;
+    const service = n.mail_service === 'first_class' ? 'first_class' : 'certified';
+    const edited = letterEdits(req.body, n);
+
+    const out = await mailNoticeLetter({
+      notice: n, loan, property, tenant, co, service,
+      subject: edited.subject, body: edited.body,
+      description: `${n.stage || n.type} — loan ${loan.id} ${n.period || ''}`.trim(),
+      // The same key the automatic send would have used, so a double-click, a retry,
+      // or two admins approving the same letter cannot mail or bill it twice.
+      idempotencyKey: `notice-${loan.id}-${n.stage}-${n.period}`,
+      feeMemo: `Collection fee — ${service === 'certified' ? 'certified' : 'first-class'} mail, ${n.stage || 'notice'}`,
+      docTitle: `${service === 'certified' ? 'Certified' : 'First-class'} mail — ${edited.subject || 'notice'}`,
+      docFilename: `mailed-notice-${n.id}.pdf`,
+      contactIdentity: n.type === 'legal_notice' ? 'legal' : 'servicing',
+    });
+
+    run(`UPDATE notices SET mail_review_state='approved', mail_subject=?, mail_body=?, mail_edited=?,
+          mail_reviewed_by=?, mail_reviewed_at=datetime('now') WHERE id=?`,
+      edited.subject, edited.body, edited.changed ? 1 : 0, req.user.id, n.id);
+    // What went in the envelope is now different from what the app shows, if it was
+    // edited. The delivery record says so rather than leaving the difference to be
+    // discovered by whoever compares them a year from now in a deposition.
+    let delivery = {};
+    try { delivery = JSON.parse(n.delivery_json || '{}'); } catch { delivery = {}; }
+    delivery.mail = { ok: true, lob_id: out.sent.id, tracking: out.sent.tracking_number,
+      test: out.sent.test, addressed_to: out.addressed_to, service,
+      approved_by: req.user.id, approved_at: new Date().toISOString(),
+      edited_before_mailing: edited.changed || undefined };
+    run('UPDATE notices SET delivery_json=? WHERE id=?', JSON.stringify(delivery), n.id);
+    closeMailReviewTask(n.id);
+
+    res.json({ ok: true, service, tracking: out.sent.tracking_number, test: out.sent.test,
+      charged_cents: out.charge_cents, edited: edited.changed });
+  } catch (e) { next(e); }
+});
+
+// Cancel: the letter is wrong, or it should never have been drafted. Nothing is
+// printed and nothing is billed. The reason is kept, because "why did we not mail the
+// 30-day notice" is a question with a statutory edge to it.
+app.post('/api/admin/notices/:id/letter/cancel', adminOnly, (req, res) => {
+  const n = get(`SELECT n.* FROM notices n JOIN loans l ON l.id=n.loan_id
+                 WHERE n.id=? AND l.company_id=?`, req.params.id, req.companyId);
+  if (!n) return res.status(404).json({ error: 'Not found' });
+  if (n.mail_review_state !== 'pending') {
+    return res.status(400).json({ error: 'This letter is not waiting for review' });
+  }
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Say why it is not being mailed' });
+  run(`UPDATE notices SET mail_review_state='canceled', mail_canceled_reason=?,
+        mail_reviewed_by=?, mail_reviewed_at=datetime('now') WHERE id=?`,
+    reason, req.user.id, n.id);
+  let delivery = {};
+  try { delivery = JSON.parse(n.delivery_json || '{}'); } catch { delivery = {}; }
+  delivery.mail = { ok: false, canceled: true, error: `Not mailed — ${reason}`,
+    canceled_by: req.user.id, canceled_at: new Date().toISOString() };
+  run('UPDATE notices SET delivery_json=? WHERE id=?', JSON.stringify(delivery), n.id);
+  closeMailReviewTask(n.id);
+  res.json({ ok: true, reason });
 });
 
 // Ask USPS (via Lob) where a certified letter is now, and remember the answer.
@@ -5986,10 +6284,12 @@ app.post('/api/admin/notices/:id/serve-dc101', adminOnly, async (req, res, next)
         `dc101-served-${n.id}.pdf`, stored, 'application/pdf');
     } catch (e) { console.error('DC 101 court copy not filed:', e.message); }
 
-    if (sent.cost_cents > 0 && !sent.test) {
+    const charge = mailChargeCents(loan.company_id, 'certified');
+    if (charge > 0 && !sent.test) {
       run(`INSERT INTO ledger (loan_id, entry_date, type, amount_cents, memo) VALUES (?,?, 'fee', ?, ?)`,
-        loan.id, today(), -sent.cost_cents, `Collection fee — DC 101 certified mail (${sent.tracking_number || sent.id})`);
-      run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', sent.cost_cents, loan.id);
+        loan.id, today(), -charge, `Collection fee — DC 101 certified mail (${sent.tracking_number || sent.id})`);
+      run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', charge, loan.id);
+      run('UPDATE notices SET buyer_charged_cents=? WHERE id=?', charge, n.id);
     }
     run(`UPDATE tasks SET status='done', completed_at=datetime('now') WHERE source_key=? AND status='open'`, `dc101-prep-${n.id}`);
 
@@ -7479,6 +7779,39 @@ function feeSettings(companyId) {
     ach_cap: c.fee_ach_cap_cents ?? 500,
   };
 }
+// What the buyer is charged for a mailed notice. A flat published amount per service —
+// deliberately NOT Lob's bill. Lob's price moves with page count and USPS rates, and a
+// buyer should see the same number for the same kind of letter every time. What Lob
+// actually charged is recorded separately, from the invoice, for the company's own books.
+// Records what Lob actually billed for one letter, typed in from the invoice. It does not
+// touch the buyer's ledger: the buyer was charged the flat published rate at the time of
+// sending, and that stays put. This is the other side of the margin, for the company's
+// own books, and correcting it later must never silently re-bill somebody.
+app.put('/api/admin/notices/:id/lob-cost', adminOnly, (req, res) => {
+  const n = get(`SELECT n.* FROM notices n JOIN loans l ON l.id=n.loan_id
+    WHERE n.id=? AND l.company_id=?`, req.params.id, req.companyId);
+  if (!n) return res.status(404).json({ error: 'Notice not found' });
+  const v = req.body.lob_cost_actual_cents;
+  if (v !== null && v !== undefined && (!Number.isFinite(Number(v)) || Number(v) < 0)) {
+    return res.status(400).json({ error: 'Enter the amount Lob billed, or leave it blank' });
+  }
+  const cents = v === null || v === undefined || v === '' ? null : Math.round(Number(v));
+  run('UPDATE notices SET lob_cost_actual_cents=? WHERE id=?', cents, n.id);
+  res.json({
+    ok: true,
+    lob_cost_actual_cents: cents,
+    buyer_charged_cents: n.buyer_charged_cents || 0,
+    margin_cents: cents === null ? null : (n.buyer_charged_cents || 0) - cents,
+  });
+});
+
+function mailChargeCents(companyId, service) {
+  const c = get('SELECT * FROM companies WHERE id=?', companyId) || {};
+  return service === 'certified'
+    ? (c.mail_charge_certified_cents ?? 1500)
+    : (c.mail_charge_first_cents ?? 500);
+}
+
 // method: 'card' | 'cashapp' | 'ach' | 'cash'
 function calcFee(companyId, amountCents, method) {
   const f = feeSettings(companyId);
@@ -8149,12 +8482,14 @@ app.post('/api/tenant/pay/checkout', tenantReady, async (req, res) => {
     const property = get('SELECT * FROM properties WHERE id=?', loan.property_id);
     const proto = req.headers['x-forwarded-proto'] || 'http';
     const baseUrl = process.env.BASE_URL || `${proto}://${req.headers.host}`;
-    const fee = calcFee(loan.company_id, amount, 'card');
+    // Charge the fee for the method they actually picked, not always the card rate.
+    const method = ['card', 'ach', 'cashapp'].includes(req.body.method) ? req.body.method : 'card';
+    const fee = calcFee(loan.company_id, amount, method);
     const payCo = get('SELECT * FROM companies WHERE id=?', loan.company_id);
     const session = await pay.withCompany(payCo && payCo.stripe_secret_key ? payCo : null, () => pay.createCheckoutSession({
       loan: { ...loan, address: property ? property.address : 'your home' },
       amountCents: amount, baseUrl, tenantEmail: req.user.email,
-      feeCents: fee, feeLabel: feeSettings(loan.company_id).label,
+      feeCents: fee, feeLabel: feeSettings(loan.company_id).label, method,
     }));
     res.json({ url: session.url });
   } catch (e) {

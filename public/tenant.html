@@ -381,9 +381,19 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
         <div class="methods" id="saved-methods"></div>
         <div class="methods">
           <button class="method sel" id="m-card" onclick="setMethod('card')">
-            <span class="ico">💳</span><span><span class="t">New card or bank</span><span class="d">Debit, credit, or bank transfer</span></span><span class="tick">✓</span></button>
+            <span class="ico">💳</span><span><span class="t">Debit or credit card</span><span class="d">Arrives right away</span></span><span class="tick">✓</span></button>
+          <button class="method" id="m-ach" onclick="setMethod('ach')">
+            <span class="ico">🏦</span><span><span class="t">Bank transfer</span><span class="d">Lower fee · takes a few business days</span></span><span class="tick">✓</span></button>
           <button class="method" id="m-cashapp" onclick="setMethod('cashapp')">
             <span class="ico">📱</span><span><span class="t">Cash App Pay</span><span class="d">Pay from your Cash App balance</span></span><span class="tick">✓</span></button>
+        </div>
+        <div id="ach-warn" class="hidden" style="border:1px solid var(--amber,#e0a800);background:#FFF8E6;
+             border-radius:10px;padding:12px 14px;margin-bottom:14px">
+          <b>Bank transfers take a few business days.</b>
+          <div style="font-size:13.5px;margin-top:4px">Your payment shows as <b>initiated</b> straight away, but it is
+            not applied to your balance until the money actually arrives. <b>A late charge is based on the day the
+            money arrives, not the day you start the payment</b> — so if you are close to a due date, a card or
+            Cash App payment lands the same day.</div>
         </div>
         <div id="fee-box"></div>
         <button class="btn primary" id="pay-go" onclick="startPayment()">Continue</button>
@@ -771,11 +781,16 @@ function methodName(m){
 let savedPmId = null;
 function setMethod(m, pmId){
   payMethod=m; savedPmId = pmId || null;
-  ['card','cashapp'].forEach(k=>{ const b=$('m-'+k); if(b) b.classList.toggle('sel', k===m && !pmId); });
+  ['card','ach','cashapp'].forEach(k=>{ const b=$('m-'+k); if(b) b.classList.toggle('sel', k===m && !pmId); });
   document.querySelectorAll('#saved-methods .method').forEach(el=>
     el.classList.toggle('sel', !!pmId && el.dataset.pm === String(pmId)));
   $('pay-go').textContent = pmId ? 'Pay now' : 'Continue to secure payment';
   $('pay-foot').textContent = 'Processed securely by Stripe. We never see your card or bank number.';
+  // A bank transfer is cheaper but slower, and the difference matters: a late charge is
+  // assessed on the day the money arrives, not the day the payment was started. Saying so
+  // here — before they commit — is the only fair place to say it.
+  const warn = $('ach-warn');
+  if (warn) warn.classList.toggle('hidden', m !== 'ach');
   renderFee();
 }
 function pmIcon(t){ return t==='card' ? '\u{1F4B3}' : '\u{1F3E6}'; }
@@ -895,7 +910,7 @@ async function startPayment(){
         : 'Payment complete. Thank you!');
       go('home'); return;
     }
-    const r=await api('/api/tenant/pay/checkout',{method:'POST',body:JSON.stringify({amount_cents:amt})});
+    const r=await api('/api/tenant/pay/checkout',{method:'POST',body:JSON.stringify({amount_cents:amt, method:payMethod})});
     location.href=r.url;
   }catch(e){ if(e.message!=='terms'){ $('pay-err').textContent=e.message; $('pay-err').classList.remove('hidden'); } }
 }

@@ -547,6 +547,9 @@ a{color:var(--brand);font-weight:600}
     <section id="pg-dash">
       <h1>Dashboard</h1>
       <div id="d-attention"></div>
+      <!-- Letters wait here for a person. Nothing is printed, tracked or billed to a
+           buyer until someone has read the letter and pressed the button. -->
+      <div id="d-mailq"></div>
       <div class="cards" id="d-stats"></div>
       <div class="cards" id="d-income"></div>
       <div class="card"><h2>Active tenant buyer loans <span class="note" style="font-weight:400">money coming in</span></h2>
@@ -771,15 +774,21 @@ a{color:var(--brand);font-weight:600}
     <section id="pg-comms" class="hidden">
       <h1>Communications</h1>
       <div class="card">
-        <p class="note" style="margin-bottom:12px">Everything that came in or went out, across every house — calls,
-          voicemails, texts and buyer messages, newest first. Each house still keeps its own thread; this is the one
-          place that shows all of them at once, including anything that arrived from a number nobody recognises.</p>
-        <div class="segbtn" style="margin-bottom:12px">
-          <button id="ci-all" class="active" onclick="loadComms('')">All</button>
-          <button id="ci-call" onclick="loadComms('call')">📞 Calls &amp; voicemail</button>
-          <button id="ci-text" onclick="loadComms('text')">💬 Texts &amp; messages</button>
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="small" id="comms-toggle" onclick="toggleComms()">Show the inbox</button>
+          <span id="comms-summary" class="note"></span>
         </div>
-        <div id="comms-list"><p class="note">Loading…</p></div>
+        <div id="comms-body" class="hidden" style="margin-top:14px">
+          <p class="note" style="margin-bottom:12px">Everything that came in or went out, across every house — calls,
+            voicemails, texts and buyer messages, newest first. Each house still keeps its own thread; this is the one
+            place that shows all of them at once, including anything that arrived from a number nobody recognises.</p>
+          <div class="segbtn" style="margin-bottom:12px">
+            <button id="ci-all" class="active" onclick="loadComms('')">All</button>
+            <button id="ci-call" onclick="loadComms('call')">📞 Calls &amp; voicemail</button>
+            <button id="ci-text" onclick="loadComms('text')">💬 Texts &amp; messages</button>
+          </div>
+          <div id="comms-list"><p class="note">Loading…</p></div>
+        </div>
       </div>
     </section>
 
@@ -1125,6 +1134,11 @@ a{color:var(--brand);font-weight:600}
       </div>
 
       <div class="card">
+        <h2>&#128176; What the mail actually cost <span class="note" style="font-weight:400">from your Lob invoice</span></h2>
+        <div id="set-mailcosts"><p class="note">Loading…</p></div>
+      </div>
+
+      <div class="card">
         <h2>&#128276; Notifications</h2>
         <div id="set-push"><p class="note">Loading…</p></div>
       </div>
@@ -1434,11 +1448,11 @@ function nav(pg){
     const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
   }
-  if(pg==='dash'){loadDash();loadDashTasks();loadDashAgenda();} if(pg==='loans')loadLoans(); if(pg==='tbs')loadTBs();
+  if(pg==='dash'){loadDash();loadDashTasks();loadDashAgenda();loadMailQueue();} if(pg==='loans')loadLoans(); if(pg==='tbs')loadTBs();
   if(pg==='props')loadProps(); if(pg==='exp'){loadProps();loadExpenses();}
   if(pg==='msgs')openMsgs();
   if(pg==='pml'){loadProps();loadPML();}
-  if(pg==='settings'){loadSettings();loadTexting();loadEmail();loadBooks();loadNotices();loadLob();loadPush();loadOrphans();wireAddressFields();}
+  if(pg==='settings'){loadSettings();loadTexting();loadEmail();loadBooks();loadNotices();loadLob();loadMailCosts();loadPush();loadOrphans();wireAddressFields();}
   if(pg==='invites')loadInvites();
   if(pg==='reports')loadReports();
   if(pg==='calc')calcSolve();
@@ -1447,13 +1461,29 @@ function nav(pg){
   if(pg==='tasks'){loadProps();loadTasks();}
   if(pg==='cal')loadCalendar();
   if(pg==='contacts')loadContacts();
-  if(pg==='comms')loadComms('');
+  if(pg==='comms'){ commsSummary(); if(COMMS_OPEN) loadComms(COMMS_FILTER||''); }
 }
 
 // ---------- communications inbox ----------
 // The per-house threads are unchanged; this is the view across all of them. Opening
 // it marks the unmatched bucket seen, because that bucket has no thread of its own.
 let COMMS_FILTER='';
+// Starts collapsed every time the app opens — the inbox is the noisiest thing on the
+// screen and most visits here are not about it. Opening it is remembered until reload.
+let COMMS_OPEN=false;
+function commsSummary(){
+  const b=$('comms-badge');
+  const n=b&&!b.classList.contains('hidden')?(b.textContent||'').trim():'';
+  const el=$('comms-summary'); if(!el) return;
+  el.textContent = COMMS_OPEN ? '' : (n ? n+' unread' : 'Nothing unread');
+}
+function toggleComms(){
+  COMMS_OPEN=!COMMS_OPEN;
+  const body=$('comms-body'); if(body) body.classList.toggle('hidden', !COMMS_OPEN);
+  const btn=$('comms-toggle'); if(btn) btn.textContent = COMMS_OPEN?'Hide the inbox':'Show the inbox';
+  commsSummary();
+  if(COMMS_OPEN) loadComms(COMMS_FILTER||'');
+}
 async function loadComms(ch){
   COMMS_FILTER=ch||'';
   for(const b of ['all','call','text']){
@@ -3463,19 +3493,34 @@ async function mailNoticeModal(noticeId){
       <button class="primary" onclick="closeModal();nav('settings')">Open Settings</button>`);
     return;
   }
-  const cert=(LOB_PRICES.cost_cents||LOB_PRICES.auto_certified_cents)||0;
-  const first=LOB_PRICES.auto_first_class_cents||0;
+  // Mailing by hand goes through the same read-it-first screen as a drafted letter.
+  // The click is deliberate either way; what it puts in the envelope should still be
+  // something a person has looked at.
+  let d; try{ d=await api(`/api/admin/notices/${noticeId}/letter`); }
+  catch(e){ modal(`<h2>Could not load</h2><p class="note">${esc(e.message)}</p>`); return; }
+  const to=d.to||{};
+  const addr=[to.name,to.address_line1,to.address_line2,
+    [to.address_city,to.address_state,to.address_zip].filter(Boolean).join(' ')].filter(Boolean);
   modal(`<h2>📮 Mail this notice</h2>
-    <p class="note" style="margin-bottom:12px">Printed and mailed to the property address by Lob.
-      ${LOB_PRICES.test_mode?'<b>Test mode:</b> nothing is actually printed or charged.':'The cost is passed to the buyer as a collection fee.'}</p>
+    <p class="note" style="margin-bottom:10px">Printed and put in the post by Lob. Read it first and fix
+      anything that reads wrong — the letter cannot be recalled.
+      ${d.test_mode?'<b>Test mode: nothing is actually printed or charged.</b>':''}</p>
+    <div style="padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fafbfc;margin-bottom:12px;font-size:13.5px">
+      <div class="note" style="margin-bottom:4px">Addressed to${to.source==='buyer'?' the buyer’s own mailing address':' the property'}</div>
+      ${addr.length?addr.map(l=>esc(l)).join('<br>'):'<b style="color:var(--red)">No address on file — this cannot be mailed</b>'}
+    </div>
+    <div class="field"><label>Subject</label><input id="lt-subj" value="${esc(d.subject||'')}"></div>
+    <div class="field"><label>Letter</label>
+      <textarea id="lt-body" rows="12" style="font-family:ui-monospace,Menlo,monospace;font-size:12.5px">${esc(d.body||'')}</textarea></div>
     <button class="primary" style="display:block;width:100%;margin-bottom:8px" onclick="mailNotice(${noticeId},'certified')">
-      Certified mail — ${fmt(cert)} · tracked, provable, the one for default notices</button>
+      Certified mail — buyer pays ${fmt(d.charge_certified_cents)} · tracked, provable, the one for default notices</button>
     <button style="display:block;width:100%" onclick="mailNotice(${noticeId},'first_class')">
-      Regular first-class — ${fmt(first)} · cheaper, no tracking</button>`);
+      Regular first-class — buyer pays ${fmt(d.charge_first_cents)} · cheaper, no tracking</button>`);
 }
 async function mailNotice(noticeId,service){
   try{
-    const r=await api(`/api/admin/notices/${noticeId}/mail`,{method:'POST',body:JSON.stringify({service})});
+    const r=await api(`/api/admin/notices/${noticeId}/mail`,{method:'POST',
+      body:JSON.stringify({service,...letterFields()})});
     closeModal(); toast(r.test?'Test letter created at Lob — nothing printed.':'Letter on its way'+(r.tracking?' — tracking '+r.tracking:'')+'.');
     loadNoticesAdmin();
   }catch(e){ alert(e.message); }
@@ -3483,6 +3528,145 @@ async function mailNotice(noticeId,service){
 async function refreshMailStatus(noticeId){
   try{ await api(`/api/admin/notices/${noticeId}/mail-status`); }catch(e){ alert(e.message); }
   loadNoticesAdmin();
+}
+
+// ---------- letters waiting to be mailed ----------
+// The ladder drafts a certified letter and stops. Every other channel is a message;
+// this one is a physical object that gets billed to the buyer and filed as evidence,
+// and none of that can be taken back. So it sits here until somebody reads it.
+async function loadMailQueue(){
+  const el=$('d-mailq'); if(!el) return;
+  let d; try{ d=await api('/api/admin/mail-queue'); }catch{ el.innerHTML=''; return; }
+  if(!d.count){ el.innerHTML=''; return; }
+  el.innerHTML=`<div class="card" style="border:1px solid #f5c344;background:#fffdf4">
+    <h2>📮 ${d.count} letter${d.count===1?'':'s'} waiting to be mailed</h2>
+    <p class="note" style="margin-bottom:10px">Drafted and held. Read each one for accuracy — <b>the amount and
+      the dates especially</b> — edit anything that reads wrong, then approve it. Nothing is printed, tracked
+      or charged to a buyer until you do.</p>
+    ${d.letters.map(l=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;
+        padding:8px 0;border-top:1px solid #f0e6cb;font-size:13.5px">
+      <span><b>${esc(l.mail_subject||l.subject||'Notice')}</b><br>
+        <span class="note">${esc(l.address||'loan #'+l.loan_id)}${l.buyer_name?' · '+esc(l.buyer_name):''}
+        · ${l.mail_service==='first_class'?'first class':'certified'} · buyer pays ${fmt(l.charge_cents)}
+        · drafted ${l.mail_queued_at?ago(String(l.mail_queued_at).replace(' ','T')):'just now'}</span></span>
+      <button class="primary" onclick="letterModal(${l.id})">Review</button>
+    </div>`).join('')}</div>`;
+}
+// The review screen. Two checks, not one: the wording has to be right AND the envelope
+// has to be going to the right place. The second is the one nobody remembers to make,
+// so the address is shown as plainly as the text.
+async function letterModal(id){
+  let d; try{ d=await api(`/api/admin/notices/${id}/letter`); }
+  catch(e){ modal(`<h2>Could not load</h2><p class="note">${esc(e.message)}</p>`); return; }
+  const to=d.to||{};
+  const cert=d.service!=='first_class';
+  const addr=[to.name,to.address_line1,to.address_line2,
+    [to.address_city,to.address_state,to.address_zip].filter(Boolean).join(' ')].filter(Boolean);
+  modal(`<h2>📮 Review before mailing</h2>
+    <p class="note" style="margin-bottom:10px">This is what will be printed and put in the post by
+      ${cert?'<b>USPS certified mail</b>':'first-class mail'}. The buyer has already received this notice in
+      the app, by email and by text — editing here changes <b>the letter only</b>, not what they have read.</p>
+    ${d.test_mode?`<div style="padding:8px 10px;margin-bottom:10px;border:1px solid #f5c344;border-radius:9px;background:#fffdf4;font-size:13px">
+      ⚠️ <b>Your Lob key is a test key.</b> Approving this renders a letter that is never printed and never
+      mailed. Nothing is charged to the buyer, and it is not evidence of service.</div>`:''}
+    <div style="padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fafbfc;margin-bottom:12px;font-size:13.5px">
+      <div class="note" style="margin-bottom:4px">Addressed to${to.source==='buyer'?' the buyer’s own mailing address':' the property'}</div>
+      ${addr.length?addr.map(l=>esc(l)).join('<br>'):'<b style="color:var(--red)">No address on file — this cannot be mailed</b>'}
+    </div>
+    <div class="field"><label>Subject</label><input id="lt-subj" value="${esc(d.subject||'')}"></div>
+    <div class="field"><label>Letter</label>
+      <textarea id="lt-body" rows="14" style="font-family:ui-monospace,Menlo,monospace;font-size:12.5px">${esc(d.body||'')}</textarea></div>
+    <p class="note" style="margin-bottom:12px">Approving charges the buyer <b>${fmt(d.charge_cents)}</b> as a
+      collection fee and files a copy on the loan as evidence.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="primary" onclick="letterApprove(${id})">📮 Approve &amp; mail — ${fmt(d.charge_cents)}</button>
+      <button onclick="letterSave(${id})">Save my edits, mail later</button>
+      <button style="color:var(--red)" onclick="letterCancelPrompt(${id})">Do not mail this</button>
+    </div>`);
+}
+function letterFields(){
+  return { subject:($('lt-subj')||{}).value||'', body:($('lt-body')||{}).value||'' };
+}
+async function letterSave(id){
+  try{
+    await api(`/api/admin/notices/${id}/letter`,{method:'PUT',body:JSON.stringify(letterFields())});
+    closeModal(); toast('Saved. It stays on your list until you mail it.'); loadMailQueue(); loadDashTasks();
+  }catch(e){ alert(e.message); }
+}
+async function letterApprove(id){
+  if(!confirm('Print this letter and put it in the post?\n\nThe buyer is charged the mail fee and a copy is filed as evidence. This cannot be undone.')) return;
+  try{
+    const r=await api(`/api/admin/notices/${id}/letter/approve`,{method:'POST',body:JSON.stringify(letterFields())});
+    closeModal();
+    toast(r.test?'Test letter created at Lob — nothing printed or charged.'
+      :'On its way'+(r.tracking?' — tracking '+r.tracking:'')+'.');
+    loadMailQueue(); loadDashTasks(); if(typeof currentLoanId!=='undefined'&&currentLoanId) loadNoticesAdmin();
+  }catch(e){ alert(e.message); }
+}
+function letterCancelPrompt(id){
+  const reason=prompt('Why is this letter not going out?\n\nIt is kept on the record — "why did we not mail the 30-day notice" is a question with a statutory edge to it.');
+  if(reason===null) return;
+  if(!reason.trim()){ alert('A reason is required.'); return; }
+  letterCancel(id,reason.trim());
+}
+async function letterCancel(id,reason){
+  try{
+    await api(`/api/admin/notices/${id}/letter/cancel`,{method:'POST',body:JSON.stringify({reason})});
+    closeModal(); toast('Not mailed. Nothing was printed or billed.'); loadMailQueue(); loadDashTasks();
+  }catch(e){ alert(e.message); }
+}
+
+// ---------- what Lob actually billed ----------
+// Three numbers, kept apart: what the buyer was charged (a flat published rate), what
+// Lob estimated when the letter was created, and what Lob's invoice says. Typing the
+// third one in never moves the first — a correction that silently re-bills a buyer is
+// how a ledger stops being trusted.
+async function loadMailCosts(){
+  const el=$('set-mailcosts'); if(!el) return;
+  let d; try{ d=await api('/api/admin/mail-sent?limit=50'); }
+  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  if(!d.letters.length){ el.innerHTML='<p class="note">No letters have been mailed yet.</p>'; return; }
+  const t=d.totals;
+  el.innerHTML=`
+    <p class="note" style="margin-bottom:10px">When your Lob invoice arrives, type each letter's real cost here.
+      <b>It never changes what the buyer was charged</b> — that stays the flat published rate. This is only so
+      you know what the mail actually costs you.</p>
+    <div class="cards" style="margin-bottom:10px">
+      <div class="stat"><div class="n">${fmt(t.charged_cents)}</div><div class="l">Billed to buyers (${t.counted} letter${t.counted===1?'':'s'})</div></div>
+      <div class="stat"><div class="n">${fmt(t.actual_cents)}</div><div class="l">Lob actually charged</div></div>
+      <div class="stat"><div class="n" style="color:${t.margin_cents<0?'var(--red)':'var(--ink)'}">${fmt(t.margin_cents)}</div><div class="l">Difference</div></div>
+      <div class="stat"><div class="n" style="color:${d.awaiting_invoice?'var(--amber)':'var(--ink)'}">${d.awaiting_invoice}</div><div class="l">No invoice cost yet</div></div>
+    </div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Letter</th><th>Property</th><th>Tracking</th><th class="right">Buyer paid</th>
+        <th class="right">Lob estimate</th><th class="right">Lob invoice</th><th class="right">Difference</th></tr></thead>
+      <tbody>${d.letters.map(l=>`<tr>
+        <td>${esc(l.subject||'Notice')}${l.lob_test?' <span class="pill amber">test</span>':''}</td>
+        <td>${esc(l.address||'—')}</td>
+        <td class="note">${esc(l.lob_tracking||l.lob_id||'—')}</td>
+        <td class="right">${l.buyer_charged_cents?fmt(l.buyer_charged_cents):'—'}</td>
+        <td class="right note">${l.lob_cost_cents?fmt(l.lob_cost_cents):'—'}</td>
+        <td class="right"><input id="lc-${l.id}" style="width:82px;text-align:right"
+          value="${l.lob_cost_actual_cents!=null?(l.lob_cost_actual_cents/100).toFixed(2):''}" placeholder="0.00"
+          onchange="saveLobCost(${l.id})"></td>
+        <td class="right" style="color:${l.margin_cents!=null&&l.margin_cents<0?'var(--red)':'inherit'}">
+          ${l.margin_cents!=null?fmt(l.margin_cents):'<span class="note">—</span>'}</td>
+      </tr>`).join('')}</tbody></table></div>`;
+}
+// Same field, on the loan's own notice list — nearest the ledger line it explains.
+async function saveLobCostInline(id){
+  await saveLobCost(id, () => loadNoticesAdmin());
+}
+async function saveLobCost(id, after){
+  const inp=$('lc-'+id); if(!inp) return;
+  const raw=String(inp.value).trim();
+  const cents=raw===''?null:Math.round(parseFloat(raw.replace(/[$,]/g,''))*100);
+  if(cents!==null&&(!isFinite(cents)||cents<0)){ alert('Enter what Lob billed, like 11.83.'); return; }
+  try{
+    await api(`/api/admin/notices/${id}/lob-cost`,{method:'PUT',
+      body:JSON.stringify({lob_cost_actual_cents:cents})});
+    (after||loadMailCosts)();
+  }catch(e){ alert(e.message); (after||loadMailCosts)(); }
 }
 async function loadOrphans(){
   const el=$('set-orphans'); if(!el) return;
@@ -6064,12 +6248,25 @@ async function loadNoticesAdmin(){
         <span class="note">Sent ${new Date((n.sent_at||n.created_at)+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
           ${n.read_at?`· <span style="color:var(--green)">✓✓ Read ${new Date(n.read_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</span>`:'· <span style="color:var(--amber)">Unread</span>'}</span>
       </div>
-      ${!n.lob_id?`<div class="note" style="margin-top:4px"><button class="small" onclick="mailNoticeModal(${n.id})">📮 Mail this notice</button></div>`:''}
-      ${n.lob_id?`<div class="note" style="margin-top:4px">📬 Certified mail:
+      ${!n.lob_id&&n.mail_review_state==='pending'?`<div style="margin-top:5px;padding:6px 9px;border:1px solid #f5c344;
+        border-radius:8px;background:#fffdf4;font-size:13px">📮 <b>Letter drafted — not mailed yet.</b>
+        Read it for accuracy, then approve it.
+        <button class="small" onclick="letterModal(${n.id})">Review &amp; mail</button></div>`:''}
+      ${!n.lob_id&&n.mail_review_state==='canceled'?`<div class="note" style="margin-top:4px">
+        🚫 Not mailed — ${esc(n.mail_canceled_reason||'stopped at review')}</div>`:''}
+      ${!n.lob_id&&n.mail_review_state!=='pending'?`<div class="note" style="margin-top:4px"><button class="small" onclick="mailNoticeModal(${n.id})">📮 Mail this notice</button></div>`:''}
+      ${n.lob_id?`<div class="note" style="margin-top:4px">📬 ${n.mail_service==='first_class'?'First-class':'Certified'} mail:
         <b>${esc(n.lob_status||'created')}</b>${n.lob_tracking?` · tracking ${esc(n.lob_tracking)}`:''}
         ${n.lob_expected?` · expected ${fdate(n.lob_expected)}`:''}
-        ${n.lob_cost_cents?` · ${fmt(n.lob_cost_cents)} billed as a collection fee`:''}
-        <button class="small" onclick="refreshMailStatus(${n.id})">↻ Update</button></div>`:''}
+        ${n.buyer_charged_cents?` · ${fmt(n.buyer_charged_cents)} charged to the buyer`:''}
+        ${n.mail_edited?' · <span title="The letter was edited before it was mailed, so it differs from the notice above">✎ edited before mailing</span>':''}
+        <button class="small" onclick="refreshMailStatus(${n.id})">↻ Update</button></div>
+        <div class="note" style="margin-top:4px">What Lob billed:
+          <input id="lc-${n.id}" style="width:78px" placeholder="0.00"
+            value="${n.lob_cost_actual_cents!=null?(n.lob_cost_actual_cents/100).toFixed(2):''}"
+            onchange="saveLobCostInline(${n.id})">
+          ${n.lob_cost_actual_cents!=null?`· difference ${fmt((n.buyer_charged_cents||0)-n.lob_cost_actual_cents)}`
+            :'<span title="Typing this in never changes what the buyer was charged">— from your Lob invoice</span>'}</div>`:''}
       <details style="margin-top:4px"><summary class="note" style="cursor:pointer">View text</summary><div class="note" style="white-space:pre-wrap;margin-top:6px">${esc(n.body)}</div></details>
     </div>`).join('') : '<p class="note">No notices sent.</p>');
 }

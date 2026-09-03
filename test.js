@@ -1410,6 +1410,202 @@ async function main() {
     ok(r.json.pml.property_id === pb.json.id, 'move persisted');
   }
 
+  console.log('— mail charges and per-method fees');
+  {
+    const D = require('./db.js');
+    const co = D.get('SELECT * FROM companies ORDER BY id LIMIT 1');
+    ok(co.mail_charge_first_cents === 500 && co.mail_charge_certified_cents === 1500,
+      'a company defaults to $5 first class and $15 certified');
+
+    // The buyer is charged the published rate, whatever Lob happened to bill.
+    let r = await req('/api/admin/company', { method: 'PUT', body: JSON.stringify({
+      mail_charge_first_cents: 700, mail_charge_certified_cents: 1800 }) });
+    ok(r.status === 200, 'the mail charges can be changed');
+    const co2 = D.get('SELECT * FROM companies ORDER BY id LIMIT 1');
+    ok(co2.mail_charge_first_cents === 700 && co2.mail_charge_certified_cents === 1800,
+      'and both new amounts are saved');
+
+    // A blank must not silently make mail free.
+    await req('/api/admin/company', { method: 'PUT', body: JSON.stringify({ company_name: co.name }) });
+    const co3 = D.get('SELECT * FROM companies ORDER BY id LIMIT 1');
+    ok(co3.mail_charge_first_cents === 700 && co3.mail_charge_certified_cents === 1800,
+      'saving other settings leaves the mail charges alone');
+    await req('/api/admin/company', { method: 'PUT', body: JSON.stringify({
+      mail_charge_first_cents: 500, mail_charge_certified_cents: 1500 }) });
+
+    // Lob's real invoice is recorded separately and never re-bills the buyer.
+    const n = D.get('SELECT * FROM notices WHERE loan_id=? ORDER BY id DESC LIMIT 1', loanId);
+    if (n) {
+      const before = D.get('SELECT fees_due_cents FROM loans WHERE id=?', loanId).fees_due_cents;
+      r = await req(`/api/admin/notices/${n.id}/lob-cost`, { method: 'PUT',
+        body: JSON.stringify({ lob_cost_actual_cents: 1183 }) });
+      ok(r.status === 200 && r.json.lob_cost_actual_cents === 1183, 'the actual Lob cost can be recorded');
+      ok(D.get('SELECT fees_due_cents FROM loans WHERE id=?', loanId).fees_due_cents === before,
+        'recording what Lob billed does not change what the buyer owes');
+      r = await req(`/api/admin/notices/${n.id}/lob-cost`, { method: 'PUT',
+        body: JSON.stringify({ lob_cost_actual_cents: -5 }) });
+      ok(r.status === 400, 'a negative Lob cost is refused');
+    }
+
+    // The fee quote differs by method — the whole point of splitting the buttons.
+    r = await req('/api/tenant/fee-quote?amount_cents=179028', {}, tbCookie);
+    ok(r.status === 200, 'a buyer can get a fee quote');
+    ok(r.json.ach.fee_cents < r.json.card.fee_cents,
+      `a bank transfer costs the buyer less than a card ($${(r.json.ach.fee_cents/100).toFixed(2)} vs $${(r.json.card.fee_cents/100).toFixed(2)})`);
+    ok(r.json.card.total_cents === 179028 + r.json.card.fee_cents, 'the card total adds up');
+    ok(r.json.ach.total_cents === 179028 + r.json.ach.fee_cents, 'the bank total adds up');
+  }
+
+  console.log('— letters wait for a person before they are mailed');
+  {
+    const D = require('./db.js');
+    const lobMod = require('./lob.js');
+    const origSend = lobMod.sendLetter, origEnabled = lobMod.lobEnabled, origTest = lobMod.isTestKey;
+    let sends = [];
+    lobMod.lobEnabled = () => true;
+    lobMod.isTestKey = () => false;
+    lobMod.sendLetter = async (co, opts) => {
+      sends.push(opts);
+      return { id: 'ltr_' + sends.length, tracking_number: '9407IL' + sends.length,
+        expected_delivery_date: '2026-12-31', cost_cents: 801, test: false };
+    };
+    try {
+      // Illinois: the day-6 Notice of Default goes certified. Eight days past due with
+      // no grace puts the loan squarely on that rung.
+      const mk = async (addr, name, email) => {
+        let rp = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({
+          address: addr, city: 'Peoria', state: 'IL', zip: '61602' }) });
+        const pid = rp.json.id;
+        rp = await req('/api/admin/tenants', { method: 'POST', body: JSON.stringify({
+          name, email, phone: '555-0200' }) });
+        const tid = rp.json.id;
+        rp = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+          property_id: pid, tenant_user_id: tid, loan_type: 'land_contract',
+          sale_price_cents: 6000000, down_payment_cents: 1000000, principal_cents: 5000000,
+          interest_rate_bps: 900, term_months: 240, escrow_cents: 20000, late_fee_cents: 4000,
+          grace_days: 0, first_payment_date: new Date(Date.now() - 8 * 86400000).toISOString().slice(0, 10) }) });
+        return rp.json.loan && rp.json.loan.id;
+      };
+      const ilLoan = await mk('101 Prairie Ave', 'Pat Illinois', 'pat.il@test.com');
+      const ilLoan2 = await mk('103 Prairie Ave', 'Robin Illinois', 'robin.il@test.com');
+      ok(!!ilLoan && !!ilLoan2, 'two Illinois loans past due can be created');
+
+      await req('/api/admin/notice-sweep', { method: 'POST' });
+      // Measured after the sweep, not before it: the day-6 rung also charges the
+      // contractual late fee, and folding that into the comparison would hide whether
+      // the mail charge moved.
+      const feesBefore = D.get('SELECT fees_due_cents FROM loans WHERE id=?', ilLoan).fees_due_cents;
+
+      // The whole point: the rung fired and nothing went in the post.
+      ok(sends.length === 0, 'the ladder mails nothing on its own, even with Lob connected');
+      const queued = D.get(`SELECT * FROM notices WHERE loan_id=? AND mail_review_state='pending'
+        ORDER BY id DESC LIMIT 1`, ilLoan);
+      ok(!!queued, 'the certified rung leaves a letter waiting for review');
+      ok(!queued.lob_id, 'nothing was handed to Lob');
+      ok(queued.mail_service === 'certified', 'it is marked as the certified letter it would be');
+      ok(!!queued.mail_body && queued.mail_body === queued.body,
+        'the letter starts as an exact copy of the notice');
+      ok(queued.buyer_charged_cents == null,
+        'a buyer is not charged for a letter that has not been mailed');
+      ok(D.all(`SELECT id FROM ledger WHERE loan_id=? AND memo LIKE '%mail%'`, ilLoan).length === 0,
+        'and no mail fee is on the ledger yet');
+
+      // It appears as work, not just as a row — a held letter nobody knows about is
+      // worse than one that went out unread.
+      const tk = D.get('SELECT * FROM tasks WHERE source_key=?', `mail-review-${queued.id}`);
+      ok(!!tk && tk.status === 'open', 'a review task is on the list');
+      ok(/Review & mail/.test(tk.title), 'the task says what it wants');
+
+      let r = await req('/api/admin/mail-queue');
+      ok(r.status === 200 && r.json.count >= 2, 'both drafted letters are in the queue');
+      const mine = r.json.letters.find(l => l.id === queued.id);
+      ok(mine && mine.charge_cents === 1500, 'the queue shows the flat $15 the buyer will pay');
+
+      // Reviewing means seeing the envelope as well as the words.
+      r = await req(`/api/admin/notices/${queued.id}/letter`);
+      ok(r.status === 200 && r.json.state === 'pending', 'the letter can be read before it goes');
+      ok(r.json.to && r.json.to.address_line1 === '101 Prairie Ave',
+        'the review screen shows the address it would be mailed to');
+
+      // Editing changes the letter and leaves the notice the buyer already read alone.
+      const fixed = 'Corrected arrears figure. This is the letter that should be printed.';
+      r = await req(`/api/admin/notices/${queued.id}/letter`, { method: 'PUT',
+        body: JSON.stringify({ body: fixed }) });
+      ok(r.status === 200 && r.json.edited === true, 'the letter can be edited');
+      const afterEdit = D.get('SELECT * FROM notices WHERE id=?', queued.id);
+      ok(afterEdit.mail_body === fixed, 'the edit is saved on the letter');
+      ok(afterEdit.body === queued.body,
+        'and the notice the buyer already read is left exactly as it was');
+
+      // A blank textarea is not an edit — mailing an empty page costs postage and
+      // proves nothing.
+      await req(`/api/admin/notices/${queued.id}/letter`, { method: 'PUT',
+        body: JSON.stringify({ body: '   ', subject: '' }) });
+      ok(D.get('SELECT mail_body FROM notices WHERE id=?', queued.id).mail_body === fixed,
+        'a blank edit is ignored rather than emptying the letter');
+
+      // Approval is the click that spends money.
+      r = await req(`/api/admin/notices/${queued.id}/letter/approve`, { method: 'POST', body: '{}' });
+      ok(r.status === 200 && r.json.tracking === '9407IL1', 'approving mails it');
+      ok(sends.length === 1 && sends[0].body === fixed,
+        'Lob was handed the corrected letter, not the original');
+      ok(sends[0].service === 'certified', 'and sent it certified');
+      const mailed = D.get('SELECT * FROM notices WHERE id=?', queued.id);
+      ok(mailed.mail_review_state === 'approved' && !!mailed.lob_id, 'the notice records the send');
+      ok(mailed.buyer_charged_cents === 1500, 'the buyer is charged the flat published rate');
+      ok(D.get('SELECT fees_due_cents FROM loans WHERE id=?', ilLoan).fees_due_cents === feesBefore + 1500,
+        'and it lands on the loan once');
+      ok(D.get('SELECT status FROM tasks WHERE source_key=?', `mail-review-${queued.id}`).status === 'done',
+        'the review task closes itself');
+      ok(/edited_before_mailing/.test(mailed.delivery_json || ''),
+        'the record says the letter differed from the notice');
+
+      r = await req(`/api/admin/notices/${queued.id}/letter/approve`, { method: 'POST', body: '{}' });
+      ok(r.status === 400 && sends.length === 1, 'a letter cannot be mailed or billed twice');
+      r = await req(`/api/admin/notices/${queued.id}/letter`, { method: 'PUT',
+        body: JSON.stringify({ body: 'too late' }) });
+      ok(r.status === 400, 'and cannot be edited after it has gone');
+
+      // The other way out: stop it, and bill nothing.
+      const q2 = D.get(`SELECT * FROM notices WHERE loan_id=? AND mail_review_state='pending'
+        ORDER BY id DESC LIMIT 1`, ilLoan2);
+      const fees2 = D.get('SELECT fees_due_cents FROM loans WHERE id=?', ilLoan2).fees_due_cents;
+      r = await req(`/api/admin/notices/${q2.id}/letter/cancel`, { method: 'POST', body: JSON.stringify({}) });
+      ok(r.status === 400, 'a letter cannot be stopped without saying why');
+      r = await req(`/api/admin/notices/${q2.id}/letter/cancel`, { method: 'POST',
+        body: JSON.stringify({ reason: 'Buyer paid in full this morning' }) });
+      ok(r.status === 200, 'a letter can be stopped');
+      const stopped = D.get('SELECT * FROM notices WHERE id=?', q2.id);
+      ok(stopped.mail_review_state === 'canceled' && /paid in full/.test(stopped.mail_canceled_reason),
+        'the reason is kept on the record');
+      ok(sends.length === 1 && !stopped.lob_id, 'nothing was printed');
+      ok(D.get('SELECT fees_due_cents FROM loans WHERE id=?', ilLoan2).fees_due_cents === fees2,
+        'and nothing was charged to the buyer');
+      ok(D.get('SELECT status FROM tasks WHERE source_key=?', `mail-review-${q2.id}`).status === 'done',
+        'its task closes too');
+
+      // The Lob invoice, reconciled in one place, without moving anybody's balance.
+      r = await req('/api/admin/mail-sent');
+      ok(r.status === 200 && r.json.letters.some(l => l.id === queued.id), 'mailed letters are listed');
+      const row = r.json.letters.find(l => l.id === queued.id);
+      ok(row.margin_cents === null, 'a letter with no invoice yet has an unknown margin, not a zero one');
+      ok(r.json.awaiting_invoice >= 1, 'and is counted as still awaiting its invoice');
+      await req(`/api/admin/notices/${queued.id}/lob-cost`, { method: 'PUT',
+        body: JSON.stringify({ lob_cost_actual_cents: 812 }) });
+      r = await req('/api/admin/mail-sent');
+      const row2 = r.json.letters.find(l => l.id === queued.id);
+      ok(row2.margin_cents === 1500 - 812, 'once the invoice is typed in the difference is shown');
+      ok(D.get('SELECT fees_due_cents FROM loans WHERE id=?', ilLoan).fees_due_cents === feesBefore + 1500,
+        'recording the invoice still never re-bills the buyer');
+
+      // A buyer must not be able to see or approve any of it.
+      r = await req('/api/admin/mail-queue', {}, tbCookie);
+      ok(r.status === 401 || r.status === 403, 'a buyer cannot see the letter queue');
+    } finally {
+      lobMod.sendLetter = origSend; lobMod.lobEnabled = origEnabled; lobMod.isTestKey = origTest;
+    }
+  }
+
   console.log('— test notification');
   {
     const D = require('./db.js');

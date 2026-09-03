@@ -30,6 +30,93 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
+>>"%MSGFILE%" echo Nothing goes in the post until a person has read it
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo The ladder handed a certified letter straight to Lob the moment the rung
+>>"%MSGFILE%" echo fired. The first person to read that letter was the buyer - after it had
+>>"%MSGFILE%" echo been printed, mailed, billed to them, and filed as evidence. None of that
+>>"%MSGFILE%" echo can be taken back, and the 30-day notice is the document a forfeiture case
+>>"%MSGFILE%" echo leans on. A wrong figure on it is not a typo.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Certified letters are now drafted and held. The notice itself still goes out
+>>"%MSGFILE%" echo instantly by app, email and text - the buyer is not kept waiting - but the
+>>"%MSGFILE%" echo envelope waits for a review task on the dashboard: read it, edit anything
+>>"%MSGFILE%" echo that reads wrong, then approve or stop it with a reason.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo - Approving mails the EDITED copy, charges the flat rate once, files the PDF,
+>>"%MSGFILE%" echo   and closes the task. Same idempotency key as before, so a double-click or
+>>"%MSGFILE%" echo   two admins approving the same letter cannot mail or bill it twice.
+>>"%MSGFILE%" echo - Stopping it requires a reason, which is kept: "why did we not mail the
+>>"%MSGFILE%" echo   30-day notice" is a question with a statutory edge to it.
+>>"%MSGFILE%" echo - Editing changes the LETTER only. The notice the buyer already read is left
+>>"%MSGFILE%" echo   alone, and the record notes when the two differ.
+>>"%MSGFILE%" echo - A blank textarea is not an edit. Mailing an empty page costs postage and
+>>"%MSGFILE%" echo   proves nothing.
+>>"%MSGFILE%" echo - The sweep re-notifies daily on anything still unread. It never mails on its
+>>"%MSGFILE%" echo   own after a timeout - auto-sending would quietly undo the whole point.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo The Lob invoice field now has a screen. Settings shows every letter that has
+>>"%MSGFILE%" echo gone with a box for what Lob actually billed, plus totals; the same box sits
+>>"%MSGFILE%" echo on each notice, next to the ledger line it explains. Typing it in never moves
+>>"%MSGFILE%" echo the buyer's balance - that stays the flat published rate.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Mailing by hand goes through the same read-it-first screen, and now shows
+>>"%MSGFILE%" echo what the BUYER pays rather than Lob's estimate, which is what it had been
+>>"%MSGFILE%" echo quoting since the flat rate went in.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Three send sites had been maintaining their own copy of "send, file the PDF,
+>>"%MSGFILE%" echo post the fee". They share one routine now.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo 40 new tests, including that the ladder mails nothing on its own with Lob
+>>"%MSGFILE%" echo connected, that Lob receives the corrected text, and that a stopped letter
+>>"%MSGFILE%" echo bills nobody. 831 passed, 0 failed.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Caught before shipping, by running the render functions rather than reading
+>>"%MSGFILE%" echo them: a second "ago" helper redeclared a const that already existed further
+>>"%MSGFILE%" echo down admin.html. That is a whole-file SyntaxError - the same white screen as
+>>"%MSGFILE%" echo the v-loc bug, on the admin side this time.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Charge the fee for the method the buyer picked, and a flat rate for mail
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo THE FEE. The checkout endpoint computed calcFee(..., 'card') no matter what,
+>>"%MSGFILE%" echo then opened a Stripe session offering card, bank transfer and Cash App. So a
+>>"%MSGFILE%" echo buyer who chose bank transfer paid the CARD fee. On a $1,790.28 payment that
+>>"%MSGFILE%" echo is $52.22 instead of $5.00 - about $47 too much, taken from someone already
+>>"%MSGFILE%" echo behind. The app knew better: fee-quote returns card, ach and cashapp
+>>"%MSGFILE%" echo separately, and calcFee honours an ACH rate with its own cap. The quote was
+>>"%MSGFILE%" echo right; the charge ignored it.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo - "New card or bank" is now two buttons: Debit or credit card, and Bank
+>>"%MSGFILE%" echo   transfer, labelled "Lower fee - takes a few business days".
+>>"%MSGFILE%" echo - The buyer app sends the chosen method; the fee is computed for it; and the
+>>"%MSGFILE%" echo   Stripe session is restricted to it, so the quote cannot be undercut at the
+>>"%MSGFILE%" echo   last step.
+>>"%MSGFILE%" echo - Choosing bank transfer now shows, before committing, that the payment is
+>>"%MSGFILE%" echo   only "initiated" until the money lands, and that a late charge is based on
+>>"%MSGFILE%" echo   the day the money ARRIVES, not the day it was started.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo THE MAIL. Postage was billed to the buyer at whatever Lob estimated, so the
+>>"%MSGFILE%" echo same certified letter could cost two buyers different amounts. It is now a
+>>"%MSGFILE%" echo flat published rate - $5 first class, $15 certified, both editable - and
+>>"%MSGFILE%" echo what Lob actually billed is recorded separately from the invoice.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Three numbers kept apart on purpose: Lob's estimate at send time, Lob's real
+>>"%MSGFILE%" echo invoice, and what the buyer was charged. Recording the invoice later never
+>>"%MSGFILE%" echo re-bills anyone.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Those amounts were previously only settable in the setup wizard, so they
+>>"%MSGFILE%" echo could never be changed once a company was running. They are on the company
+>>"%MSGFILE%" echo endpoint now, and an omitted field keeps its value rather than zeroing it.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Communications now opens collapsed, showing just an unread count, and does
+>>"%MSGFILE%" echo not fetch the inbox until you open it.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo 11 new tests. 791 passed, 0 failed.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Stop labelling every online payment "Card"
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo postStripePayment read session.payment_method_types[0] to decide how the

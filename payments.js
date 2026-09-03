@@ -49,8 +49,13 @@ async function stripeRequest(pathname, params) {
 }
 
 // Create a Stripe Checkout session for a loan payment.
-async function createCheckoutSession({ loan, amountCents, baseUrl, tenantEmail, feeCents, feeLabel }) {
-  const methods = ['card', 'cashapp', 'us_bank_account'];
+// The session is restricted to the method the buyer chose, because the fee was quoted
+// for that method. Offering all three here while charging the card rate meant a buyer who
+// picked bank transfer paid the card fee — tens of dollars more than the transfer cost.
+async function createCheckoutSession({ loan, amountCents, baseUrl, tenantEmail, feeCents, feeLabel, method }) {
+  const methods = method === 'ach' ? ['us_bank_account']
+    : method === 'cashapp' ? ['cashapp']
+    : ['card'];
   const feeLines = feeCents ? {
     'line_items[1][price_data][currency]': 'usd',
     'line_items[1][price_data][unit_amount]': feeCents,

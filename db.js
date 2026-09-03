@@ -634,6 +634,12 @@ addColumnIfMissing('companies', 'notice_pause_min_cents', 'INTEGER DEFAULT 0');
 // so the pass-through collection fee uses this figure — set it to what Lob charges).
 addColumnIfMissing('companies', 'lob_api_key', 'TEXT');
 addColumnIfMissing('companies', 'lob_cost_cents', 'INTEGER DEFAULT 0');
+// What the BUYER is charged for a mailed notice — a flat, published amount, not whatever
+// Lob happened to bill. A buyer reading their ledger should see the same figure every
+// time for the same kind of letter, and the servicer should not have to explain why one
+// certified notice cost $14.83 and the next $15.21.
+addColumnIfMissing('companies', 'mail_charge_first_cents', 'INTEGER NOT NULL DEFAULT 500');
+addColumnIfMissing('companies', 'mail_charge_certified_cents', 'INTEGER NOT NULL DEFAULT 1500');
 addColumnIfMissing('companies', 'mail_address_line1', 'TEXT');
 addColumnIfMissing('companies', 'mail_address_city', 'TEXT');
 addColumnIfMissing('companies', 'mail_address_state', 'TEXT');
@@ -644,6 +650,39 @@ addColumnIfMissing('notices', 'lob_tracking', 'TEXT');
 addColumnIfMissing('notices', 'lob_status', 'TEXT');
 addColumnIfMissing('notices', 'lob_expected', 'TEXT');
 addColumnIfMissing('notices', 'lob_cost_cents', 'INTEGER');
+// What Lob actually billed, typed in by an admin from the Lob invoice. Kept apart from
+// lob_cost_cents, which is only Lob's estimate at the moment of sending, and apart again
+// from what the buyer was charged. Three different numbers; conflating them is how a
+// ledger stops reconciling.
+addColumnIfMissing('notices', 'lob_cost_actual_cents', 'INTEGER');
+addColumnIfMissing('notices', 'buyer_charged_cents', 'INTEGER');
+// A letter waits for a person before it is printed. The ladder used to hand the notice
+// straight to Lob the moment the rung fired, which meant the first time anybody read a
+// certified letter was after it had been mailed, charged to the buyer, and filed as
+// evidence — none of which can be taken back. So mail now has a state of its own:
+//   'pending'  — drafted, waiting for an admin to read it
+//   'approved' — read, possibly edited, and handed to Lob
+//   'canceled' — read and stopped, with a reason, and nothing billed
+// NULL means no letter was ever part of this notice.
+addColumnIfMissing('notices', 'mail_review_state', 'TEXT');
+addColumnIfMissing('notices', 'mail_service', 'TEXT');
+// The letter's own wording, kept apart from the notice's. The notice went out by app,
+// email and text the instant the rung fired and cannot be edited afterwards — editing
+// it would rewrite what the buyer already read. The envelope has not gone anywhere yet,
+// so this copy is the editable one, and the two can legitimately differ.
+addColumnIfMissing('notices', 'mail_subject', 'TEXT');
+addColumnIfMissing('notices', 'mail_body', 'TEXT');
+addColumnIfMissing('notices', 'mail_queued_at', 'TEXT');
+addColumnIfMissing('notices', 'mail_reviewed_by', 'INTEGER');
+addColumnIfMissing('notices', 'mail_reviewed_at', 'TEXT');
+addColumnIfMissing('notices', 'mail_canceled_reason', 'TEXT');
+// Whether a person changed the wording before it was mailed. Worth knowing later:
+// a letter that was edited is one the automatic wording got wrong.
+addColumnIfMissing('notices', 'mail_edited', 'INTEGER DEFAULT 0');
+// The last time admins were nudged about a letter still sitting unread. A statutory
+// notice that never gets approved is worse than one that goes out unreviewed, so the
+// sweep keeps asking rather than waiting quietly.
+addColumnIfMissing('notices', 'mail_nudged_at', 'TEXT');
 // A letter bought with a test key renders and tracks exactly like a real one and is
 // never printed or mailed. That difference is invisible everywhere it matters, so it
 // is recorded on the notice itself: a test letter is not evidence of anything.
