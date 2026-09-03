@@ -2519,6 +2519,53 @@ async function main() {
   r = await req('/api/tenant/loan', {}, '');
   ok(r.status === 401, 'anonymous blocked');
 
+  console.log('— autopay enrolment, defaults and alerts');
+  {
+    const D = require('./db.js');
+    // Stripe is not reachable from the tests, so the saved method is planted directly.
+    // Everything under test here is our side of the line, not Stripe's.
+    D.run(`INSERT INTO payment_methods (user_id, stripe_customer_id, stripe_payment_method_id, type, brand, last4, is_default)
+           VALUES (?,?,?,?,?,?,1)`, tbId, 'cus_test', 'pm_test_' + Date.now(), 'us_bank_account', 'Test Bank', '6789');
+    const pmId = D.get('SELECT id FROM payment_methods WHERE user_id=? ORDER BY id DESC LIMIT 1', tbId).id;
+    const admin = D.get("SELECT id FROM users WHERE role='owner' ORDER BY id LIMIT 1").id;
+    const notes = () => D.all('SELECT * FROM notifications WHERE user_id=? ORDER BY id', admin);
+    const before = notes().length;
+
+    // Omitting amount_mode must give the regular payment, not everything owed.
+    let r = await req('/api/tenant/autopay', { method: 'POST', body: JSON.stringify({ payment_method_id: pmId }) }, tbCookie);
+    ok(r.status === 200, 'buyer can turn autopay on');
+    let ap = D.get('SELECT * FROM autopay WHERE loan_id=?', loanId);
+    ok(ap && ap.amount_mode === 'minimum', 'autopay defaults to the regular monthly payment, not everything owed');
+    ok(ap && ap.charge_day === 1, 'autopay drafts on the 1st by default');
+    ok(ap && ap.enabled === 1, 'autopay enabled');
+
+    let after = notes();
+    ok(after.length === before + 1, 'turning autopay on notifies the servicer');
+    ok(/turned autopay ON/i.test(after[after.length - 1].title), 'the on-alert says what happened');
+
+    // A settings tweak while already enrolled must not re-alert.
+    r = await req('/api/tenant/autopay', { method: 'POST', body: JSON.stringify({ payment_method_id: pmId, extra_principal_cents: 5000 }) }, tbCookie);
+    ok(r.status === 200 && notes().length === before + 1, 'changing autopay settings does not re-alert');
+    ok(D.get('SELECT extra_principal_cents FROM autopay WHERE loan_id=?', loanId).extra_principal_cents === 5000,
+      'extra principal saved');
+
+    // Out-of-range charge days are clamped rather than producing a day that some months lack.
+    await req('/api/tenant/autopay', { method: 'POST', body: JSON.stringify({ payment_method_id: pmId, charge_day: 31 }) }, tbCookie);
+    ok(D.get('SELECT charge_day FROM autopay WHERE loan_id=?', loanId).charge_day === 28, 'charge day clamped to 28');
+    await req('/api/tenant/autopay', { method: 'POST', body: JSON.stringify({ payment_method_id: pmId, charge_day: 1 }) }, tbCookie);
+
+    r = await req('/api/tenant/autopay', { method: 'DELETE' }, tbCookie);
+    ok(r.status === 200, 'buyer can turn autopay off');
+    ok(D.get('SELECT enabled FROM autopay WHERE loan_id=?', loanId).enabled === 0, 'autopay disabled');
+    after = notes();
+    ok(after.length === before + 2, 'turning autopay off notifies the servicer');
+    ok(/turned autopay OFF/i.test(after[after.length - 1].title), 'the off-alert says what happened');
+
+    // Turning off something already off is not news.
+    await req('/api/tenant/autopay', { method: 'DELETE' }, tbCookie);
+    ok(notes().length === before + 2, 'turning autopay off twice only alerts once');
+  }
+
   console.log('— account data export & deletion');
   const expRes = await fetch(BASE + '/api/account/export', { headers: { Cookie: tbCookie } });
   const expJson = await expRes.json();

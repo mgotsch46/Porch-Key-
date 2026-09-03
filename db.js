@@ -281,7 +281,10 @@ CREATE TABLE IF NOT EXISTS autopay (
   loan_id INTEGER PRIMARY KEY REFERENCES loans(id),
   payment_method_id INTEGER NOT NULL REFERENCES payment_methods(id),
   enabled INTEGER NOT NULL DEFAULT 1,
-  amount_mode TEXT NOT NULL DEFAULT 'full' CHECK (amount_mode IN ('full','minimum','fixed')),
+  -- Defaults to the regular monthly payment, not everything owed. Drafting arrears and
+  -- late fees in one go is how a buyer gets an NSF and a returned ACH on the same day.
+  amount_mode TEXT NOT NULL DEFAULT 'minimum' CHECK (amount_mode IN ('full','minimum','fixed')),
+  charge_day INTEGER NOT NULL DEFAULT 1,
   fixed_amount_cents INTEGER,
   extra_principal_cents INTEGER NOT NULL DEFAULT 0,
   days_before_due INTEGER NOT NULL DEFAULT 0,
@@ -750,6 +753,10 @@ addColumnIfMissing('properties', 'listing_captured_at', 'TEXT');
 addColumnIfMissing('properties', 'listing_notes', 'TEXT');
 // Scheduled lender payments: when they are due and whether to auto-record them.
 addColumnIfMissing('pml_loans', 'payment_day', 'INTEGER');
+// Day of the month the draft is attempted. Existing enrollments get the 1st, which is
+// what they were already doing in practice — the sweep charged at the first opportunity
+// in the month, and for a loan due on the 1st that is the 1st.
+addColumnIfMissing('autopay', 'charge_day', 'INTEGER NOT NULL DEFAULT 1');
 addColumnIfMissing('pml_loans', 'autopay_enabled', 'INTEGER DEFAULT 0');
 addColumnIfMissing('pml_loans', 'autopay_method', "TEXT DEFAULT 'bank_transfer'");
 addColumnIfMissing('pml_loans', 'autopay_last_period', 'TEXT');

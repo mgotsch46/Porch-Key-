@@ -898,9 +898,10 @@ function renderAutopay(){
         <select id="ap-pm">${pms.map(pm=>`<option value="${pm.id}" ${pm.is_default?'selected':''}>${esc(pmLabel(pm))}</option>`).join('')}</select></div>
       <div class="field"><label>Amount</label>
         <select id="ap-mode">
-          <option value="full">Everything due that month</option>
-          <option value="minimum">Just the regular monthly payment</option>
+          <option value="minimum" selected>Just the regular monthly payment</option>
+          <option value="full">Everything due that month, including anything past due</option>
         </select></div>
+      <p class="note" style="margin:-6px 0 14px">Drafted on the 1st of each month.</p>
       <div class="field"><label>Extra toward principal each month (optional)</label>
         <div class="money-in"><span>$</span><input id="ap-extra" type="number" step="0.01" inputmode="decimal" placeholder="0.00"></div></div>
       <button class="btn primary" onclick="turnOnAutopay()">Turn on autopay</button>

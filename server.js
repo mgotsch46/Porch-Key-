@@ -7569,6 +7569,31 @@ app.post('/api/tenant/pay/saved', tenantReady, async (req, res, next) => {
 });
 
 // ---------- autopay ----------
+// Enrolling and un-enrolling are both things the servicer needs to know about without
+// going looking. Coming off autopay in particular is often the first sign of trouble —
+// it tends to happen a few weeks before a payment is missed, not after.
+function autopayAlert(loan, tenantUser, dir, pm) {
+  try {
+    const prop = get('SELECT address FROM properties WHERE id=?', loan.property_id);
+    const who = tenantUser && tenantUser.name ? tenantUser.name : 'The buyer';
+    const where = prop ? prop.address : 'loan #' + loan.id;
+    const method = pm ? `${pm.brand || pm.type}${pm.last4 ? ' ••••' + pm.last4 : ''}` : 'a saved method';
+    notifyAdmins(loan.company_id, dir === 'on'
+      ? { kind: 'general', title: `⚡ ${who} turned autopay ON`,
+          body: `${where} — ${method}`, url: '/staff',
+          dedupeKey: `autopay-on-${loan.id}-${today()}` }
+      : { kind: 'general', title: `🚫 ${who} turned autopay OFF`,
+          body: `${where} — was drafting ${method}`, url: '/staff',
+          dedupeKey: `autopay-off-${loan.id}-${today()}` });
+    // Also lands in the loan's message thread, so it is on the record next to the
+    // payments rather than only in a notification that gets swiped away.
+    const admin = get("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') ORDER BY id LIMIT 1", loan.company_id);
+    if (admin) run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin) VALUES (?,?,?,0)',
+      loan.id, admin.id, dir === 'on'
+        ? `⚡ Autopay was turned on — ${method}.`
+        : `🚫 Autopay was turned off. Payments go back to being made by hand.`);
+  } catch (e) { /* notification only — never block the buyer's action */ }
+}
 app.get('/api/tenant/autopay', tenantReady, (req, res) => {
   const loan = tenantLoan(req);
   if (!loan) return res.json({ enabled: false });
@@ -7580,22 +7605,37 @@ app.get('/api/tenant/autopay', tenantReady, (req, res) => {
 app.post('/api/tenant/autopay', tenantReady, (req, res) => {
   const loan = tenantLoan(req);
   if (!loan) return res.status(404).json({ error: 'No loan' });
-  const { payment_method_id, amount_mode, fixed_amount_cents, extra_principal_cents, days_before_due } = req.body || {};
+  const { payment_method_id, amount_mode, fixed_amount_cents, extra_principal_cents, days_before_due, charge_day } = req.body || {};
   const pm = get('SELECT * FROM payment_methods WHERE id=? AND user_id=?', payment_method_id, req.user.id);
   if (!pm) return res.status(400).json({ error: 'Choose a saved payment method first' });
+  // Was this an enrolment or a change to one already running? The servicer wants to be
+  // told about the first, and about the switch-off — not about every tweak.
+  const before = get('SELECT * FROM autopay WHERE loan_id=?', loan.id);
+  const wasOn = !!(before && before.enabled);
+  const day = Math.min(28, Math.max(1, Number(charge_day) || 1));   // 29-31 do not exist every month
   run(`INSERT INTO autopay (loan_id, payment_method_id, enabled, amount_mode, fixed_amount_cents,
-        extra_principal_cents, days_before_due) VALUES (?,?,1,?,?,?,?)
+        extra_principal_cents, days_before_due, charge_day) VALUES (?,?,1,?,?,?,?,?)
        ON CONFLICT(loan_id) DO UPDATE SET payment_method_id=excluded.payment_method_id, enabled=1,
         amount_mode=excluded.amount_mode, fixed_amount_cents=excluded.fixed_amount_cents,
         extra_principal_cents=excluded.extra_principal_cents, days_before_due=excluded.days_before_due,
-        last_error=NULL`,
-    loan.id, pm.id, amount_mode || 'full', fixed_amount_cents || null,
-    extra_principal_cents || 0, days_before_due || 0);
+        charge_day=excluded.charge_day, last_error=NULL`,
+    loan.id, pm.id, amount_mode || 'minimum', fixed_amount_cents || null,
+    extra_principal_cents || 0, days_before_due || 0, day);
+  if (!wasOn) autopayAlert(loan, req.user, 'on', pm);
   res.json({ ok: true });
 });
 app.delete('/api/tenant/autopay', tenantReady, (req, res) => {
   const loan = tenantLoan(req);
-  if (loan) run('UPDATE autopay SET enabled=0 WHERE loan_id=?', loan.id);
+  if (loan) {
+    const before = get('SELECT * FROM autopay WHERE loan_id=?', loan.id);
+    run('UPDATE autopay SET enabled=0 WHERE loan_id=?', loan.id);
+    // Only if it was actually running. Turning off something already off is not news,
+    // and a buyer tapping the button twice should not page anyone twice.
+    if (before && before.enabled) {
+      autopayAlert(loan, req.user, 'off',
+        get('SELECT * FROM payment_methods WHERE id=?', before.payment_method_id));
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -7612,6 +7652,9 @@ async function runAutopaySweep() {
       const status = loanEngine.loanStatus(loan, ledger, today());
       const period = today().slice(0, 7);
       if (ap.last_run_period === period) continue;          // already charged this month
+      // Not before the day they signed up for. The sweep runs every six hours, so the
+      // draft goes out on the first sweep on or after that day.
+      if (Number(today().slice(8, 10)) < (ap.charge_day || 1)) continue;
       const due = status.owed_now_cents;
       if (due <= 0) continue;                                 // nothing owed yet
       const charges = all('SELECT * FROM charges WHERE loan_id=? AND recurring=1 AND active=1', loan.id)

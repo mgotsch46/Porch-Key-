@@ -30,22 +30,26 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
->>"%MSGFILE%" echo Show the push keys in Settings so they can be pinned in Railway
+>>"%MSGFILE%" echo Autopay drafts the regular payment on the 1st, and says so when it changes
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Web push keys are generated at boot when they are not pinned, which
->>"%MSGFILE%" echo means every restart invalidates every existing subscription. There was
->>"%MSGFILE%" echo no way to read the generated pair back out of the running app, so there
->>"%MSGFILE%" echo was no way to pin it.
+>>"%MSGFILE%" echo Autopay defaulted to "everything due that month". For a buyer who is
+>>"%MSGFILE%" echo behind, switching it on would draft the arrears and the late fees in one
+>>"%MSGFILE%" echo go - which is how you get an NSF and a returned ACH on the same day, from
+>>"%MSGFILE%" echo the person who was trying to get current.
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo - /api/admin/push-status now returns the private key as well, owner only,
->>"%MSGFILE%" echo   and only while the keys are still unpinned. Once VAPID_PRIVATE_KEY is
->>"%MSGFILE%" echo   set in the environment the endpoint stops disclosing it.
->>"%MSGFILE%" echo - Settings gains a Notifications section showing the public key, private
->>"%MSGFILE%" echo   key and subject in read-only click-to-select fields, with the three
->>"%MSGFILE%" echo   environment variable names spelled out next to them.
+>>"%MSGFILE%" echo - The default is now the regular monthly payment, on the server and in the
+>>"%MSGFILE%" echo   buyer's dropdown. "Everything due" is still there, second, and labelled
+>>"%MSGFILE%" echo   so it is clear what it does.
+>>"%MSGFILE%" echo - New autopay.charge_day, defaulting to the 1st, clamped to 28 so it cannot
+>>"%MSGFILE%" echo   name a day that some months do not have. The sweep waits for it. The
+>>"%MSGFILE%" echo   draft still never goes out before money is actually owed.
+>>"%MSGFILE%" echo - The servicer is notified when a buyer turns autopay on and when they turn
+>>"%MSGFILE%" echo   it off - push, the notification feed, and the loan's message thread as an
+>>"%MSGFILE%" echo   unread item. Coming off autopay tends to precede a missed payment rather
+>>"%MSGFILE%" echo   than follow one. Editing settings while enrolled does not re-alert, and
+>>"%MSGFILE%" echo   turning off something already off does not alert at all.
 >>"%MSGFILE%" echo.
->>"%MSGFILE%" echo Also carries the notice, Lob, unapplied funds, Illinois track, ACH
->>"%MSGFILE%" echo pending-until-cleared and native push work from the previous commit.
+>>"%MSGFILE%" echo 14 new tests. 767 passed, 5 failed - the same 5 that were already failing.
 
 echo  Staging changes...
 git add -A
