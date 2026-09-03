@@ -497,6 +497,7 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
         <h2>🔔 Notifications</h2>
         <p class="note" id="notif-state" style="margin-bottom:12px"></p>
         <button class="btn ghost" id="notif-btn" onclick="enablePush()">Turn on notifications</button>
+        <p class="note" id="notif-diag" style="margin-top:10px;display:none;font-size:12px;opacity:.75"></p>
         <div id="notif-prefs" class="hidden" style="margin-top:14px">
           <label class="checkrow"><input type="checkbox" id="np-message" onchange="savePrefs()"><span class="t">Messages from your servicer</span></label>
           <label class="checkrow"><input type="checkbox" id="np-document" onchange="savePrefs()"><span class="t">New documents shared with you</span></label>
@@ -629,6 +630,7 @@ async function enter(){
   ME = await api('/api/me').catch(()=>ME);
   loadNotices(); pollMsgs(); loadPayoff();
   registerSW(); refreshBadges(); notifUi();
+  askForPushOnce();
   setInterval(refreshBadges, 60000);
   // Deep link from a tapped notification.
   const wanted = p.get('tab');
@@ -1133,13 +1135,34 @@ function urlBase64ToUint8Array(b64){
 // exist on either platform. The same button registers a device token with Firebase
 // instead, so one deployed page serves the browser, the home-screen PWA and both
 // store builds without knowing which it is until it looks.
+function pushDiagnostics(){
+  const C = window.Capacitor;
+  const bits = [
+    'bridge: ' + (C ? 'yes' : 'NO'),
+    'native: ' + (C && typeof C.isNativePlatform === 'function' ? String(C.isNativePlatform()) : 'n/a'),
+    'platform: ' + (C && typeof C.getPlatform === 'function' ? C.getPlatform() : 'n/a'),
+    'plugin: ' + (C && C.Plugins && C.Plugins.PushNotifications ? 'yes' : 'NO'),
+    'web Notification: ' + ('Notification' in window ? 'yes' : 'no'),
+  ];
+  return bits.join(' · ');
+}
+function showDiag(){
+  const el = $('notif-diag');
+  if (!el) return;
+  el.textContent = pushDiagnostics();
+  el.style.display = 'block';
+}
+
 const isNativeApp = () =>
   !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
      && window.Capacitor.isNativePlatform());
 
 async function enableNativePush(){
   const Push = window.Capacitor.Plugins && window.Capacitor.Plugins.PushNotifications;
-  if (!Push) { $('notif-state').textContent = 'Notifications are not available in this build.'; return; }
+  if (!Push) {
+    $('notif-state').textContent = 'Notifications are not available in this build.';
+    showDiag(); return;
+  }
   try{
     let perm = await Push.checkPermissions();
     if (perm.receive !== 'granted') perm = await Push.requestPermissions();
@@ -1170,10 +1193,21 @@ async function enableNativePush(){
       if (url) location.href = url;
     });
     await Push.register();
-  }catch(e){ $('notif-state').textContent='Could not turn on notifications: '+e.message; }
+  }catch(e){ $('notif-state').textContent='Could not turn on notifications: '+e.message; showDiag(); }
 }
 
+// The button used to be able to do nothing at all: if anything threw before the first
+// line that writes text — a missing element, a bridge that is not there — the tap
+// produced silence, which reads as a broken app rather than a problem with a cause.
 async function enablePush(){
+  try { return await enablePushInner(); }
+  catch (e) {
+    const el = $('notif-state');
+    if (el) el.textContent = 'Could not turn on notifications: ' + (e && e.message || e);
+    showDiag();
+  }
+}
+async function enablePushInner(){
   if (isNativeApp()) return enableNativePush();
   if (!('Notification' in window) || !('serviceWorker' in navigator)) {
     $('notif-state').textContent = 'This device cannot show notifications. Your in-app badges still work.';
@@ -1192,6 +1226,24 @@ async function enablePush(){
     notifUi();
   }catch(e){ $('notif-state').textContent = 'Could not turn on notifications: '+e.message; }
 }
+// iOS never turns notifications on by itself, and an app only appears in the phone's
+// Settings once it has ASKED. So the app asks as soon as a buyer is signed in, rather
+// than waiting for them to find a button in a settings screen. Asked once per install:
+// if they say no, the button is still there, and iOS will not show the prompt again
+// anyway — from then on it is a Settings decision, which is where they expect it.
+async function askForPushOnce(){
+  try{
+    if (!isNativeApp()) return;
+    if (localStorage.getItem('pushAsked') === '1') return;
+    const Push = window.Capacitor.Plugins && window.Capacitor.Plugins.PushNotifications;
+    if (!Push) return;
+    const perm = await Push.checkPermissions();
+    if (perm.receive !== 'prompt') return;      // already granted or already refused
+    localStorage.setItem('pushAsked', '1');
+    await enableNativePush();
+  }catch(e){ /* never block sign-in on this */ }
+}
+
 function notifUi(){
   const el=$('notif-state'), btn=$('notif-btn'), prefs=$('notif-prefs');
   // A store app has no Notification API, but it can absolutely show notifications —
