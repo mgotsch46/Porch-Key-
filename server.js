@@ -104,7 +104,7 @@ function auth(kind) {
     const payload = verifyToken(getCookie(req, 'session'));
     if (!payload) return res.status(401).json({ error: 'Not signed in' });
     const user = get(`SELECT id, company_id, email, role, name, phone, must_change_password,
-      terms_accepted_at, terms_version, location_consent_at, deleted_at, archived_at, call_mode
+      terms_accepted_at, terms_version, deleted_at, archived_at, call_mode
       FROM users WHERE id=?`, payload.uid);
     if (!user || user.deleted_at) return res.status(401).json({ error: 'Not signed in' });
     if (user.archived_at) return res.status(403).json({ error: 'This account is archived. Contact your servicer.' });
@@ -6102,7 +6102,7 @@ app.post('/api/admin/invitations/:id/mark-sent', adminOnly, (req, res) => {
 // ---------- admin: tenant buyers ----------
 app.get('/api/admin/tenants', adminOnly, (req, res) => {
   const archived = req.query.archived === '1';
-  const rows = all(`SELECT id, name, email, phone, terms_accepted_at, location_consent_at,
+  const rows = all(`SELECT id, name, email, phone, terms_accepted_at,
       archived_at, archived_reason, created_at
     FROM users WHERE role='tenant' AND company_id=? AND deleted_at IS NULL
       AND archived_at IS ${archived ? 'NOT NULL' : 'NULL'} ORDER BY id DESC`, req.companyId);
@@ -7918,9 +7918,10 @@ app.post('/api/notifications/prefs', anyUser, (req, res) => {
   res.json(notify.prefsFor(req.user.id));
 });
 
-// ---------- consent: terms, privacy, messaging, location ----------
-// Apple 5.1.1 and Google Play both require clear consent before collecting personal data,
-// and Play requires a prominent disclosure before any location permission prompt.
+// ---------- consent: terms, privacy, messaging ----------
+// Apple 5.1.1 and Google Play both require clear consent before collecting personal data.
+// The consents table still permits the two retired location kinds so that historical rows
+// recorded before the feature was removed remain readable; nothing writes them now.
 function logConsent(req, kind, version) {
   run('INSERT INTO consents (user_id, kind, version, ip, user_agent) VALUES (?,?,?,?,?)',
     req.user.id, kind, version || null,
@@ -7989,7 +7990,6 @@ app.get('/api/tenant/consents', tenantOnly, (req, res) => {
     terms_accepted_at: req.user.terms_accepted_at,
     terms_version: req.user.terms_version,
     current_version: TERMS_VERSION,
-    location_consent_at: req.user.location_consent_at,
     history: all('SELECT kind, version, created_at FROM consents WHERE user_id=? ORDER BY id DESC LIMIT 50', req.user.id),
   });
 });
@@ -8010,7 +8010,6 @@ app.get('/api/account/export', anyUser, (req, res) => {
     }
   }
   out.consent_history = all('SELECT kind, version, created_at FROM consents WHERE user_id=? ORDER BY id', req.user.id);
-  out.location_history = all('SELECT lat, lng, created_at FROM location_pings WHERE user_id=? ORDER BY id', req.user.id);
   res.setHeader('Content-Disposition', 'attachment; filename="my-data-export.json"');
   res.setHeader('Content-Type', 'application/json');
   res.send(JSON.stringify(out, null, 2));
@@ -8025,14 +8024,13 @@ function eraseUser(uid, role) {
   const tomb = `deleted-${crypto.randomUUID()}@deleted.invalid`;
   db.exec('BEGIN');
   try {
-    run('DELETE FROM location_pings WHERE user_id=?', uid);
     run('DELETE FROM consents WHERE user_id=?', uid);
     run('DELETE FROM notifications WHERE user_id=?', uid);
     run('DELETE FROM push_subscriptions WHERE user_id=?', uid);
     run('UPDATE messages SET body=? WHERE sender_user_id=?', '[message removed at user request]', uid);
     if (role === 'tenant') run('UPDATE loans SET tenant_user_id=NULL WHERE tenant_user_id=?', uid);
     run(`UPDATE users SET email=?, name='Deleted user', phone=NULL,
-           password_hash=?, must_change_password=0, location_consent_at=NULL,
+           password_hash=?, must_change_password=0,
            terms_accepted_at=NULL, terms_version=NULL, deleted_at=datetime('now')
          WHERE id=?`, tomb, hashPassword(crypto.randomUUID()), uid);
     db.exec('COMMIT');
@@ -8066,7 +8064,6 @@ app.get('/api/tenant/loan', tenantReady, (req, res) => {
   f.payoff = loanEngine.payoffQuote(f.loan, today());
   f.documents = all('SELECT id, filename, created_at FROM documents WHERE loan_id=? AND visible_to_tenant=1', loan.id);
   f.stripe_enabled = pay.stripeEnabled();
-  f.location_consent_at = req.user.location_consent_at;
   f.terms_accepted_at = req.user.terms_accepted_at;
   f.fee_settings = feeSettings(loan.company_id);
   f.autopay = get('SELECT * FROM autopay WHERE loan_id=?', loan.id) || null;
@@ -8196,68 +8193,11 @@ app.post('/api/tenant/messages', tenantReady, (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- location sharing (opt-in with recorded consent) ----------
-app.post('/api/tenant/location/consent', tenantReady, (req, res) => {
-  if (req.body.consent) {
-    run("UPDATE users SET location_consent_at=datetime('now') WHERE id=?", req.user.id);
-    logConsent(req, 'location_on', TERMS_VERSION);
-  } else {
-    run('UPDATE users SET location_consent_at=NULL WHERE id=?', req.user.id);
-    run('DELETE FROM location_pings WHERE user_id=?', req.user.id); // revoke deletes history
-    logConsent(req, 'location_off', TERMS_VERSION);
-  }
-  res.json({ ok: true });
-});
-app.post('/api/tenant/location', tenantReady, (req, res) => {
-  const u = get('SELECT location_consent_at FROM users WHERE id=?', req.user.id);
-  if (!u.location_consent_at) return res.status(403).json({ error: 'Location sharing not enabled' });
-  const { lat, lng, accuracy_m } = req.body || {};
-  if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat/lng required' });
-  run('INSERT INTO location_pings (user_id, lat, lng, accuracy_m) VALUES (?,?,?,?)', req.user.id, lat, lng, accuracy_m || null);
-  // keep only latest 50 pings per user
-  run('DELETE FROM location_pings WHERE user_id=? AND id NOT IN (SELECT id FROM location_pings WHERE user_id=? ORDER BY id DESC LIMIT 50)', req.user.id, req.user.id);
-  res.json({ ok: true });
-});
-// Straight-line distance between two points, in miles. Enough to answer the only
-// question that matters here: was the buyer at the home or somewhere else.
-function milesBetween(lat1, lng1, lat2, lng2) {
-  const R = 3958.8, rad = (d) => d * Math.PI / 180;
-  const dLat = rad(lat2 - lat1), dLng = rad(lng2 - lng1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.asin(Math.sqrt(a));
-}
-
-app.get('/api/admin/tenants/:id/location', adminOnly, (req, res) => {
-  const u = get("SELECT location_consent_at FROM users WHERE id=? AND company_id=? AND role='tenant'",
-    req.params.id, req.companyId);
-  if (!u) return res.status(404).json({ error: 'Not found' });
-
-  const history = all(`SELECT lat, lng, accuracy_m, created_at FROM location_pings
-    WHERE user_id=? ORDER BY id DESC LIMIT 60`, req.params.id);
-  const last = history[0] || null;
-
-  // The home this buyer is buying, so distance means something.
-  const home = get(`SELECT p.address, p.city, p.state, p.lat, p.lng FROM loans l
-    JOIN properties p ON p.id=l.property_id
-    WHERE l.tenant_user_id=? AND l.company_id=? ORDER BY l.id DESC LIMIT 1`,
-    req.params.id, req.companyId);
-
-  const withDistance = history.map(h => ({
-    ...h,
-    miles_from_home: (home && home.lat && home.lng)
-      ? Number(milesBetween(h.lat, h.lng, home.lat, home.lng).toFixed(2)) : null,
-  }));
-
-  res.json({
-    consent_at: u.location_consent_at,
-    last_ping: last,
-    history: withDistance,
-    ping_count: get('SELECT COUNT(*) c FROM location_pings WHERE user_id=?', req.params.id).c,
-    home: home ? { address: home.address, city: home.city, state: home.state,
-      geocoded: !!(home.lat && home.lng) } : null,
-    miles_from_home: withDistance.length ? withDistance[0].miles_from_home : null,
-  });
-});
+// Location sharing was removed in September 2026, before the store submission. The app
+// no longer asks for the permission, collects a position, or stores one — the endpoints
+// that did are gone, the ping table is dropped, and any history already recorded was
+// deleted by the migration in db.js. Nothing here should come back without a fresh look
+// at the App Privacy and Data Safety answers, which now say no location is collected.
 
 // ---------- pages ----------
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));

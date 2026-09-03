@@ -30,6 +30,48 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
+>>"%MSGFILE%" echo Fail the build if a flagged permission ever reaches the manifest
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Neither app needs contacts, storage, media, phone numbers, the installed
+>>"%MSGFILE%" echo app list or location. But the Android manifest is generated at build time
+>>"%MSGFILE%" echo and a dependency can merge a permission in without anyone editing a file,
+>>"%MSGFILE%" echo and on Play those permissions are what get a lending app auto-classified
+>>"%MSGFILE%" echo as predatory. Reading the source is not enough; the merged manifest is.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo - Android: after bundleRelease, every merged AndroidManifest is scanned for
+>>"%MSGFILE%" echo   22 flagged permissions and the build fails if one is present. It also
+>>"%MSGFILE%" echo   prints the full permission list, and fails when it cannot find a manifest
+>>"%MSGFILE%" echo   at all rather than passing on a missing file.
+>>"%MSGFILE%" echo - iOS: the same gate on Info.plist usage-description keys, which is what
+>>"%MSGFILE%" echo   lets an iOS app ask in the first place.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Remove location sharing entirely, and name every processor in the policy
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Location was optional, off by default and consented — but it was still the
+>>"%MSGFILE%" echo most sensitive thing the app touched, and the least load-bearing. Removing
+>>"%MSGFILE%" echo it takes a permission prompt off both stores' review, deletes a category
+>>"%MSGFILE%" echo from both privacy questionnaires, and costs nothing anyone was using.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo - Gone from the buyer app: the ask screen, the Settings toggle, the pings.
+>>"%MSGFILE%" echo - Gone from the server: both tenant endpoints, the admin read, the distance
+>>"%MSGFILE%" echo   helper, and the location section of the data export.
+>>"%MSGFILE%" echo - Gone from Admin: the "where the buyer's phone has been" card.
+>>"%MSGFILE%" echo - Gone from the builds: NSLocationWhenInUseUsageDescription on iOS and
+>>"%MSGFILE%" echo   ACCESS_COARSE_LOCATION on Android. Neither app asks for anything now.
+>>"%MSGFILE%" echo - Deleting code does not delete data: the migration drops location_pings
+>>"%MSGFILE%" echo   outright and clears every consent flag. Verified against a volume with
+>>"%MSGFILE%" echo   real pings in it, and it is idempotent on reboot.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo The privacy policy named only Stripe. Twilio, Lob, Firebase, the email
+>>"%MSGFILE%" echo provider and the geocoders were all hiding behind "hosting and
+>>"%MSGFILE%" echo infrastructure providers". Each is now named with what it receives.
+>>"%MSGFILE%" echo Terms section 5 is gone and the rest renumbered.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Six tests now assert the endpoints are gone and the table dropped, rather
+>>"%MSGFILE%" echo than the fourteen that used to assert location worked.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Autopay drafts the regular payment on the 1st, and says so when it changes
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Autopay defaulted to "everything due that month". For a buyer who is

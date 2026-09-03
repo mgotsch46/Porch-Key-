@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   phone TEXT,
   must_change_password INTEGER DEFAULT 0,
-  location_consent_at TEXT,   -- when the buyer opted in to location sharing (NULL = not consented)
+  location_consent_at TEXT,   -- retired Sept 2026 with the location feature; kept only so the
+                              -- column drop cannot fail on a live volume. Always NULL now.
   terms_accepted_at TEXT,     -- when they accepted Terms + Privacy (NULL = must accept before use)
   terms_version TEXT,         -- which version they accepted, so changes can re-prompt
   deleted_at TEXT,            -- set when the account is erased; row is kept as an
@@ -41,7 +42,8 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
--- Audit trail of every consent action (acceptance, location opt-in/out).
+-- Audit trail of every consent action. The two location kinds are retired but still
+-- permitted so rows written before the feature was removed stay readable.
 CREATE TABLE IF NOT EXISTS consents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -49,15 +51,6 @@ CREATE TABLE IF NOT EXISTS consents (
   version TEXT,
   ip TEXT,
   user_agent TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS location_pings (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id),
-  lat REAL NOT NULL,
-  lng REAL NOT NULL,
-  accuracy_m REAL,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -437,6 +430,11 @@ addColumnIfMissing('documents', 'title', 'TEXT');
 addColumnIfMissing('documents', 'effective_date', 'TEXT');
 addColumnIfMissing('cash_slips', 'barcode_url', 'TEXT');
 addColumnIfMissing('users', 'location_consent_at', 'TEXT');
+// Location sharing was removed before the store submission. Deleting the feature from the
+// code does not delete what it already gathered, so this drops the table outright and
+// clears every consent flag. Runs once; after that the table is gone and this is a no-op.
+db.exec('DROP TABLE IF EXISTS location_pings');
+db.exec("UPDATE users SET location_consent_at=NULL WHERE location_consent_at IS NOT NULL");
 addColumnIfMissing('users', 'terms_accepted_at', 'TEXT');
 addColumnIfMissing('users', 'terms_version', 'TEXT');
 addColumnIfMissing('users', 'deleted_at', 'TEXT');

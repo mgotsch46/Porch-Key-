@@ -30,7 +30,7 @@
     <tr><td>Payment</td><td>Payment amount, method, confirmation identifiers</td><td>To process and record payments</td></tr>
     <tr><td>Messages</td><td>Messages you send and receive in the app; notices sent to you and when you opened them</td><td>To communicate about your account and keep a record of notices delivered</td></tr>
     <tr><td>Documents</td><td>Files your Servicer shares with you, such as insurance, tax, utility and loan documents</td><td>To give you access to your paperwork</td></tr>
-    <tr><td>Location <em>(optional)</em></td><td>Approximate device location, only if you turn it on</td><td>Account verification and delivery of documents. Off by default.</td></tr>
+    <tr><td>Notification tokens</td><td>An anonymous device token issued by Apple or Google when you turn on notifications</td><td>To send notifications to your device. It identifies the device, not you, and is deleted when you turn notifications off or delete your account.</td></tr>
     <tr><td>Consent records</td><td>When you accepted these terms, IP address, device/browser type</td><td>To prove consent was given, as required by law</td></tr>
   </table>
 
@@ -41,16 +41,12 @@
   was made and the amount. See
   <a href="https://stripe.com/privacy" target="_blank" rel="noopener">Stripe's privacy policy</a>.</p>
 
-  <h2>Location sharing is optional and off by default</h2>
+  <h2>We do not collect your location</h2>
   <div class="callout">
-    <p style="margin:0"><b>You do not have to share your location to use Porch Pay.</b> Every feature — viewing your
-    loan, making payments, messaging, and reading documents — works with location turned off.</p>
+    <p style="margin:0"><b>Porch Pay does not ask for, collect, or store your location.</b> The app requests no
+    location permission on either iPhone or Android. An earlier version offered optional location sharing; that
+    feature was removed and every location record it had gathered was deleted.</p>
   </div>
-  <p>If you choose to turn it on, we collect your approximate device location when you open the app and share it
-  with your Servicer for account verification and delivery of documents. We keep at most your 50 most recent
-  locations. We do not track you in the background, we do not sell location data, and we do not use it for
-  advertising. You can turn it off at any time in the app under Loan → Location sharing, which immediately
-  deletes your stored location history.</p>
 
   <h2>Messaging and electronic notices</h2>
   <p>By accepting these terms you agree to receive communications about your loan through the app, including
@@ -61,26 +57,37 @@
   <h2>Who we share information with</h2>
   <ul>
     <li><b>Your Servicer</b> — the company servicing your loan sees all of your loan and account information.</li>
-    <li><b>Payment processors</b> — Stripe, to process payments you initiate.</li>
-    <li><b>Service providers</b> — hosting and infrastructure providers that operate the app on our behalf.</li>
+    <li><b>Payment processing</b> — Stripe, to process payments you initiate and to store the card or bank
+      account you save for future or automatic payments. Your card and bank details go to Stripe directly and
+      are never held by us.</li>
+    <li><b>Text messages and calls</b> — Twilio, which carries the text messages and phone calls between you
+      and your servicer. It receives your phone number and the content of those messages.</li>
+    <li><b>Printed and certified mail</b> — Lob, which prints and mails paper notices. It receives your name,
+      the mailing address the notice goes to, and the contents of the letter.</li>
+    <li><b>Email</b> — the email provider your servicer has configured, which receives your email address and
+      the contents of the messages sent to you.</li>
+    <li><b>Push notifications</b> — Google Firebase Cloud Messaging on Android, and Apple Push Notification
+      service by way of Firebase on iOS. These receive a device token and the text shown in the notification.
+      They do not receive your loan details.</li>
+    <li><b>Address lookup</b> — Google and the U.S. Census geocoding service, used to check that a property
+      address is real and complete. They receive the address being looked up.</li>
+    <li><b>Hosting</b> — the infrastructure providers that run the app and store its data on our behalf.</li>
     <li><b>Legal</b> — when required by law, subpoena, or to protect legal rights.</li>
   </ul>
   <p><b>We do not sell your personal information, and we do not share it for advertising or cross-app tracking.</b></p>
 
   <h2>How long we keep your information</h2>
   <p>Loan and payment records are kept as long as required by law and by the terms of your loan, which is
-  typically several years after the loan ends. Messages and notices are kept for the life of the loan. Location
-  history is deleted as soon as you turn location sharing off.</p>
+  typically several years after the loan ends. Messages and notices are kept for the life of the loan.</p>
 
   <h2>Your choices and rights</h2>
   <ul>
     <li><b>Access and export</b> — download a copy of your data at any time from Settings → My data in the app.</li>
     <li><b>Delete your account</b> — you can delete your account in the app under Settings → Delete account, or at
       <a href="/delete-account">porchpay/delete-account</a>. This erases your login, contact information, consent
-      records and location history. Loan ledger entries are retained in de-identified form where the law requires
+      records and notification tokens. Loan ledger entries are retained in de-identified form where the law requires
       the Servicer to keep lending records.</li>
     <li><b>Correct your information</b> — message your Servicer in the app.</li>
-    <li><b>Withdraw location consent</b> — turn it off in the app at any time.</li>
   </ul>
   <p>Depending on where you live (for example California, Colorado, Connecticut, Virginia, Texas), you may have
   additional rights to know, correct, delete, or limit use of your personal information. Contact your Servicer

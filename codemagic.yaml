@@ -62,10 +62,6 @@ workflows:
           # The app uses only standard HTTPS, which is exempt.
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" ios/App/App/Info.plist || \
             /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" ios/App/App/Info.plist
-          # Without this string iOS terminates the app the moment location is requested.
-          # It has to say what the data is for, in words a reviewer accepts.
-          /usr/libexec/PlistBuddy -c "Add :NSLocationWhenInUseUsageDescription string 'PorchPay can share your approximate location with your loan servicer for account verification and delivery of documents. This is optional and every feature works without it.'" ios/App/App/Info.plist || \
-            /usr/libexec/PlistBuddy -c "Set :NSLocationWhenInUseUsageDescription 'PorchPay can share your approximate location with your loan servicer for account verification and delivery of documents. This is optional and every feature works without it.'" ios/App/App/Info.plist
           # Push. The remote-notification background mode lets a notification arriving
           # while the app is closed update the badge.
           /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" ios/App/App/Info.plist || true
@@ -89,6 +85,23 @@ workflows:
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' ios/App/App.xcodeproj/project.pbxproj
           sed -i '' "s/platform :ios, '[0-9.]*'/platform :ios, '15.0'/" ios/App/Podfile || true
           npx cap sync ios
+      - name: Refuse to ship a flagged permission
+        script: |
+          # The iOS equivalent: a usage-description key is what lets an app ask at all.
+          # None of these should exist in the plist. If one appears, a dependency added
+          # it, and App Review will ask why a loan app wants the address book.
+          cd "mobile/$APP_DIR"
+          PLIST=ios/App/App/Info.plist
+          BANNED="NSContactsUsageDescription NSPhotoLibraryUsageDescription NSPhotoLibraryAddUsageDescription NSCameraUsageDescription NSLocationWhenInUseUsageDescription NSLocationAlwaysAndWhenInUseUsageDescription NSLocationAlwaysUsageDescription NSCalendarsUsageDescription NSRemindersUsageDescription NSHealthShareUsageDescription NSMotionUsageDescription NSSpeechRecognitionUsageDescription NSFaceIDUsageDescription"
+          FOUND=""
+          for key in $BANNED; do
+            if /usr/libexec/PlistBuddy -c "Print :$key" "$PLIST" >/dev/null 2>&1; then FOUND="$FOUND $key"; fi
+          done
+          if [ -n "$FOUND" ]; then
+            echo "BUILD STOPPED — permission prompt(s) declared in Info.plist:$FOUND"
+            exit 1
+          fi
+          echo "Clean: the app declares no contacts, photo, camera or location prompt."
       - name: Fetch or create signing files, then build
         script: |
           keychain initialize
@@ -129,10 +142,6 @@ workflows:
           # The app uses only standard HTTPS, which is exempt.
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" ios/App/App/Info.plist || \
             /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" ios/App/App/Info.plist
-          # Without this string iOS terminates the app the moment location is requested.
-          # It has to say what the data is for, in words a reviewer accepts.
-          /usr/libexec/PlistBuddy -c "Add :NSLocationWhenInUseUsageDescription string 'PorchPay can share your approximate location with your loan servicer for account verification and delivery of documents. This is optional and every feature works without it.'" ios/App/App/Info.plist || \
-            /usr/libexec/PlistBuddy -c "Set :NSLocationWhenInUseUsageDescription 'PorchPay can share your approximate location with your loan servicer for account verification and delivery of documents. This is optional and every feature works without it.'" ios/App/App/Info.plist
           # Push. The remote-notification background mode lets a notification arriving
           # while the app is closed update the badge.
           /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" ios/App/App/Info.plist || true
@@ -156,6 +165,23 @@ workflows:
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' ios/App/App.xcodeproj/project.pbxproj
           sed -i '' "s/platform :ios, '[0-9.]*'/platform :ios, '15.0'/" ios/App/Podfile || true
           npx cap sync ios
+      - name: Refuse to ship a flagged permission
+        script: |
+          # The iOS equivalent: a usage-description key is what lets an app ask at all.
+          # None of these should exist in the plist. If one appears, a dependency added
+          # it, and App Review will ask why a loan app wants the address book.
+          cd "mobile/$APP_DIR"
+          PLIST=ios/App/App/Info.plist
+          BANNED="NSContactsUsageDescription NSPhotoLibraryUsageDescription NSPhotoLibraryAddUsageDescription NSCameraUsageDescription NSLocationWhenInUseUsageDescription NSLocationAlwaysAndWhenInUseUsageDescription NSLocationAlwaysUsageDescription NSCalendarsUsageDescription NSRemindersUsageDescription NSHealthShareUsageDescription NSMotionUsageDescription NSSpeechRecognitionUsageDescription NSFaceIDUsageDescription"
+          FOUND=""
+          for key in $BANNED; do
+            if /usr/libexec/PlistBuddy -c "Print :$key" "$PLIST" >/dev/null 2>&1; then FOUND="$FOUND $key"; fi
+          done
+          if [ -n "$FOUND" ]; then
+            echo "BUILD STOPPED — permission prompt(s) declared in Info.plist:$FOUND"
+            exit 1
+          fi
+          echo "Clean: the app declares no contacts, photo, camera or location prompt."
       - name: Fetch or create signing files, then build
         script: |
           keychain initialize
@@ -190,11 +216,10 @@ workflows:
           cd "mobile/$APP_DIR"
           npx cap add android
           npx @capacitor/assets generate --android --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
-          # Coarse location only. FINE and BACKGROUND both trigger extra Play review and
-          # the app needs neither.
+          # Notifications only. The app requests no location permission of any kind.
           MANIFEST=android/app/src/main/AndroidManifest.xml
-          grep -q 'ACCESS_COARSE_LOCATION' "$MANIFEST" || \
-            sed -i 's|<application|<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n\n    <application|' "$MANIFEST"
+          grep -q 'POST_NOTIFICATIONS' "$MANIFEST" || \
+            sed -i 's|<application|<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n\n    <application|' "$MANIFEST"
           # Firebase config for FCM. Upload google-services.json to Codemagic as the
           # environment variable GOOGLE_SERVICES_JSON (base64).
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then
@@ -224,6 +249,31 @@ workflows:
         script: |
           cd "mobile/$APP_DIR/android"
           ./gradlew bundleRelease
+      - name: Refuse to ship a flagged permission
+        script: |
+          # Requesting any of these is the fastest way to be auto-classified as a
+          # predatory lending app on Play. The app needs none of them, but the manifest
+          # is generated at build time and a dependency can merge one in without anyone
+          # editing a file — so this checks the MERGED manifest, after the build, and
+          # fails rather than letting it reach review.
+          cd "mobile/$APP_DIR/android"
+          BANNED="READ_CONTACTS WRITE_CONTACTS GET_ACCOUNTS READ_EXTERNAL_STORAGE WRITE_EXTERNAL_STORAGE READ_MEDIA_IMAGES READ_MEDIA_VIDEO READ_MEDIA_AUDIO ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION ACCESS_BACKGROUND_LOCATION READ_PHONE_STATE READ_PHONE_NUMBERS READ_SMS RECEIVE_SMS SEND_SMS READ_CALL_LOG PROCESS_OUTGOING_CALLS QUERY_ALL_PACKAGES REQUEST_INSTALL_PACKAGES SYSTEM_ALERT_WINDOW"
+          FOUND=""
+          MANIFESTS=$(find app/build -name AndroidManifest.xml 2>/dev/null)
+          if [ -z "$MANIFESTS" ]; then echo "No merged manifest found — cannot verify."; exit 1; fi
+          for perm in $BANNED; do
+            if grep -qh "android.permission.$perm\"" $MANIFESTS; then FOUND="$FOUND $perm"; fi
+          done
+          echo "--- permissions in the merged manifest ---"
+          grep -ho 'android.permission.[A-Z_]*' $MANIFESTS | sort -u
+          if [ -n "$FOUND" ]; then
+            echo ""
+            echo "BUILD STOPPED — flagged permission(s) present:$FOUND"
+            echo "Find which dependency merged it in before shipping this."
+            exit 1
+          fi
+          echo ""
+          echo "Clean: no flagged permission in the merged manifest."
     artifacts:
       - mobile/porchpay/android/app/build/outputs/**/*.aab
 
@@ -245,11 +295,10 @@ workflows:
           cd "mobile/$APP_DIR"
           npx cap add android
           npx @capacitor/assets generate --android --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
-          # Coarse location only. FINE and BACKGROUND both trigger extra Play review and
-          # the app needs neither.
+          # Notifications only. The app requests no location permission of any kind.
           MANIFEST=android/app/src/main/AndroidManifest.xml
-          grep -q 'ACCESS_COARSE_LOCATION' "$MANIFEST" || \
-            sed -i 's|<application|<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n\n    <application|' "$MANIFEST"
+          grep -q 'POST_NOTIFICATIONS' "$MANIFEST" || \
+            sed -i 's|<application|<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n\n    <application|' "$MANIFEST"
           # Firebase config for FCM. Upload google-services.json to Codemagic as the
           # environment variable GOOGLE_SERVICES_JSON (base64).
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then
@@ -279,5 +328,30 @@ workflows:
         script: |
           cd "mobile/$APP_DIR/android"
           ./gradlew bundleRelease
+      - name: Refuse to ship a flagged permission
+        script: |
+          # Requesting any of these is the fastest way to be auto-classified as a
+          # predatory lending app on Play. The app needs none of them, but the manifest
+          # is generated at build time and a dependency can merge one in without anyone
+          # editing a file — so this checks the MERGED manifest, after the build, and
+          # fails rather than letting it reach review.
+          cd "mobile/$APP_DIR/android"
+          BANNED="READ_CONTACTS WRITE_CONTACTS GET_ACCOUNTS READ_EXTERNAL_STORAGE WRITE_EXTERNAL_STORAGE READ_MEDIA_IMAGES READ_MEDIA_VIDEO READ_MEDIA_AUDIO ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION ACCESS_BACKGROUND_LOCATION READ_PHONE_STATE READ_PHONE_NUMBERS READ_SMS RECEIVE_SMS SEND_SMS READ_CALL_LOG PROCESS_OUTGOING_CALLS QUERY_ALL_PACKAGES REQUEST_INSTALL_PACKAGES SYSTEM_ALERT_WINDOW"
+          FOUND=""
+          MANIFESTS=$(find app/build -name AndroidManifest.xml 2>/dev/null)
+          if [ -z "$MANIFESTS" ]; then echo "No merged manifest found — cannot verify."; exit 1; fi
+          for perm in $BANNED; do
+            if grep -qh "android.permission.$perm\"" $MANIFESTS; then FOUND="$FOUND $perm"; fi
+          done
+          echo "--- permissions in the merged manifest ---"
+          grep -ho 'android.permission.[A-Z_]*' $MANIFESTS | sort -u
+          if [ -n "$FOUND" ]; then
+            echo ""
+            echo "BUILD STOPPED — flagged permission(s) present:$FOUND"
+            echo "Find which dependency merged it in before shipping this."
+            exit 1
+          fi
+          echo ""
+          echo "Clean: no flagged permission in the merged manifest."
     artifacts:
       - mobile/porchpay-admin/android/app/build/outputs/**/*.aab

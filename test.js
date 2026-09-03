@@ -1409,34 +1409,25 @@ async function main() {
     ok(r.json.pml.property_id === pb.json.id, 'move persisted');
   }
 
-  console.log('— location (opt-in)');
+  console.log('— location removed');
+  // The feature was withdrawn before the store submission. These assert it is actually
+  // gone rather than merely hidden in the UI — a route left listening would make the
+  // "no location collected" answer on both privacy questionnaires false.
   r = await req('/api/tenant/location', { method: 'POST', body: JSON.stringify({ lat: 40.1, lng: -83.0 }) }, tbCookie);
-  ok(r.status === 403, 'location rejected without consent');
+  ok(r.status === 404, 'the location ping endpoint no longer exists');
   r = await req('/api/tenant/location/consent', { method: 'POST', body: JSON.stringify({ consent: true }) }, tbCookie);
-  ok(r.status === 200, 'TB grants location consent');
-  r = await req('/api/tenant/location', { method: 'POST', body: JSON.stringify({ lat: 40.1, lng: -83.0, accuracy_m: 25 }) }, tbCookie);
-  ok(r.status === 200, 'location ping accepted after consent');
+  ok(r.status === 404, 'the location consent endpoint no longer exists');
   r = await req(`/api/admin/tenants/${tbId}/location`);
-  ok(r.json.consent_at && r.json.last_ping && r.json.last_ping.lat === 40.1, 'admin sees consented last location');
-  // Distance from the home is the point of this — put the property on the map first.
-  await req('/api/admin/properties/' + propId, { method: 'PUT', body: JSON.stringify({ lat: 40.1, lng: -83.0 }) });
-  r = await req(`/api/admin/tenants/${tbId}/location`);
-  ok(r.json.miles_from_home === 0, 'a ping at the property reads as zero miles away');
-  ok(r.json.home && r.json.home.geocoded, 'the buyer\'s property is geocoded');
-  // Now a ping about 8 miles north.
-  await req('/api/tenant/location', { method: 'POST', body: JSON.stringify({ lat: 40.216, lng: -83.0, accuracy_m: 40 }) }, tbCookie);
-  r = await req(`/api/admin/tenants/${tbId}/location`);
-  ok(Math.abs(r.json.miles_from_home - 8) < 0.3, `distance from the home computes (${r.json.miles_from_home} mi)`);
-  ok(r.json.history.length === 2 && r.json.ping_count === 2, 'full position history returned, newest first');
-  ok(r.json.history[0].miles_from_home > r.json.history[1].miles_from_home, 'history ordered newest first');
-  ok(r.json.history[0].accuracy_m === 40, 'accuracy recorded so a stale fix can be spotted');
-
-  r = await req('/api/tenant/location/consent', { method: 'POST', body: JSON.stringify({ consent: false }) }, tbCookie);
-  r = await req(`/api/admin/tenants/${tbId}/location`);
-  ok(!r.json.consent_at && !r.json.last_ping, 'revoking consent deletes location history');
-  ok(r.json.ping_count === 0 && r.json.history.length === 0, 'no position history survives a revoke');
-  r = await req('/api/tenant/location', { method: 'POST', body: JSON.stringify({ lat: 40.1, lng: -83.0 }) }, tbCookie);
-  ok(r.status === 403, 'nothing is recorded again until they opt back in');
+  ok(r.status === 404, 'admins can no longer read a buyer position');
+  {
+    const D = require('./db.js');
+    const tbl = D.get("SELECT name FROM sqlite_master WHERE type='table' AND name='location_pings'");
+    ok(!tbl, 'the location_pings table is dropped, not just unused');
+    const held = D.get('SELECT COUNT(*) c FROM users WHERE location_consent_at IS NOT NULL').c;
+    ok(held === 0, 'no consent flag survives the migration');
+  }
+  r = await req('/api/account/export', {}, tbCookie);
+  ok(r.status !== 200 || !('location_history' in r.json), 'the data export no longer carries a location section');
 
   console.log('— address lookup');
   r = await req('/api/admin/address-suggest?q=abc');
@@ -2089,8 +2080,6 @@ async function main() {
   ok(r.json.length === 0, 'rival sees no expenses');
   r = await req('/api/admin/messages', {}, rivalCookie);
   ok(r.json.length === 0, 'rival sees no message threads');
-  r = await req(`/api/admin/tenants/${tbId}/location`, {}, rivalCookie);
-  ok(r.status === 404, 'rival cannot read company A buyer location');
   r = await req(`/api/admin/loans/${loanId}/notices`, {}, rivalCookie);
   ok(r.status === 404, 'rival cannot read company A notices');
 

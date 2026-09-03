@@ -5760,7 +5760,7 @@ async function openLoan(id){
       +(f.tenant.phone?' · 📱 <a href="tel:'+esc(String(f.tenant.phone).replace(/[^+\d]/g,''))+'">'+esc(f.tenant.phone)+'</a>'
         +' <button class="small" onclick="callNow(\''+esc(String(f.tenant.phone))+'\',\''+esc(f.tenant.name||'the buyer')+'\')">📞 Call</button>'
         +' <button class="small" onclick="quickTextModal('+L.id+',\''+esc(f.tenant.name||'the buyer')+'\')">📲 Text</button>'
-        +' <button class="small" onclick="openMsgsFor('+L.id+')">💬 Message</button>':'')):''} <span id="tb-loc"></span></p>
+        +' <button class="small" onclick="openMsgsFor('+L.id+')">💬 Message</button>':'')):''}</p>
     <div class="actions">
       <button class="primary" onclick="recordPaymentModal()">💵 Record payment</button>
       <button class="small" onclick="editLoanModal()">✏️ Edit loan terms</button>
@@ -5805,11 +5805,6 @@ async function openLoan(id){
       </div>
       <div id="act-list"><p class="note">Loading…</p></div>
     </div>
-  </div>
-  <div class="card"><h2>📍 Where the buyer's phone has been</h2>
-    <p class="note" style="margin-bottom:10px">Only recorded while the buyer has location sharing switched on,
-      and only when they open the app — this is not continuous tracking. If they switch it off, the history is deleted.</p>
-    <div id="loc-panel"><p class="note">Loading…</p></div>
   </div>
   <div class="card"><h2>Notices <button class="small" onclick="customNoticeModal()">Send custom notice</button></h2>
     <p class="note" style="margin-bottom:8px">Late and legal notices go out automatically when a payment is past grace and nothing has been confirmed received. ✓✓ = buyer opened it (read receipt).</p>
@@ -5903,7 +5898,6 @@ async function openLoan(id){
     setTimeout(()=>{ if(currentLoanId===L.id) allocateModal(); },350);
   }
   ACT_OPEN=false; ACT_PROP=f.property?f.property.id:0;
-  if (f.tenant) loadTBLocation(f.tenant.id);
 }
 
 // The other people on the loan's house — the co-buyer who also signs, the seller's
@@ -6027,63 +6021,6 @@ const ago = (iso) => {
 const stamp = (iso) => new Date(iso+'Z').toLocaleString('en-US',
   {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 
-async function loadTBLocation(tbId){
-  try{
-    const r = await api(`/api/admin/tenants/${tbId}/location`);
-    const inline = $('tb-loc'), panel = $('loc-panel');
-
-    if (!r.consent_at){
-      if(inline) inline.innerHTML = '· 📍 <span class="note">location sharing off</span>';
-      if(panel) panel.innerHTML = `<p class="note">This buyer has not turned location sharing on.
-        It is theirs to switch on or off in the app, and nothing here can turn it on for them.
-        Nothing is recorded while it is off.</p>`;
-      return;
-    }
-    if (!r.last_ping){
-      if(inline) inline.innerHTML = '· 📍 <span class="note">on, nothing recorded yet</span>';
-      if(panel) panel.innerHTML = `<p class="note">Sharing is on since ${stamp(r.consent_at)}, but the app
-        has not recorded a position yet. It records one when they open the app.</p>`;
-      return;
-    }
-
-    const p = r.last_ping, d = r.miles_from_home;
-    // Under a quarter mile is at the home for a phone GPS fix.
-    const atHome = d != null && d <= 0.25;
-    const near   = d != null && d > 0.25 && d <= 2;
-    const chip = d == null
-      ? '<span class="pill gray">distance unknown</span>'
-      : atHome ? '<span class="pill ok">at the property</span>'
-      : near   ? `<span class="pill amber">${d} mi from the property</span>`
-               : `<span class="pill due">${d} mi from the property</span>`;
-
-    if(inline) inline.innerHTML = `· 📍 <a href="https://maps.google.com/?q=${p.lat},${p.lng}" target="_blank">last seen</a>
-      <span class="note">${ago(p.created_at)}</span> ${chip}`;
-
-    if(panel) panel.innerHTML = `
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
-        ${chip}
-        <span class="note">Last recorded ${stamp(p.created_at)} · ${ago(p.created_at)}</span>
-        <a class="small" style="text-decoration:none;padding:7px 14px;background:#EDF2F0;border-radius:9px"
-           href="https://maps.google.com/?q=${p.lat},${p.lng}" target="_blank">🗺️ Open in Maps</a>
-      </div>
-      <p class="note" style="margin-bottom:10px">
-        ${r.home && !r.home.geocoded
-          ? 'The property has no coordinates saved, so distance cannot be shown. Re-pick the address from the suggestion list on the property to fill them in.'
-          : 'Distance is straight-line from the property address. Phone GPS is accurate to roughly 30–100 feet outdoors and much less indoors, so treat anything under a quarter mile as "at the home".'}
-        Sharing on since ${stamp(r.consent_at)} · ${r.ping_count} position${r.ping_count===1?'':'s'} recorded.
-      </p>
-      <div style="max-height:260px;overflow:auto"><table>
-        <thead><tr><th>When</th><th class="right">Distance from home</th><th class="right">Accuracy</th><th></th></tr></thead>
-        <tbody>${r.history.map(h=>`<tr>
-          <td>${stamp(h.created_at)}</td>
-          <td class="right">${h.miles_from_home==null?'<span class="note">—</span>'
-            :(h.miles_from_home<=0.25?'<span style="color:var(--brand);font-weight:700">at home</span>'
-              :h.miles_from_home+' mi')}</td>
-          <td class="right note">${h.accuracy_m?Math.round(h.accuracy_m*3.28)+' ft':'—'}</td>
-          <td class="right"><a href="https://maps.google.com/?q=${h.lat},${h.lng}" target="_blank">map</a></td>
-        </tr>`).join('')}</tbody></table></div>`;
-  }catch{}
-}
 async function loadNoticesAdmin(){
   // A prepared-but-unserved DC 101 is a draft: it lives in the Michigan card, not here.
   const rows = (await api(`/api/admin/loans/${currentLoanId}/notices`)).filter(n=>!n.prepared);
@@ -6995,7 +6932,7 @@ async function restoreTB(id){
 function deleteTB(id,name){
   modal(`<h2 style="color:var(--red)">Delete ${esc(name)}</h2>
     <p class="note" style="margin-bottom:12px"><b>This cannot be undone.</b> It permanently erases their name, email,
-      phone, login, consent records and location history, and removes them from the loan.</p>
+      phone, login and consent records, and removes them from the loan.</p>
     <p class="note" style="margin-bottom:14px">The loan's payment ledger is kept, because lending records carry legal
       retention duties. If you only want them out of your active list, <b>archive them instead</b> — that keeps everything and is reversible.</p>
     <div class="field"><label>Type DELETE to confirm</label><input id="dl-confirm" placeholder="DELETE"></div>

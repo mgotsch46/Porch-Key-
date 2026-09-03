@@ -302,7 +302,6 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
         <p style="margin-bottom:10px"><b>Messaging and notices.</b> You agree to receive messages and notices about your loan through this app, including payment reminders and late notices. The app records when a notice is sent and when you open it. Electronic notice does not replace notices your servicer must legally send by mail or other means.</p>
         <p style="margin-bottom:10px"><b>Payments.</b> Card, bank transfer and Cash App Pay are processed by Stripe. We never see your card or bank account number. Payments credit when the processor confirms them.</p>
         <p style="margin-bottom:10px"><b>Your data.</b> We collect your name, contact details, loan and payment records, and messages. We do not sell your information or use it for advertising. You can export or delete your data any time from Settings.</p>
-        <p style="margin:0"><b>Location is optional and off by default.</b> Every feature works without it. If you turn it on, your approximate location is shared with your servicer; turning it off deletes the history.</p>
       </div>
       <p class="note" style="margin-bottom:18px">Read the full <a href="/terms" target="_blank" style="color:var(--brand);font-weight:700">Terms of Use</a>
         and <a href="/privacy" target="_blank" style="color:var(--brand);font-weight:700">Privacy Policy</a>.</p>
@@ -316,29 +315,6 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
 
       <button class="btn primary" id="accept-btn" onclick="acceptTerms()" disabled>Accept &amp; continue</button>
       <button class="btn quiet" onclick="logout()">Not now — sign out</button>
-    </div>
-  </main>
-</div>
-
-<!-- ══════════ LOCATION ASK — shown once, right after sign-in ══════════ -->
-<div id="v-loc" class="hidden">
-  <main class="stack">
-    <div class="center" style="margin-bottom:24px">
-      <div style="font-size:52px">📍</div>
-      <h1 class="big" style="font-size:24px;margin-top:8px">Share your location?</h1>
-    </div>
-    <div class="card">
-      <p style="font-size:15.5px;line-height:1.6;margin-bottom:14px">
-        Turning this on lets your servicer confirm your account and deliver documents to the
-        right place. It takes one tap.
-      </p>
-      <div class="row"><span class="k">📌 What's shared</span><span class="v" style="white-space:normal;text-align:right;font-weight:400">Your approximate location when you open the app</span></div>
-      <div class="row"><span class="k">👤 Who sees it</span><span class="v" style="white-space:normal;text-align:right;font-weight:400">Only your servicer</span></div>
-      <div class="row"><span class="k">🚫 Never</span><span class="v" style="white-space:normal;text-align:right;font-weight:400">Sold, or used for advertising</span></div>
-      <div class="row"><span class="k">🔄 Change anytime</span><span class="v" style="white-space:normal;text-align:right;font-weight:400">Turning it off deletes your history</span></div>
-      <button class="btn primary" style="margin-top:18px" onclick="locAskYes()">Turn on location sharing</button>
-      <button class="btn quiet" onclick="locAskNo()">Not now</button>
-      <p class="note center" style="margin-top:14px">Every part of Porch Pay works either way — paying, messaging, documents, all of it.</p>
     </div>
   </main>
 </div>
@@ -508,12 +484,6 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
       </div>
 
       <div class="card">
-        <h2>📍 Location sharing</h2>
-        <p class="note" id="loc-status" style="margin-bottom:14px"></p>
-        <button class="btn ghost" id="loc-btn" onclick="toggleLocation()">Turn on location sharing</button>
-      </div>
-
-      <div class="card">
         <h2>🔔 Notifications</h2>
         <p class="note" id="notif-state" style="margin-bottom:12px"></p>
         <button class="btn ghost" id="notif-btn" onclick="enablePush()">Turn on notifications</button>
@@ -574,7 +544,7 @@ function rateStr(bps){
 }
 const fdate = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let DATA=null, ME=null, NOTICES=[], payMethod='card', tab='home', locOn=false;
+let DATA=null, ME=null, NOTICES=[], payMethod='card', tab='home';
 
 async function api(path, opts={}) {
   const res = await fetch(path,{headers:{'Content-Type':'application/json'},credentials:'same-origin',...opts});
@@ -624,29 +594,6 @@ async function acceptTerms(){
   } catch(e){ $('terms-err').textContent=e.message; $('terms-err').classList.remove('hidden'); }
 }
 
-// Asked once, right after the buyer accepts the terms — not buried in Settings.
-// The phone still shows its own permission prompt; that is enforced by the operating
-// system and cannot be skipped by any app.
-async function maybeAskLocation(){
-  if (!navigator.geolocation) return false;
-  if (DATA && DATA.location_consent_at) return false;
-  try { if (localStorage.getItem('pp-loc-asked')) return false; } catch {}
-  show('v-loc');
-  return true;
-}
-async function locAskYes(){
-  try { localStorage.setItem('pp-loc-asked','1'); } catch {}
-  try{
-    await api('/api/tenant/location/consent',{method:'POST',body:JSON.stringify({consent:true})});
-    locOn=true; sendPing();
-  }catch{}
-  show('v-app'); render();
-}
-function locAskNo(){
-  try { localStorage.setItem('pp-loc-asked','1'); } catch {}
-  show('v-app'); render();
-}
-
 async function enter(){
   const p = new URLSearchParams(location.search);
   if (p.get('setup_session')) {
@@ -665,7 +612,6 @@ async function enter(){
   setInterval(refreshBadges, 60000);
   // Deep link from a tapped notification.
   const wanted = p.get('tab');
-  if (await maybeAskLocation()) { setInterval(pollMsgs, 20000); return; }
   if (wanted) setTimeout(()=>go(wanted), 0);
   show('v-app');
   render();
@@ -802,7 +748,6 @@ function render(){
   }
   $('s-terms').textContent = DATA.terms_accepted_at ? fdate(String(DATA.terms_accepted_at).slice(0,10)) : '—';
   renderSavedMethods(); renderAutopay(); renderFee();
-  locOn=!!DATA.location_consent_at; locUi(); if(locOn) sendPing();
   runCalc();
 }
 function methodName(m){
@@ -1126,38 +1071,6 @@ async function sendMsg(){
   }catch(e){
     alert('Could not send that just now. Your message is still here — try again in a moment.');
   }
-}
-
-// ---------- location (opt-in) ----------
-function locUi(){
-  $('loc-btn').textContent = locOn?'Turn off location sharing':'Turn on location sharing';
-  $('loc-btn').className = 'btn '+(locOn?'danger':'ghost');
-  $('loc-status').innerHTML = locOn
-    ? 'Location sharing is <b>ON</b>. Your most recent location is shared with your servicer when you open the app. Turning it off deletes your history.'
-    : 'Location sharing is <b>off</b>. Everything in PorchPay works without it. If you turn it on, your approximate location is shared with your servicer for account verification and delivery of documents. You can turn it off any time, which deletes the history.';
-}
-async function toggleLocation(){
-  if(!locOn){
-    const okConfirm = confirm(
-      'Share your location with your servicer?\n\n'+
-      '• Your approximate location is collected when you open the app\n'+
-      '• It is shared only with your loan servicer\n'+
-      '• It is never sold or used for advertising\n'+
-      '• You can turn it off any time, which deletes your history\n\n'+
-      'Location is optional — every feature works without it.');
-    if(!okConfirm) return;
-    await api('/api/tenant/location/consent',{method:'POST',body:JSON.stringify({consent:true})});
-    locOn=true; locUi(); sendPing();
-  } else {
-    await api('/api/tenant/location/consent',{method:'POST',body:JSON.stringify({consent:false})});
-    locOn=false; locUi();
-  }
-}
-function sendPing(){
-  if(!locOn||!navigator.geolocation) return;
-  navigator.geolocation.getCurrentPosition(p=>{
-    api('/api/tenant/location',{method:'POST',body:JSON.stringify({lat:p.coords.latitude,lng:p.coords.longitude,accuracy_m:p.coords.accuracy})}).catch(()=>{});
-  },()=>{},{enableHighAccuracy:false,maximumAge:300000,timeout:10000});
 }
 
 // ---------- account deletion ----------
