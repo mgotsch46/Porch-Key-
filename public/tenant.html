@@ -1170,8 +1170,21 @@ async function enableNativePush(){
       $('notif-state').textContent = 'Notifications are off. Turn them on for PorchPay in your phone settings.';
       return;
     }
+    // Registration is asynchronous and can simply never come back — APNs declines
+    // quietly when the build is not entitled for push. Without this the button looked
+    // dead: no prompt (already granted), no text, no error, nothing. Say what is
+    // happening, and say so again if nothing happens.
+    $('notif-state').textContent = 'Registering this device…';
+    let registered = false;
+    setTimeout(()=>{
+      if (registered) return;
+      $('notif-state').textContent =
+        'This device did not finish registering with Apple. Notifications inside the app still work.';
+      showDiag();
+    }, 10000);
     // The token arrives asynchronously, so the listener goes on before registering.
     Push.addListener('registration', async (t)=>{
+      registered = true;
       try{
         await api('/api/push/device',{method:'POST',body:JSON.stringify({
           token: t.value,
@@ -1185,7 +1198,9 @@ async function enableNativePush(){
       }catch(e){ $('notif-state').textContent='Could not finish turning on notifications: '+e.message; }
     });
     Push.addListener('registrationError', (e)=>{
-      $('notif-state').textContent='Could not turn on notifications: '+(e && e.error || 'registration failed');
+      registered = true;                       // stop the timeout from talking over it
+      $('notif-state').textContent='Apple refused to register this device: '+(e && e.error || 'registration failed');
+      showDiag();
     });
     // Tapping a notification should land on the screen it is about.
     Push.addListener('pushNotificationActionPerformed', (a)=>{

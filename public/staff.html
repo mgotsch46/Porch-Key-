@@ -582,7 +582,19 @@ function dialGo(){
 }
 
 // ---------- push ----------
+// This used to be web-push only, and its first line was
+//     if(!('serviceWorker' in navigator)||!('PushManager' in window)) return;
+// PushManager does not exist in an iOS WebView, so inside the store build this returned
+// immediately, every time. The app therefore never ASKED for permission — which is why
+// it never appeared in the phone's Settings under Notifications, and why not one device
+// token was ever registered. A silent early return, in the one place where silence looks
+// exactly like "notifications just don't work on this phone".
+const isNativeApp = () =>
+  !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
+     && window.Capacitor.isNativePlatform());
+
 async function registerPush(){
+  if (isNativeApp()) return registerNativePush();
   if(!('serviceWorker' in navigator)||!('PushManager' in window)) return;
   const reg=await navigator.serviceWorker.register('/sw.js');
   if(Notification.permission==='default') await Notification.requestPermission();
@@ -591,6 +603,36 @@ async function registerPush(){
   const sub=await reg.pushManager.subscribe({userVisibleOnly:true,
     applicationServerKey:Uint8Array.from(atob(key.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0))});
   await api('/api/push/subscribe',{method:'POST',body:JSON.stringify({subscription:sub})});
+}
+
+// The store build asks the operating system instead of the browser, and registers a
+// device token rather than a web subscription.
+async function registerNativePush(){
+  const Push = window.Capacitor.Plugins && window.Capacitor.Plugins.PushNotifications;
+  if (!Push) { console.warn('push: plugin missing from this build'); return; }
+  let perm = await Push.checkPermissions();
+  if (perm.receive === 'prompt') perm = await Push.requestPermissions();
+  if (perm.receive !== 'granted') { console.warn('push: permission not granted'); return; }
+  // The token arrives asynchronously, so the listener goes on before registering.
+  Push.addListener('registration', async (t)=>{
+    try{
+      await api('/api/push/device',{method:'POST',body:JSON.stringify({
+        token: t.value,
+        platform: window.Capacitor.getPlatform(),
+        app: 'admin',
+        device_name: navigator.userAgent.slice(0,80),
+      })});
+      console.log('push: device registered');
+    }catch(e){ console.error('push: could not register device —', e.message); }
+  });
+  Push.addListener('registrationError', (e)=>{
+    console.error('push: registration failed —', (e && e.error) || e);
+  });
+  Push.addListener('pushNotificationActionPerformed', (a)=>{
+    const url = a && a.notification && a.notification.data && a.notification.data.url;
+    if (url) location.href = url;
+  });
+  await Push.register();
 }
 
 document.addEventListener('DOMContentLoaded',boot);

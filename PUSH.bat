@@ -30,6 +30,43 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
+>>"%MSGFILE%" echo Push was never entitled, so no iPhone could ever register
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo devices: 0. Not one device token, on the whole server, ever. The build
+>>"%MSGFILE%" echo wrote App.entitlements with aps-environment=production and then NOTHING
+>>"%MSGFILE%" echo told Xcode to use it - CODE_SIGN_ENTITLEMENTS was never set, so the file
+>>"%MSGFILE%" echo sat in the source tree and was ignored at signing. The shipped app had
+>>"%MSGFILE%" echo no push entitlement at all.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo The failure is silent end to end: iOS shows the permission prompt, the
+>>"%MSGFILE%" echo person taps Allow, APNs then declines to issue a token, and no error
+>>"%MSGFILE%" echo reaches the app. It looks exactly like "notifications don't work on this
+>>"%MSGFILE%" echo phone". Both iOS workflows now set CODE_SIGN_ENTITLEMENTS and FAIL THE
+>>"%MSGFILE%" echo BUILD if the reference is missing - a binary that claims push and cannot
+>>"%MSGFILE%" echo do it should not reach TestFlight.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo THE ADMIN APP NEVER EVEN ASKED. staff.html opened with
+>>"%MSGFILE%" echo   if(!('serviceWorker' in navigator)^|^|!('PushManager' in window)) return;
+>>"%MSGFILE%" echo PushManager does not exist in an iOS WebView, so inside the store build
+>>"%MSGFILE%" echo that returned on the first line, every time. The app never requested
+>>"%MSGFILE%" echo permission, which is why it never appeared in the phone's Settings under
+>>"%MSGFILE%" echo Notifications. It now takes the native path and registers a device token.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo THE BUYER APP asks on its own now, right after sign-in, instead of hiding
+>>"%MSGFILE%" echo behind a button nobody finds. iOS will not let an app switch notifications
+>>"%MSGFILE%" echo on by itself - the system prompt is the only way - but nothing says the
+>>"%MSGFILE%" echo person has to go looking for it.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo And the button can no longer be dead. It reports while registering, says
+>>"%MSGFILE%" echo so if Apple refuses, gives up after ten seconds rather than waiting for a
+>>"%MSGFILE%" echo token that is never coming, and prints what it can see:
+>>"%MSGFILE%" echo   bridge / native / platform / plugin / web Notification
+>>"%MSGFILE%" echo Every one of those is a different bug with the same symptom.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo 886 passed, 0 failed.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo A second company must not spend the host's money
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Every integration fell back to the environment when a company had no key
