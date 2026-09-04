@@ -1135,21 +1135,43 @@ function urlBase64ToUint8Array(b64){
 // exist on either platform. The same button registers a device token with Firebase
 // instead, so one deployed page serves the browser, the home-screen PWA and both
 // store builds without knowing which it is until it looks.
+// Bumped by hand whenever this file changes. If the phone does not show this exact
+// string, it is running a cached copy and nothing shipped since is on it — which was
+// otherwise indistinguishable from the fix not working.
+const PUSH_JS_BUILD = 'js-2026-09-03-d';
+
 function pushDiagnostics(){
   const C = window.Capacitor;
-  const bits = [
+  return [
+    PUSH_JS_BUILD,
     'bridge: ' + (C ? 'yes' : 'NO'),
     'native: ' + (C && typeof C.isNativePlatform === 'function' ? String(C.isNativePlatform()) : 'n/a'),
     'platform: ' + (C && typeof C.getPlatform === 'function' ? C.getPlatform() : 'n/a'),
     'plugin: ' + (C && C.Plugins && C.Plugins.PushNotifications ? 'yes' : 'NO'),
-    'web Notification: ' + ('Notification' in window ? 'yes' : 'no'),
-  ];
-  return bits.join(' · ');
+    'webNotif: ' + ('Notification' in window ? 'yes' : 'no'),
+  ].join(' · ');
 }
 function showDiag(){
   const el = $('notif-diag');
   if (!el) return;
   el.textContent = pushDiagnostics();
+  el.style.display = 'block';
+}
+// Always on, not only after a failure. A diagnostic you have to trigger is one nobody
+// ever sees at the moment it would have explained the problem.
+async function refreshDiag(){
+  const el = $('notif-diag');
+  if (!el) return;
+  let perm = 'n/a';
+  try{
+    if (isNativeApp()) {
+      const Push = window.Capacitor.Plugins && window.Capacitor.Plugins.PushNotifications;
+      if (Push) perm = (await Push.checkPermissions()).receive;
+    } else if ('Notification' in window) {
+      perm = Notification.permission;
+    }
+  }catch(e){ perm = 'error: ' + (e && e.message || e); }
+  el.textContent = pushDiagnostics() + ' · permission: ' + perm;
   el.style.display = 'block';
 }
 
@@ -1261,6 +1283,7 @@ async function askForPushOnce(){
 
 function notifUi(){
   const el=$('notif-state'), btn=$('notif-btn'), prefs=$('notif-prefs');
+  refreshDiag();
   // A store app has no Notification API, but it can absolutely show notifications —
   // it just asks the operating system rather than the browser.
   if (isNativeApp()) {
