@@ -4,10 +4,10 @@
   "private": true,
   "description": "PorchPay — native shell for the buyer app",
   "dependencies": {
-    "@capacitor/core": "^6.0.0",
-    "@capacitor/ios": "^6.0.0",
-    "@capacitor/android": "^6.0.0",
-    "@capacitor/push-notifications": "^6.0.0"
+    "@capacitor/core": "^8.5.1",
+    "@capacitor/ios": "^8.5.1",
+    "@capacitor/android": "^8.5.1",
+    "@capacitor/push-notifications": "^8.1.2"
   },
-  "devDependencies": { "@capacitor/cli": "^6.0.0" }
+  "devDependencies": { "@capacitor/cli": "^8.5.1" }
 }

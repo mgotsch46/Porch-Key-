@@ -155,7 +155,13 @@ workflows:
           grep -q "CODE_SIGN_ENTITLEMENTS = App/App.entitlements;" "$PBX" || {
             echo "FATAL: the project does not reference App.entitlements."; exit 1; }
           agvtool new-version -all $BUILD_NUMBER
-          xcode-project build-ipa --workspace App.xcworkspace --scheme App
+          # Capacitor 8 builds iOS with Swift Package Manager, not CocoaPods. There is
+          # no Podfile and no App.xcworkspace any more — only App.xcodeproj beside a
+          # CapApp-SPM package. Asking for a workspace that no longer exists fails the
+          # build outright, so this is the project, not the workspace.
+          ls -d App.xcworkspace >/dev/null 2>&1 && BUILD_TARGET="--workspace App.xcworkspace" || BUILD_TARGET="--project App.xcodeproj"
+          echo "Building with: $BUILD_TARGET"
+          xcode-project build-ipa $BUILD_TARGET --scheme App
           # Last word: read the entitlement back out of the signed binary. Everything
           # above describes intent; this is the only check that reads the artefact.
           APPBIN=$(find build/ios -name "*.app" -maxdepth 4 | head -1)
@@ -290,7 +296,13 @@ workflows:
           grep -q "CODE_SIGN_ENTITLEMENTS = App/App.entitlements;" "$PBX" || {
             echo "FATAL: the project does not reference App.entitlements."; exit 1; }
           agvtool new-version -all $BUILD_NUMBER
-          xcode-project build-ipa --workspace App.xcworkspace --scheme App
+          # Capacitor 8 builds iOS with Swift Package Manager, not CocoaPods. There is
+          # no Podfile and no App.xcworkspace any more — only App.xcodeproj beside a
+          # CapApp-SPM package. Asking for a workspace that no longer exists fails the
+          # build outright, so this is the project, not the workspace.
+          ls -d App.xcworkspace >/dev/null 2>&1 && BUILD_TARGET="--workspace App.xcworkspace" || BUILD_TARGET="--project App.xcodeproj"
+          echo "Building with: $BUILD_TARGET"
+          xcode-project build-ipa $BUILD_TARGET --scheme App
           # Last word: read the entitlement back out of the signed binary. Everything
           # above describes intent; this is the only check that reads the artefact.
           APPBIN=$(find build/ios -name "*.app" -maxdepth 4 | head -1)
@@ -390,6 +402,51 @@ workflows:
           fi
           echo ""
           echo "Clean: no flagged permission in the merged manifest."
+      - name: Prove the bundle targets API 36
+        script: |
+          # Google rejected the first submission because the bundle targeted API 34.
+          # The default comes from whichever Capacitor version npm resolved, so it is
+          # not a constant — it changed under us once and will again. This reads the
+          # level out of the MERGED MANIFEST the build actually produced, not out of
+          # variables.gradle, which only states the intent.
+          cd "mobile/$APP_DIR/android"
+          # Only the app's own merged release manifest counts. Library manifests under
+          # app/build declare no targetSdkVersion, and taking the highest value across
+          # all of them could pass on a file that is not the one being packaged.
+          MERGED=$(find app/build -path "*merged_manifest*" -name AndroidManifest.xml 2>/dev/null | grep -i release | head -1)
+          [ -z "$MERGED" ] && MERGED=$(find app/build -path "*merged_manifest*" -name AndroidManifest.xml 2>/dev/null | head -1)
+          if [ -z "$MERGED" ]; then
+            echo "BUILD STOPPED — no merged manifest found, so the target level cannot"
+            echo "be verified. Refusing to ship a bundle whose target level is unknown."
+            find app/build -name AndroidManifest.xml 2>/dev/null | head -20
+            exit 1
+          fi
+          echo "reading: $MERGED"
+          TARGET=$(grep -o 'targetSdkVersion="[0-9]*"' "$MERGED" | grep -o '[0-9]*' | head -1)
+          MIN=$(grep -o 'minSdkVersion="[0-9]*"' "$MERGED" | grep -o '[0-9]*' | head -1)
+          echo "merged manifest: minSdkVersion=$MIN targetSdkVersion=$TARGET"
+          if [ -z "$TARGET" ]; then
+            echo "BUILD STOPPED — could not read targetSdkVersion from the merged manifest."
+            echo "--- head of the manifest, to show why ---"
+            head -5 "$MERGED"
+            exit 1
+          fi
+          if [ "$TARGET" -lt 36 ]; then
+            echo "BUILD STOPPED — targets API $TARGET. Google Play requires at least 36"
+            echo "for new apps and updates since 31 August 2026. Raise targetSdkVersion"
+            echo "in the Capacitor version this build resolves, then rebuild."
+            exit 1
+          fi
+          # The Advertising ID declaration in Play Console says this app does not use it.
+          # A dependency can merge the permission in without anyone editing a file, and
+          # a mismatch between the manifest and the declaration is a policy problem.
+          if grep -qh "com.google.android.gms.permission.AD_ID" $MANIFESTS; then
+            echo "BUILD STOPPED — the merged manifest declares AD_ID, but the Play"
+            echo "Advertising ID declaration says this app does not use it. Either strip"
+            echo "the permission with tools:node=\"remove\" or change the declaration."
+            exit 1
+          fi
+          echo "Targets API $TARGET, and declares no advertising ID. Play will accept this."
     artifacts:
       - mobile/porchpay/android/app/build/outputs/**/*.aab
 
@@ -475,5 +532,50 @@ workflows:
           fi
           echo ""
           echo "Clean: no flagged permission in the merged manifest."
+      - name: Prove the bundle targets API 36
+        script: |
+          # Google rejected the first submission because the bundle targeted API 34.
+          # The default comes from whichever Capacitor version npm resolved, so it is
+          # not a constant — it changed under us once and will again. This reads the
+          # level out of the MERGED MANIFEST the build actually produced, not out of
+          # variables.gradle, which only states the intent.
+          cd "mobile/$APP_DIR/android"
+          # Only the app's own merged release manifest counts. Library manifests under
+          # app/build declare no targetSdkVersion, and taking the highest value across
+          # all of them could pass on a file that is not the one being packaged.
+          MERGED=$(find app/build -path "*merged_manifest*" -name AndroidManifest.xml 2>/dev/null | grep -i release | head -1)
+          [ -z "$MERGED" ] && MERGED=$(find app/build -path "*merged_manifest*" -name AndroidManifest.xml 2>/dev/null | head -1)
+          if [ -z "$MERGED" ]; then
+            echo "BUILD STOPPED — no merged manifest found, so the target level cannot"
+            echo "be verified. Refusing to ship a bundle whose target level is unknown."
+            find app/build -name AndroidManifest.xml 2>/dev/null | head -20
+            exit 1
+          fi
+          echo "reading: $MERGED"
+          TARGET=$(grep -o 'targetSdkVersion="[0-9]*"' "$MERGED" | grep -o '[0-9]*' | head -1)
+          MIN=$(grep -o 'minSdkVersion="[0-9]*"' "$MERGED" | grep -o '[0-9]*' | head -1)
+          echo "merged manifest: minSdkVersion=$MIN targetSdkVersion=$TARGET"
+          if [ -z "$TARGET" ]; then
+            echo "BUILD STOPPED — could not read targetSdkVersion from the merged manifest."
+            echo "--- head of the manifest, to show why ---"
+            head -5 "$MERGED"
+            exit 1
+          fi
+          if [ "$TARGET" -lt 36 ]; then
+            echo "BUILD STOPPED — targets API $TARGET. Google Play requires at least 36"
+            echo "for new apps and updates since 31 August 2026. Raise targetSdkVersion"
+            echo "in the Capacitor version this build resolves, then rebuild."
+            exit 1
+          fi
+          # The Advertising ID declaration in Play Console says this app does not use it.
+          # A dependency can merge the permission in without anyone editing a file, and
+          # a mismatch between the manifest and the declaration is a policy problem.
+          if grep -qh "com.google.android.gms.permission.AD_ID" $MANIFESTS; then
+            echo "BUILD STOPPED — the merged manifest declares AD_ID, but the Play"
+            echo "Advertising ID declaration says this app does not use it. Either strip"
+            echo "the permission with tools:node=\"remove\" or change the declaration."
+            exit 1
+          fi
+          echo "Targets API $TARGET, and declares no advertising ID. Play will accept this."
     artifacts:
       - mobile/porchpay-admin/android/app/build/outputs/**/*.aab
