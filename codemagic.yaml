@@ -95,6 +95,45 @@ workflows:
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' ios/App/App.xcodeproj/project.pbxproj
           sed -i '' "s/platform :ios, '[0-9.]*'/platform :ios, '15.0'/" ios/App/Podfile || true
           npx cap sync ios
+          # THIS is why no iPhone could ever register, and why register() returned
+          # neither a token nor an error.
+          #
+          # PushNotifications.register() calls UIApplication.registerForRemoteNotifications().
+          # iOS then hands the token to the AppDelegate. The plugin does not see that
+          # callback directly — it observes NotificationCenter for
+          # .capacitorDidRegisterForRemoteNotifications, and the AppDelegate is supposed
+          # to post it. Capacitor's generated AppDelegate contains no remote-notification
+          # methods at all (true in 6 and still true in 8), so the token arrived and was
+          # dropped on the floor: no event, no error, silence forever. The plugin's own
+          # source even rejects other calls with "event capacitorDidRegisterForRemote-
+          # Notifications not called", which is exactly what was happening.
+          #
+          # Added as an extension rather than edited into the class body, so it does not
+          # depend on where the generated file happens to put its closing brace. The
+          # selectors are visible to the Objective-C runtime because AppDelegate derives
+          # from UIResponder, which is how UIKit finds them.
+          if ! grep -q "didRegisterForRemoteNotificationsWithDeviceToken" ios/App/App/AppDelegate.swift; then
+          cat >> ios/App/App/AppDelegate.swift <<'EOF'
+
+          // Forward the APNs callbacks to Capacitor. Without these two methods the push
+          // plugin waits for an event that is never posted, and registration fails silently.
+          extension AppDelegate {
+              func application(_ application: UIApplication,
+                               didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+                  NotificationCenter.default.post(name: .capacitorDidRegisterForRemoteNotifications,
+                                                  object: deviceToken)
+              }
+
+              func application(_ application: UIApplication,
+                               didFailToRegisterForRemoteNotificationsWithError error: Error) {
+                  NotificationCenter.default.post(name: .capacitorDidFailToRegisterForRemoteNotifications,
+                                                  object: error)
+              }
+          }
+          EOF
+          fi
+          echo "--- AppDelegate remote-notification methods ---"
+          grep -c "RemoteNotification" ios/App/App/AppDelegate.swift
       - name: Refuse to ship a flagged permission
         script: |
           # The iOS equivalent: a usage-description key is what lets an app ask at all.
@@ -171,6 +210,20 @@ workflows:
             grep -q "aps-environment" /tmp/ents.txt || {
               echo "FATAL: the signed app has no aps-environment. Push would be dead on arrival."; exit 1; }
             echo "Push entitlement confirmed in the signed binary."
+            # The entitlement only lets the app ASK for a token. The AppDelegate is what
+            # catches the answer. Both have to be in the binary or push is dead, and the
+            # entitlement check alone passed happily for every build that could never
+            # register. Read the selector out of the compiled binary, not the source.
+            EXEC="$APPBIN/$(basename "$APPBIN" .app)"
+            [ -f "$EXEC" ] || EXEC=$(find "$APPBIN" -maxdepth 1 -type f -perm +111 | head -1)
+            echo "--- APNs delegate selectors in $EXEC ---"
+            strings "$EXEC" | grep -o "didRegisterForRemoteNotificationsWithDeviceToken\|didFailToRegisterForRemoteNotificationsWithError" | sort -u
+            strings "$EXEC" | grep -q "didRegisterForRemoteNotificationsWithDeviceToken" || {
+              echo "FATAL: the binary has no didRegisterForRemoteNotificationsWithDeviceToken."
+              echo "iOS would hand the token to an AppDelegate that ignores it, and"
+              echo "register() would return neither a token nor an error — silently."
+              exit 1; }
+            echo "APNs delegate callback confirmed in the signed binary."
           fi
     artifacts:
       - mobile/porchpay/ios/App/build/ios/ipa/*.ipa
@@ -236,6 +289,45 @@ workflows:
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' ios/App/App.xcodeproj/project.pbxproj
           sed -i '' "s/platform :ios, '[0-9.]*'/platform :ios, '15.0'/" ios/App/Podfile || true
           npx cap sync ios
+          # THIS is why no iPhone could ever register, and why register() returned
+          # neither a token nor an error.
+          #
+          # PushNotifications.register() calls UIApplication.registerForRemoteNotifications().
+          # iOS then hands the token to the AppDelegate. The plugin does not see that
+          # callback directly — it observes NotificationCenter for
+          # .capacitorDidRegisterForRemoteNotifications, and the AppDelegate is supposed
+          # to post it. Capacitor's generated AppDelegate contains no remote-notification
+          # methods at all (true in 6 and still true in 8), so the token arrived and was
+          # dropped on the floor: no event, no error, silence forever. The plugin's own
+          # source even rejects other calls with "event capacitorDidRegisterForRemote-
+          # Notifications not called", which is exactly what was happening.
+          #
+          # Added as an extension rather than edited into the class body, so it does not
+          # depend on where the generated file happens to put its closing brace. The
+          # selectors are visible to the Objective-C runtime because AppDelegate derives
+          # from UIResponder, which is how UIKit finds them.
+          if ! grep -q "didRegisterForRemoteNotificationsWithDeviceToken" ios/App/App/AppDelegate.swift; then
+          cat >> ios/App/App/AppDelegate.swift <<'EOF'
+
+          // Forward the APNs callbacks to Capacitor. Without these two methods the push
+          // plugin waits for an event that is never posted, and registration fails silently.
+          extension AppDelegate {
+              func application(_ application: UIApplication,
+                               didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+                  NotificationCenter.default.post(name: .capacitorDidRegisterForRemoteNotifications,
+                                                  object: deviceToken)
+              }
+
+              func application(_ application: UIApplication,
+                               didFailToRegisterForRemoteNotificationsWithError error: Error) {
+                  NotificationCenter.default.post(name: .capacitorDidFailToRegisterForRemoteNotifications,
+                                                  object: error)
+              }
+          }
+          EOF
+          fi
+          echo "--- AppDelegate remote-notification methods ---"
+          grep -c "RemoteNotification" ios/App/App/AppDelegate.swift
       - name: Refuse to ship a flagged permission
         script: |
           # The iOS equivalent: a usage-description key is what lets an app ask at all.
@@ -312,6 +404,20 @@ workflows:
             grep -q "aps-environment" /tmp/ents.txt || {
               echo "FATAL: the signed app has no aps-environment. Push would be dead on arrival."; exit 1; }
             echo "Push entitlement confirmed in the signed binary."
+            # The entitlement only lets the app ASK for a token. The AppDelegate is what
+            # catches the answer. Both have to be in the binary or push is dead, and the
+            # entitlement check alone passed happily for every build that could never
+            # register. Read the selector out of the compiled binary, not the source.
+            EXEC="$APPBIN/$(basename "$APPBIN" .app)"
+            [ -f "$EXEC" ] || EXEC=$(find "$APPBIN" -maxdepth 1 -type f -perm +111 | head -1)
+            echo "--- APNs delegate selectors in $EXEC ---"
+            strings "$EXEC" | grep -o "didRegisterForRemoteNotificationsWithDeviceToken\|didFailToRegisterForRemoteNotificationsWithError" | sort -u
+            strings "$EXEC" | grep -q "didRegisterForRemoteNotificationsWithDeviceToken" || {
+              echo "FATAL: the binary has no didRegisterForRemoteNotificationsWithDeviceToken."
+              echo "iOS would hand the token to an AppDelegate that ignores it, and"
+              echo "register() would return neither a token nor an error — silently."
+              exit 1; }
+            echo "APNs delegate callback confirmed in the signed binary."
           fi
     artifacts:
       - mobile/porchpay-admin/ios/App/build/ios/ipa/*.ipa
