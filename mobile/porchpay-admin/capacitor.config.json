@@ -4,9 +4,16 @@
   "webDir": "www",
   "server": {
     "url": "https://porchpay-production.up.railway.app/staff",
-    "allowNavigation": ["porchpay-production.up.railway.app"]
+    "allowNavigation": [
+      "porchpay-production.up.railway.app"
+    ]
   },
   "backgroundColor": "#16220D",
-  "ios": { "contentInset": "always" },
-  "android": { "allowMixedContent": false }
+  "ios": {
+    "contentInset": "always"
+  },
+  "android": {
+    "allowMixedContent": false
+  },
+  "appendUserAgent": "PorchPayBuild/DEV"
 }

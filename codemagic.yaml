@@ -55,6 +55,11 @@ workflows:
       - name: Add iOS platform + icons
         script: |
           cd "mobile/$APP_DIR"
+          # Stamp the build number into the WebView user agent, so the page can report
+          # which binary it is running inside. Without this, a web fix and a native fix
+          # are indistinguishable from the outside — which cost us most of an evening.
+          sed -i '' "s#PorchPayBuild/DEV#PorchPayBuild/$BUILD_NUMBER#" capacitor.config.json
+          grep appendUserAgent capacitor.config.json
           npx cap add ios
           npx @capacitor/assets generate --ios --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
           npx cap sync ios
@@ -174,6 +179,11 @@ workflows:
       - name: Add iOS platform + icons
         script: |
           cd "mobile/$APP_DIR"
+          # Stamp the build number into the WebView user agent, so the page can report
+          # which binary it is running inside. Without this, a web fix and a native fix
+          # are indistinguishable from the outside — which cost us most of an evening.
+          sed -i '' "s#PorchPayBuild/DEV#PorchPayBuild/$BUILD_NUMBER#" capacitor.config.json
+          grep appendUserAgent capacitor.config.json
           npx cap add ios
           npx @capacitor/assets generate --ios --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
           npx cap sync ios
@@ -297,6 +307,7 @@ workflows:
       - name: Add Android platform + icons
         script: |
           cd "mobile/$APP_DIR"
+          sed -i '' "s#PorchPayBuild/DEV#PorchPayBuild/$BUILD_NUMBER#" capacitor.config.json || true
           npx cap add android
           npx @capacitor/assets generate --android --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
           # Notifications only. The app requests no location permission of any kind.
@@ -381,6 +392,7 @@ workflows:
       - name: Add Android platform + icons
         script: |
           cd "mobile/$APP_DIR"
+          sed -i '' "s#PorchPayBuild/DEV#PorchPayBuild/$BUILD_NUMBER#" capacitor.config.json || true
           npx cap add android
           npx @capacitor/assets generate --android --iconBackgroundColor "$SPLASH_BG" --splashBackgroundColor "$SPLASH_BG" || true
           # Notifications only. The app requests no location permission of any kind.

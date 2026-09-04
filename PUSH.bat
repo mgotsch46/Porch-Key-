@@ -30,6 +30,26 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
+>>"%MSGFILE%" echo Make the binary say which build it is
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo The page is served from Railway, so it has no idea which .ipa is wrapping
+>>"%MSGFILE%" echo it. A web fix and a native fix look identical from the outside, and that
+>>"%MSGFILE%" echo ambiguity cost most of an evening: every time push failed, "is the new
+>>"%MSGFILE%" echo build even installed?" could not be answered by anyone.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Capacitor can append to the WebView user agent, so the build now stamps
+>>"%MSGFILE%" echo its own number in - PorchPayBuild/N - and the phone reports it with every
+>>"%MSGFILE%" echo push diagnostic. The question is now answered by data instead of by
+>>"%MSGFILE%" echo asking someone to go and look in TestFlight.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Also added: /api/push/diag. iOS registration failure is silent on the
+>>"%MSGFILE%" echo device AND invisible on the server - APNs simply never calls back, so
+>>"%MSGFILE%" echo there is nothing to log. The phone posts what it saw instead: outcome,
+>>"%MSGFILE%" echo reason, bridge/plugin/permission state, iOS version. Without a Mac there
+>>"%MSGFILE%" echo is no device console to read, and this is the substitute.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Entitle the build where it survives, and prove it from the binary
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo The last fix wired CODE_SIGN_ENTITLEMENTS into project.pbxproj and then
