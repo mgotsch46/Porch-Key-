@@ -30,6 +30,33 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
+>>"%MSGFILE%" echo Entitle the build where it survives, and prove it from the binary
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo The last fix wired CODE_SIGN_ENTITLEMENTS into project.pbxproj and then
+>>"%MSGFILE%" echo ran `npx cap sync ios` on the very next line. cap sync regenerates that
+>>"%MSGFILE%" echo file. The setting was written, checked, passed the check, and was thrown
+>>"%MSGFILE%" echo away seconds later - and `xcode-project use-profiles` rewrites signing
+>>"%MSGFILE%" echo settings again after that.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo So Build 8 passed a green entitlement check and shipped with no
+>>"%MSGFILE%" echo entitlement. The check was real; it was measured before the thing that
+>>"%MSGFILE%" echo undid it. A guard placed upstream of the step that breaks what it guards
+>>"%MSGFILE%" echo is worse than no guard, because it is believed.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo - The entitlement is now written and wired in the SIGNING step, after
+>>"%MSGFILE%" echo   cap sync and after use-profiles have both finished with the project.
+>>"%MSGFILE%" echo - Both halves are required: the file must contain aps-environment AND the
+>>"%MSGFILE%" echo   project must reference the file. Either alone silently does nothing.
+>>"%MSGFILE%" echo - And the build now reads the entitlement back OUT OF THE SIGNED .app
+>>"%MSGFILE%" echo   with codesign -d --entitlements. Everything else describes intent;
+>>"%MSGFILE%" echo   that one reads the artefact. No aps-environment, no build.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Symptom this was chasing: bridge yes, native true, platform ios, plugin
+>>"%MSGFILE%" echo yes, permission granted - and register() returning neither a token nor an
+>>"%MSGFILE%" echo error, forever. APNs does not answer an app that is not entitled.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Push was never entitled, so no iPhone could ever register
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo devices: 0. Not one device token, on the whole server, ever. The build

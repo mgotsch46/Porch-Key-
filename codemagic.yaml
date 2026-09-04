@@ -73,25 +73,11 @@ workflows:
           fi
           /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$ENT" || \
             /usr/libexec/PlistBuddy -c "Set :aps-environment production" "$ENT"
-          # Writing the file is not enough. Xcode only signs with an entitlements file
-          # that the project POINTS AT — without CODE_SIGN_ENTITLEMENTS the file sits in
-          # the source tree and is ignored, and the shipped app has no push entitlement.
-          # The symptom is silent and total: iOS accepts the permission prompt, then APNs
-          # declines to issue a token, no error reaches the app, and not one device ever
-          # registers. That is exactly how this shipped for weeks.
-          PBX=ios/App/App.xcodeproj/project.pbxproj
-          if grep -q "CODE_SIGN_ENTITLEMENTS" "$PBX"; then
-            sed -i '' 's#CODE_SIGN_ENTITLEMENTS = .*;#CODE_SIGN_ENTITLEMENTS = App/App.entitlements;#g' "$PBX"
-          else
-            sed -i '' 's#\(PRODUCT_BUNDLE_IDENTIFIER = [^;]*;\)#CODE_SIGN_ENTITLEMENTS = App/App.entitlements;\n\t\t\t\t\1#g' "$PBX"
-          fi
-          echo "--- entitlement wiring ---"
-          grep -c "CODE_SIGN_ENTITLEMENTS = App/App.entitlements;" "$PBX" || true
-          # Refuse to ship a build that claims push and cannot do it.
-          if ! grep -q "CODE_SIGN_ENTITLEMENTS = App/App.entitlements;" "$PBX"; then
-            echo "FATAL: the entitlements file is not referenced by the project — push would be dead on arrival."
-            exit 1
-          fi
+          # The file is written here, but the project is pointed at it LAST — see the
+          # signing step. `npx cap sync ios` rewrites project.pbxproj, so wiring it up
+          # before the final sync means wiring it up and then losing it, while a check
+          # placed in between still passes. That is how a build shipped with a green
+          # entitlement check and no entitlement.
           # Firebase needs its plist inside the app bundle. Upload GoogleService-Info.plist
           # to Codemagic as the environment variable GOOGLE_SERVICE_INFO_PLIST (base64).
           if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then
@@ -128,8 +114,42 @@ workflows:
           keychain add-certificates
           cd "mobile/$APP_DIR/ios/App"
           xcode-project use-profiles
+          # Entitle the build for push, HERE, after cap sync and after use-profiles have
+          # both finished rewriting the project. Anything earlier gets discarded.
+          ENT=App/App.entitlements
+          if [ ! -f "$ENT" ]; then
+            /usr/libexec/PlistBuddy -c "Save" "$ENT" || printf '%s' \
+              '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict/></plist>' > "$ENT"
+          fi
+          /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$ENT" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :aps-environment production" "$ENT"
+          PBX=App.xcodeproj/project.pbxproj
+          if grep -q "CODE_SIGN_ENTITLEMENTS" "$PBX"; then
+            sed -i '' 's#CODE_SIGN_ENTITLEMENTS = .*;#CODE_SIGN_ENTITLEMENTS = App/App.entitlements;#g' "$PBX"
+          else
+            sed -i '' 's#\(PRODUCT_BUNDLE_IDENTIFIER = [^;]*;\)#CODE_SIGN_ENTITLEMENTS = App/App.entitlements;\n\t\t\t\t\1#g' "$PBX"
+          fi
+          echo "--- push entitlement, as it will actually be signed ---"
+          /usr/libexec/PlistBuddy -c "Print" "$ENT"
+          grep -c "CODE_SIGN_ENTITLEMENTS = App/App.entitlements;" "$PBX"
+          # Both halves, or no build. The file without the reference is ignored; the
+          # reference without the key signs an app that cannot register with APNs.
+          /usr/libexec/PlistBuddy -c "Print :aps-environment" "$ENT" >/dev/null 2>&1 || {
+            echo "FATAL: App.entitlements has no aps-environment key."; exit 1; }
+          grep -q "CODE_SIGN_ENTITLEMENTS = App/App.entitlements;" "$PBX" || {
+            echo "FATAL: the project does not reference App.entitlements."; exit 1; }
           agvtool new-version -all $BUILD_NUMBER
           xcode-project build-ipa --workspace App.xcworkspace --scheme App
+          # Last word: read the entitlement back out of the signed binary. Everything
+          # above describes intent; this is the only check that reads the artefact.
+          APPBIN=$(find build/ios -name "*.app" -maxdepth 4 | head -1)
+          if [ -n "$APPBIN" ]; then
+            echo "--- codesign entitlements on the built app ---"
+            codesign -d --entitlements :- "$APPBIN" 2>/dev/null | tee /tmp/ents.txt || true
+            grep -q "aps-environment" /tmp/ents.txt || {
+              echo "FATAL: the signed app has no aps-environment. Push would be dead on arrival."; exit 1; }
+            echo "Push entitlement confirmed in the signed binary."
+          fi
     artifacts:
       - mobile/porchpay/ios/App/build/ios/ipa/*.ipa
     publishing:
@@ -172,25 +192,11 @@ workflows:
           fi
           /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$ENT" || \
             /usr/libexec/PlistBuddy -c "Set :aps-environment production" "$ENT"
-          # Writing the file is not enough. Xcode only signs with an entitlements file
-          # that the project POINTS AT — without CODE_SIGN_ENTITLEMENTS the file sits in
-          # the source tree and is ignored, and the shipped app has no push entitlement.
-          # The symptom is silent and total: iOS accepts the permission prompt, then APNs
-          # declines to issue a token, no error reaches the app, and not one device ever
-          # registers. That is exactly how this shipped for weeks.
-          PBX=ios/App/App.xcodeproj/project.pbxproj
-          if grep -q "CODE_SIGN_ENTITLEMENTS" "$PBX"; then
-            sed -i '' 's#CODE_SIGN_ENTITLEMENTS = .*;#CODE_SIGN_ENTITLEMENTS = App/App.entitlements;#g' "$PBX"
-          else
-            sed -i '' 's#\(PRODUCT_BUNDLE_IDENTIFIER = [^;]*;\)#CODE_SIGN_ENTITLEMENTS = App/App.entitlements;\n\t\t\t\t\1#g' "$PBX"
-          fi
-          echo "--- entitlement wiring ---"
-          grep -c "CODE_SIGN_ENTITLEMENTS = App/App.entitlements;" "$PBX" || true
-          # Refuse to ship a build that claims push and cannot do it.
-          if ! grep -q "CODE_SIGN_ENTITLEMENTS = App/App.entitlements;" "$PBX"; then
-            echo "FATAL: the entitlements file is not referenced by the project — push would be dead on arrival."
-            exit 1
-          fi
+          # The file is written here, but the project is pointed at it LAST — see the
+          # signing step. `npx cap sync ios` rewrites project.pbxproj, so wiring it up
+          # before the final sync means wiring it up and then losing it, while a check
+          # placed in between still passes. That is how a build shipped with a green
+          # entitlement check and no entitlement.
           # Firebase needs its plist inside the app bundle. Upload GoogleService-Info.plist
           # to Codemagic as the environment variable GOOGLE_SERVICE_INFO_PLIST (base64).
           if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then
@@ -227,8 +233,42 @@ workflows:
           keychain add-certificates
           cd "mobile/$APP_DIR/ios/App"
           xcode-project use-profiles
+          # Entitle the build for push, HERE, after cap sync and after use-profiles have
+          # both finished rewriting the project. Anything earlier gets discarded.
+          ENT=App/App.entitlements
+          if [ ! -f "$ENT" ]; then
+            /usr/libexec/PlistBuddy -c "Save" "$ENT" || printf '%s' \
+              '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict/></plist>' > "$ENT"
+          fi
+          /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$ENT" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :aps-environment production" "$ENT"
+          PBX=App.xcodeproj/project.pbxproj
+          if grep -q "CODE_SIGN_ENTITLEMENTS" "$PBX"; then
+            sed -i '' 's#CODE_SIGN_ENTITLEMENTS = .*;#CODE_SIGN_ENTITLEMENTS = App/App.entitlements;#g' "$PBX"
+          else
+            sed -i '' 's#\(PRODUCT_BUNDLE_IDENTIFIER = [^;]*;\)#CODE_SIGN_ENTITLEMENTS = App/App.entitlements;\n\t\t\t\t\1#g' "$PBX"
+          fi
+          echo "--- push entitlement, as it will actually be signed ---"
+          /usr/libexec/PlistBuddy -c "Print" "$ENT"
+          grep -c "CODE_SIGN_ENTITLEMENTS = App/App.entitlements;" "$PBX"
+          # Both halves, or no build. The file without the reference is ignored; the
+          # reference without the key signs an app that cannot register with APNs.
+          /usr/libexec/PlistBuddy -c "Print :aps-environment" "$ENT" >/dev/null 2>&1 || {
+            echo "FATAL: App.entitlements has no aps-environment key."; exit 1; }
+          grep -q "CODE_SIGN_ENTITLEMENTS = App/App.entitlements;" "$PBX" || {
+            echo "FATAL: the project does not reference App.entitlements."; exit 1; }
           agvtool new-version -all $BUILD_NUMBER
           xcode-project build-ipa --workspace App.xcworkspace --scheme App
+          # Last word: read the entitlement back out of the signed binary. Everything
+          # above describes intent; this is the only check that reads the artefact.
+          APPBIN=$(find build/ios -name "*.app" -maxdepth 4 | head -1)
+          if [ -n "$APPBIN" ]; then
+            echo "--- codesign entitlements on the built app ---"
+            codesign -d --entitlements :- "$APPBIN" 2>/dev/null | tee /tmp/ents.txt || true
+            grep -q "aps-environment" /tmp/ents.txt || {
+              echo "FATAL: the signed app has no aps-environment. Push would be dead on arrival."; exit 1; }
+            echo "Push entitlement confirmed in the signed binary."
+          fi
     artifacts:
       - mobile/porchpay-admin/ios/App/build/ios/ipa/*.ipa
     publishing:
