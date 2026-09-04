@@ -1289,14 +1289,31 @@ async function enablePushInner(){
 // than waiting for them to find a button in a settings screen. Asked once per install:
 // if they say no, the button is still there, and iOS will not show the prompt again
 // anyway — from then on it is a Settings decision, which is where they expect it.
+//
+// PERMISSION AND REGISTRATION ARE TWO DIFFERENT THINGS. Saying yes to the iOS prompt
+// only grants permission. It does not give the server an address to deliver to — that
+// takes a device token, which arrives from Apple separately and has to be posted back.
+// This used to return early whenever permission was already granted, on the assumption
+// that granted meant registered. It does not:
+//
+//   - anyone who granted permission on a build that could not register (which was every
+//     build before the AppDelegate fix) is permanently granted and permanently unknown;
+//   - APNs tokens are not forever. A restore from backup, or a delete and reinstall
+//     while iOS still remembers the grant, produces a NEW token that nothing would send.
+//
+// In both cases the buyer sees "notifications are on" and never hears a thing. So when
+// permission is already granted we now register every sign-in. register() is cheap and
+// idempotent, the token is upserted by value, and re-sending an unchanged one costs a
+// request. Silence is the expensive outcome, not the extra call.
 async function askForPushOnce(){
   try{
     if (!isNativeApp()) return;
-    if (localStorage.getItem('pushAsked') === '1') return;
     const Push = window.Capacitor.Plugins && window.Capacitor.Plugins.PushNotifications;
     if (!Push) return;
     const perm = await Push.checkPermissions();
-    if (perm.receive !== 'prompt') return;      // already granted or already refused
+    if (perm.receive === 'granted') return enableNativePush();   // refresh the token
+    if (perm.receive !== 'prompt') return;                       // refused: their call now
+    if (localStorage.getItem('pushAsked') === '1') return;        // asked once per install
     localStorage.setItem('pushAsked', '1');
     await enableNativePush();
   }catch(e){ /* never block sign-in on this */ }
