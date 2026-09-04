@@ -18,11 +18,17 @@ definitions:
       app_store_connect: porchpay-asc
     environment: &ios_env
       xcode: latest
-      node: 20
+      # Capacitor 8's CLI refuses to run on anything below 22, and says so as a fatal
+      # before it generates the native project — which is a clean failure, but only if
+      # you are reading the log. Build 6 died here.
+      node: 22
   android_base: &android_base
     max_build_duration: 60
     environment: &android_env
-      node: 20
+      # Capacitor 8's CLI refuses to run on anything below 22, and says so as a fatal
+      # before it generates the native project — which is a clean failure, but only if
+      # you are reading the log. Build 6 died here.
+      node: 22
       java: 17
 
   # The icon is the site's own logo mark, composed per app: green mark on porch cream
