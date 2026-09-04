@@ -1138,7 +1138,7 @@ function urlBase64ToUint8Array(b64){
 // Bumped by hand whenever this file changes. If the phone does not show this exact
 // string, it is running a cached copy and nothing shipped since is on it — which was
 // otherwise indistinguishable from the fix not working.
-const PUSH_JS_BUILD = 'js-2026-09-03-e';
+const PUSH_JS_BUILD = 'js-2026-09-03-f';
 
 function pushDiagnostics(){
   const C = window.Capacitor;
@@ -1164,7 +1164,9 @@ async function reportPush(outcome, detail){
   try{
     await api('/api/push/diag',{method:'POST',body:JSON.stringify({
       outcome, detail: String(detail||'').slice(0,500),
-      environment: pushDiagnostics() + ' · ua: ' + navigator.userAgent.slice(0,120),
+      environment: (navigator.userAgent.match(/PorchPayBuild\/\S+/) || ['binary: unknown'])[0]
+        + ' · ' + pushDiagnostics()
+        + ' · ios: ' + ((navigator.userAgent.match(/OS ([\d_]+) like Mac/) || [,'?'])[1]),
     })});
   }catch(e){ /* a diagnostic that breaks the app is worse than no diagnostic */ }
 }

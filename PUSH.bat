@@ -30,6 +30,21 @@ if errorlevel 1 (
 set "MSGFILE=%TEMP%\porchpay_commit_msg.txt"
 if exist "%MSGFILE%" del /f /q "%MSGFILE%" >nul 2>&1
 
+>>"%MSGFILE%" echo iPhone only - stop App Store Connect asking for iPad screenshots
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Capacitor generates TARGETED_DEVICE_FAMILY = "1,2", so every build shipped
+>>"%MSGFILE%" echo as a universal app and App Store Connect duly demanded a full iPad set for
+>>"%MSGFILE%" echo a loan servicing app nobody opens on a tablet. Set to 1, enforced in the
+>>"%MSGFILE%" echo signing step - after cap sync and use-profiles, same as the entitlement,
+>>"%MSGFILE%" echo because anywhere earlier gets regenerated away. The build fails if it is
+>>"%MSGFILE%" echo still universal.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo Also: the push reporter clipped the user agent at 120 characters, which
+>>"%MSGFILE%" echo landed two letters into PorchPayBuild/N - an instrument built to answer
+>>"%MSGFILE%" echo "which build is installed" that cut the answer off. Build stamp first now.
+>>"%MSGFILE%" echo.
+>>"%MSGFILE%" echo ---
+>>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo Make the binary say which build it is
 >>"%MSGFILE%" echo.
 >>"%MSGFILE%" echo The page is served from Railway, so it has no idea which .ipa is wrapping

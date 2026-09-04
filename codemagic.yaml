@@ -129,6 +129,17 @@ workflows:
           /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$ENT" 2>/dev/null || \
             /usr/libexec/PlistBuddy -c "Set :aps-environment production" "$ENT"
           PBX=App.xcodeproj/project.pbxproj
+          # iPhone only. Capacitor generates TARGETED_DEVICE_FAMILY = "1,2", which makes
+          # the app universal — and App Store Connect then demands a full set of iPad
+          # screenshots for a servicing app nobody will use on a tablet. 1 is iPhone.
+          sed -i '' 's#TARGETED_DEVICE_FAMILY = "1,2";#TARGETED_DEVICE_FAMILY = "1";#g' "$PBX"
+          sed -i '' "s#TARGETED_DEVICE_FAMILY = 1,2;#TARGETED_DEVICE_FAMILY = 1;#g" "$PBX"
+          echo "--- device family ---"
+          grep -o 'TARGETED_DEVICE_FAMILY = [^;]*;' "$PBX" | sort -u
+          if grep -q 'TARGETED_DEVICE_FAMILY = "\?1,2"\?;' "$PBX"; then
+            echo "FATAL: still universal — App Store Connect would demand iPad screenshots."
+            exit 1
+          fi
           if grep -q "CODE_SIGN_ENTITLEMENTS" "$PBX"; then
             sed -i '' 's#CODE_SIGN_ENTITLEMENTS = .*;#CODE_SIGN_ENTITLEMENTS = App/App.entitlements;#g' "$PBX"
           else
@@ -253,6 +264,17 @@ workflows:
           /usr/libexec/PlistBuddy -c "Add :aps-environment string production" "$ENT" 2>/dev/null || \
             /usr/libexec/PlistBuddy -c "Set :aps-environment production" "$ENT"
           PBX=App.xcodeproj/project.pbxproj
+          # iPhone only. Capacitor generates TARGETED_DEVICE_FAMILY = "1,2", which makes
+          # the app universal — and App Store Connect then demands a full set of iPad
+          # screenshots for a servicing app nobody will use on a tablet. 1 is iPhone.
+          sed -i '' 's#TARGETED_DEVICE_FAMILY = "1,2";#TARGETED_DEVICE_FAMILY = "1";#g' "$PBX"
+          sed -i '' "s#TARGETED_DEVICE_FAMILY = 1,2;#TARGETED_DEVICE_FAMILY = 1;#g" "$PBX"
+          echo "--- device family ---"
+          grep -o 'TARGETED_DEVICE_FAMILY = [^;]*;' "$PBX" | sort -u
+          if grep -q 'TARGETED_DEVICE_FAMILY = "\?1,2"\?;' "$PBX"; then
+            echo "FATAL: still universal — App Store Connect would demand iPad screenshots."
+            exit 1
+          fi
           if grep -q "CODE_SIGN_ENTITLEMENTS" "$PBX"; then
             sed -i '' 's#CODE_SIGN_ENTITLEMENTS = .*;#CODE_SIGN_ENTITLEMENTS = App/App.entitlements;#g' "$PBX"
           else
