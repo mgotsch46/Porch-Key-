@@ -472,6 +472,16 @@ workflows:
             echo "WARNING: GOOGLE_SERVICES_JSON is not set — this build cannot receive push."
           fi
           npx cap sync android
+          # Capacitor regenerates android/app/build.gradle on every build with
+          # versionCode 1 hardcoded, so every Android bundle ever produced here claimed
+          # version code 1. Play permanently reserves a version code the moment it is
+          # uploaded — even to a draft release that is later discarded — so the second
+          # upload is refused with "Version code 1 has already been used." The iOS side
+          # has always stamped the build number with agvtool; this is the missing
+          # Android half of that.
+          sed -i '' "s/versionCode 1$/versionCode $BUILD_NUMBER/" android/app/build.gradle
+          echo "--- version, as generated ---"
+          grep -n "versionCode\|versionName" android/app/build.gradle
       - name: Wire release signing into the generated project
         script: |
           cd "mobile/$APP_DIR/android/app"
@@ -561,7 +571,18 @@ workflows:
             echo "the permission with tools:node=\"remove\" or change the declaration."
             exit 1
           fi
-          echo "Targets API $TARGET, and declares no advertising ID. Play will accept this."
+          # A version code Play has already seen is refused at upload, and the only way
+          # to find out used to be dragging the file into the Console and reading the
+          # rejection. Read it here instead.
+          VC=$(grep -o 'versionCode="[0-9]*"' "$MERGED" | grep -o '[0-9]*' | head -1)
+          echo "versionCode=$VC"
+          if [ -z "$VC" ] || [ "$VC" -lt 2 ]; then
+            echo "BUILD STOPPED — versionCode is '$VC'. Capacitor hardcodes 1, and Play"
+            echo "reserves a code forever once uploaded, so 1 can never be used again."
+            echo "The build number should have been stamped into build.gradle."
+            exit 1
+          fi
+          echo "Targets API $TARGET, version code $VC, and declares no advertising ID. Play will accept this."
     artifacts:
       - mobile/porchpay/android/app/build/outputs/**/*.aab
 
@@ -602,6 +623,16 @@ workflows:
             echo "WARNING: GOOGLE_SERVICES_JSON is not set — this build cannot receive push."
           fi
           npx cap sync android
+          # Capacitor regenerates android/app/build.gradle on every build with
+          # versionCode 1 hardcoded, so every Android bundle ever produced here claimed
+          # version code 1. Play permanently reserves a version code the moment it is
+          # uploaded — even to a draft release that is later discarded — so the second
+          # upload is refused with "Version code 1 has already been used." The iOS side
+          # has always stamped the build number with agvtool; this is the missing
+          # Android half of that.
+          sed -i '' "s/versionCode 1$/versionCode $BUILD_NUMBER/" android/app/build.gradle
+          echo "--- version, as generated ---"
+          grep -n "versionCode\|versionName" android/app/build.gradle
       - name: Wire release signing into the generated project
         script: |
           cd "mobile/$APP_DIR/android/app"
@@ -691,6 +722,17 @@ workflows:
             echo "the permission with tools:node=\"remove\" or change the declaration."
             exit 1
           fi
-          echo "Targets API $TARGET, and declares no advertising ID. Play will accept this."
+          # A version code Play has already seen is refused at upload, and the only way
+          # to find out used to be dragging the file into the Console and reading the
+          # rejection. Read it here instead.
+          VC=$(grep -o 'versionCode="[0-9]*"' "$MERGED" | grep -o '[0-9]*' | head -1)
+          echo "versionCode=$VC"
+          if [ -z "$VC" ] || [ "$VC" -lt 2 ]; then
+            echo "BUILD STOPPED — versionCode is '$VC'. Capacitor hardcodes 1, and Play"
+            echo "reserves a code forever once uploaded, so 1 can never be used again."
+            echo "The build number should have been stamped into build.gradle."
+            exit 1
+          fi
+          echo "Targets API $TARGET, version code $VC, and declares no advertising ID. Play will accept this."
     artifacts:
       - mobile/porchpay-admin/android/app/build/outputs/**/*.aab
