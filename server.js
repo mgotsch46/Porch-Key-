@@ -8374,6 +8374,23 @@ app.post('/api/push/device', anyUser, (req, res) => {
     req.user.id, token, platform, app_, String(b.device_name || '').slice(0, 80) || null);
   res.json({ ok: true, native_push: notify.nativePushEnabled() });
 });
+// The phone tells us what happened, because there is no other way to find out without
+// a Mac and a cable. Registration failing is silent on iOS: no error, no callback, and
+// nothing on the server to notice. This is that missing signal.
+app.post('/api/push/diag', anyUser, (req, res) => {
+  const b = req.body || {};
+  run('INSERT INTO push_diags (user_id, outcome, detail, environment) VALUES (?,?,?,?)',
+    req.user.id,
+    String(b.outcome || 'unknown').slice(0, 40),
+    String(b.detail || '').slice(0, 500),
+    String(b.environment || '').slice(0, 300));
+  res.json({ ok: true });
+});
+app.get('/api/admin/push-diags', adminOnly, (req, res) => {
+  res.json(all(`SELECT d.*, u.email FROM push_diags d
+    LEFT JOIN users u ON u.id = d.user_id
+    ORDER BY d.id DESC LIMIT 25`));
+});
 app.delete('/api/push/device', anyUser, (req, res) => {
   const token = String((req.body && req.body.token) || '').trim();
   if (token) run('DELETE FROM device_tokens WHERE token=? AND user_id=?', token, req.user.id);

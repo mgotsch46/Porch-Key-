@@ -364,6 +364,19 @@ CREATE TABLE IF NOT EXISTS device_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id);
 
+-- What the phone saw when it tried to register for push. Without a Mac there is no
+-- device console to read, and the failure this exists for is silent on the device and
+-- invisible on the server: APNs simply never calls back. The phone reports instead.
+CREATE TABLE IF NOT EXISTS push_diags (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER REFERENCES users(id),
+  outcome TEXT NOT NULL,
+  detail TEXT,
+  environment TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_push_diags_created ON push_diags(created_at);
+
 -- Payment reminder rules. The admin decides when they fire and what they say.
 -- offset_days is relative to the due date: -3 means three days before, +5 means five after.
 CREATE TABLE IF NOT EXISTS reminder_rules (
