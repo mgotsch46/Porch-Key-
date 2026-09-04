@@ -29,7 +29,10 @@ definitions:
       # before it generates the native project — which is a clean failure, but only if
       # you are reading the log. Build 6 died here.
       node: 22
-      java: 17
+      # Capacitor 8's Android libraries are compiled at source level 21. On Java 17 the
+      # bundle dies with "invalid source release: 21" inside
+      # :capacitor-android:compileReleaseJavaWithJavac. Build 7 died there.
+      java: 21
 
   # The icon is the site's own logo mark, composed per app: green mark on porch cream
   # for the buyer app, white mark on ink for Admin — matching what the web apps show.
