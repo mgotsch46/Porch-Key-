@@ -394,6 +394,17 @@ aside .navgrp:first-of-type{padding-top:10px}
 aside button.subnav{padding-left:44px;font-size:13.5px;color:#A9C6D2}
 aside button.subnav .ico{font-size:14px;width:16px}
 aside button.subnav.active{padding-left:41px}
+/* The Communication group folds away. Four sub-items were open at all times and most
+   visits to this sidebar are not about any of them.
+   Written as a class on the aside rather than a wrapper element around the buttons,
+   because the phone's bottom bar is selected with `aside > button.tab` — a direct-child
+   selector. Wrapping the sub-items in a div would take them out of that relationship and
+   they would reappear along the bottom of every phone. */
+aside.comms-shut > button.subnav{display:none}
+aside .caret{margin-left:auto;font-size:10px;opacity:.6;transition:transform .18s ease;
+  padding:4px 2px 4px 8px;border-radius:6px}
+aside.comms-shut .caret{transform:rotate(-90deg)}
+aside .caret:hover{opacity:1;background:rgba(255,255,255,.12)}
 aside button.signout{margin-top:6px;color:#7FA3B2}
 
 .mobile-only{display:none}
@@ -516,7 +527,7 @@ a{color:var(--brand);font-weight:600}
     <button id="nv-reminders" onclick="nav('reminders')"><span class="ico">🔔</span><span class="lbl">Reminders</span></button>
 
     <div class="navgrp">Communication</div>
-    <button id="nv-comms" class="tab" onclick="nav('comms')"><span class="ico">📡</span><span class="lbl">Communications</span><span id="comms-badge" class="badge hidden"></span></button>
+    <button id="nv-comms" class="tab" onclick="nav('comms')"><span class="ico">📡</span><span class="lbl">Communications</span><span id="comms-badge" class="badge hidden"></span><span class="caret" id="comms-caret" title="Show or hide Messages, Templates, Contacts and Invitations" onclick="toggleCommsGroup(event)">▼</span></button>
     <button id="nv-msgs" class="subnav" onclick="nav('msgs')"><span class="ico">💬</span><span class="lbl">Messages</span><span id="msg-badge" class="badge hidden"></span></button>
     <button id="nv-templates" class="subnav" onclick="nav('templates')"><span class="ico">📝</span><span class="lbl">Templates</span></button>
     <button id="nv-contacts" class="subnav" onclick="nav('contacts')"><span class="ico">📇</span><span class="lbl">Contacts</span><span id="ct-badge" class="badge hidden"></span></button>
@@ -1426,6 +1437,7 @@ async function boot(){
     if(me.role==='super_admin'){ showPlatformNotice(me); return; }
     if(!ADMIN_ROLES.includes(me.role)){ location.href='/'; return; }
     $('v-login').classList.add('hidden'); $('v-app').classList.remove('hidden');
+    setCommsGroup(false);   // folded on every open; nav() opens it if you land inside it
     loadDash();
     wireAddressFields();          // the wizard and Settings are on the page, not in a modal
     maybeWizard().catch(()=>{});
@@ -1466,7 +1478,28 @@ async function logout(){
   await api('/api/logout',{method:'POST'}); location.reload();
 }
 
+// ---------- the Communication group in the sidebar ----------
+// Four sub-items — Messages, Templates, Contacts, Invitations — used to sit open all the
+// time. They fold under Communications now, shut on every open, because most visits to
+// this sidebar are not about any of them.
+//
+// The caret toggles without navigating; the Communications button itself still navigates,
+// and opens the group on the way so you can see where you have landed. Anything that puts
+// you on one of the four opens it too, otherwise the active item would be invisible.
+const COMMS_SUBPAGES = ['msgs','templates','contacts','invites'];
+function setCommsGroup(open){
+  const aside = document.querySelector('#v-app aside');
+  if (aside) aside.classList.toggle('comms-shut', !open);
+}
+function toggleCommsGroup(ev){
+  // Without this the click also reaches the Communications button behind it and navigates,
+  // which is the one thing a caret must never do.
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  const aside = document.querySelector('#v-app aside');
+  if (aside) aside.classList.toggle('comms-shut');
+}
 function nav(pg){
+  if (COMMS_SUBPAGES.includes(pg) || pg === 'comms') setCommsGroup(true);
   for(const p of ['dash','loans','loan','docs','ledger','pml','pmld','tbs','props','propd','calc','tasks','cal','comms','contacts','reports','templates','reminders','invites','exp','msgs','slips','settings']){
     const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
