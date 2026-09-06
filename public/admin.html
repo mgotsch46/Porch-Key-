@@ -401,10 +401,15 @@ aside button.subnav.active{padding-left:41px}
    selector. Wrapping the sub-items in a div would take them out of that relationship and
    they would reappear along the bottom of every phone. */
 aside.comms-shut > button.subnav{display:none}
-aside .caret{margin-left:auto;font-size:10px;opacity:.6;transition:transform .18s ease;
-  padding:4px 2px 4px 8px;border-radius:6px}
+/* A big target. At 22x19 in a 221x47 row this was 4% of the row, and the other 96%
+   navigated — which OPENED the group. So a near miss did the opposite of what you were
+   reaching for, and there was no way to fold it again. Now the caret fills the height of
+   the row, and the row itself toggles too, so both halves of the thing do what you mean. */
+aside .caret{margin-left:auto;font-size:11px;opacity:.65;line-height:1;
+  padding:15px 14px 15px 16px;margin-right:-6px;border-radius:8px;
+  transition:transform .18s ease,opacity .15s ease,background .15s ease}
 aside.comms-shut .caret{transform:rotate(-90deg)}
-aside .caret:hover{opacity:1;background:rgba(255,255,255,.12)}
+aside .caret:hover{opacity:1;background:rgba(255,255,255,.14)}
 aside button.signout{margin-top:6px;color:#7FA3B2}
 
 .mobile-only{display:none}
@@ -527,7 +532,7 @@ a{color:var(--brand);font-weight:600}
     <button id="nv-reminders" onclick="nav('reminders')"><span class="ico">🔔</span><span class="lbl">Reminders</span></button>
 
     <div class="navgrp">Communication</div>
-    <button id="nv-comms" class="tab" onclick="nav('comms')"><span class="ico">📡</span><span class="lbl">Communications</span><span id="comms-badge" class="badge hidden"></span><span class="caret" id="comms-caret" title="Show or hide Messages, Templates, Contacts and Invitations" onclick="toggleCommsGroup(event)">▼</span></button>
+    <button id="nv-comms" class="tab" onclick="navComms()"><span class="ico">📡</span><span class="lbl">Communications</span><span id="comms-badge" class="badge hidden"></span><span class="caret" id="comms-caret" title="Show or hide Messages, Templates, Contacts and Invitations" onclick="toggleCommsGroup(event)">▼</span></button>
     <button id="nv-msgs" class="subnav" onclick="nav('msgs')"><span class="ico">💬</span><span class="lbl">Messages</span><span id="msg-badge" class="badge hidden"></span></button>
     <button id="nv-templates" class="subnav" onclick="nav('templates')"><span class="ico">📝</span><span class="lbl">Templates</span></button>
     <button id="nv-contacts" class="subnav" onclick="nav('contacts')"><span class="ico">📇</span><span class="lbl">Contacts</span><span id="ct-badge" class="badge hidden"></span></button>
@@ -1498,8 +1503,19 @@ function toggleCommsGroup(ev){
   const aside = document.querySelector('#v-app aside');
   if (aside) aside.classList.toggle('comms-shut');
 }
+// The Communications row is two things at once: a page you can visit and the heading of a
+// group. It used to only ever OPEN the group, which left the caret — 4% of the row — as
+// the only way to fold it again, with the surrounding 96% doing the opposite. So the row
+// toggles as well as navigating. Whichever part of it you hit, it does what you meant.
+function navComms(){
+  toggleCommsGroup();
+  nav('comms');
+}
 function nav(pg){
-  if (COMMS_SUBPAGES.includes(pg) || pg === 'comms') setCommsGroup(true);
+  // Landing on one of the four opens the group, or the page you are on would be hiding
+  // behind its own heading. 'comms' is deliberately not in here: the row toggles it, and
+  // forcing it open here would undo that on the way past.
+  if (COMMS_SUBPAGES.includes(pg)) setCommsGroup(true);
   for(const p of ['dash','loans','loan','docs','ledger','pml','pmld','tbs','props','propd','calc','tasks','cal','comms','contacts','reports','templates','reminders','invites','exp','msgs','slips','settings']){
     const el=$('pg-'+p); if(el) el.classList.toggle('hidden',p!==pg);
     const nb=$('nv-'+p); if(nb) nb.classList.toggle('active',p===pg);
