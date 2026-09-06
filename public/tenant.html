@@ -510,7 +510,7 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
       <div class="card">
         <h2>Your data</h2>
         <p class="note" style="margin-bottom:14px">Download everything we hold about you, any time.</p>
-        <a class="btn quiet" href="/api/account/export">⬇️ Download my data</a>
+        <a class="btn quiet" id="export-link" href="/api/account/export">⬇️ Download my data</a>
       </div>
 
       <div class="card">
@@ -630,6 +630,10 @@ async function enter(){
   ME = await api('/api/me').catch(()=>ME);
   loadNotices(); pollMsgs(); loadPayoff();
   registerSW(); refreshBadges(); notifUi();
+  // The one document link that lives in the page rather than in a render function, so it
+  // cannot go through docLink() when it is written. Same trap, same way out.
+  const exportLink = $('export-link');
+  if (exportLink) exportLink.href = docLink('/api/account/export', 'My data');
   askForPushOnce();
   setInterval(refreshBadges, 60000);
   // Deep link from a tapped notification.
@@ -960,14 +964,14 @@ async function loadPayoff(){
       <div class="row"><span class="k">Good through</span><span class="v">${fdate(live.good_through_date)}</span></div>
       <div class="row"><span class="k">After that, per day</span><span class="v">${fmt(live.per_diem_cents)}</span></div>
       <a class="btn primary" style="margin-top:12px;display:block;text-align:center;text-decoration:none"
-         href="/api/tenant/payoffs/${live.id}/pdf">⬇️ Download the statement (PDF)</a>
+         href="${docLink('/api/tenant/payoffs/'+live.id+'/pdf','Payoff statement')}">⬇️ Download the statement (PDF)</a>
       <p class="note" style="margin-top:10px">Take this to a bank or a title company if you are arranging
         finance. It shows the exact amount and the date it is good until.</p>`
     : `<p class="note" style="margin-bottom:12px">Ask for a payoff statement and you will get the exact
          amount needed to pay your home off in full, on your servicer's letterhead.</p>
        <button class="btn primary" onclick="requestPayoff()">Request a payoff statement</button>`}
     ${qs.length>1?`<p class="note" style="margin-top:12px">Earlier statements: ${
-      qs.filter(q=>q!==live).map(q=>`<a href="/api/tenant/payoffs/${q.id}/pdf">${esc(q.quote_number)}</a>`).join(' · ')}</p>`:''}
+      qs.filter(q=>q!==live).map(q=>`<a href="${docLink('/api/tenant/payoffs/'+q.id+'/pdf','Statement '+q.quote_number)}">${esc(q.quote_number)}</a>`).join(' · ')}</p>`:''}
   </div>`;
 }
 async function requestPayoff(){
@@ -988,7 +992,7 @@ async function loadNotices(){
     <details onclick="markRead(${n.id})">
       <summary style="color:${n.read_at?'var(--mut)':'var(--red)'}">${n.read_at?'':'● '}${esc(n.subject)}</summary>
       <div class="body">${n.body_html ? n.body_html : esc(n.body)}
-        <p style="margin-top:10px"><a href="/api/tenant/notices/${n.id}/pdf"
+        <p style="margin-top:10px"><a href="${docLink('/api/tenant/notices/'+n.id+'/pdf', n.subject)}"
           style="color:var(--brand);font-weight:600">⬇️ Download this notice as a PDF</a></p></div>
     </details>`).join('');
 }
@@ -1004,10 +1008,10 @@ async function loadDocs(){
   $('docs-folders').innerHTML=folders.map(f=>`
     <div class="card"><h2>${DICO[f.category]||'📁'} ${esc(f.label)}</h2>
     ${f.documents.length?f.documents.map(d=>`<div class="row">
-      <span class="k">📎 <a href="/api/documents/${d.id}/view" target="_blank" rel="noopener" style="color:var(--brand);font-weight:600">${esc(d.title||d.filename)}</a>
+      <span class="k">📎 <a href="${docLink('/api/documents/'+d.id+'/view', d.title||d.filename)}" ${isNativeApp()?'':'target="_blank" rel="noopener"'} style="color:var(--brand);font-weight:600">${esc(d.title||d.filename)}</a>
       ${d.title?`<small>${esc(d.filename)}</small>`:''}</span>
       <span class="note">${fdate((d.effective_date||d.created_at||'').slice(0,10))}
-        <a href="/api/documents/${d.id}/download" title="Download" style="text-decoration:none">⬇</a></span></div>`).join('')
+        <a href="${docLink('/api/documents/'+d.id+'/download', d.title||d.filename)}" title="Download" style="text-decoration:none">⬇</a></span></div>`).join('')
       :'<p class="note">Nothing here yet. New documents your servicer shares will show up in this folder.</p>'}
     </div>`).join('');
 }
@@ -1043,7 +1047,7 @@ async function pollMsgs(){
     list.innerHTML=msgs.length?msgs.map(m=>{
       const when=new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
       if(m.body_html) return `${m.body_html}<div class="note" style="margin:-6px 0 14px 4px">${when}
-        · <a href="/api/tenant/messages/${m.id}/pdf" style="color:var(--brand);font-weight:600">⬇️ PDF</a></div>`;
+        · <a href="${docLink('/api/tenant/messages/'+m.id+'/pdf','Notice')}" style="color:var(--brand);font-weight:600">⬇️ PDF</a></div>`;
       return `<div class="msg ${m.sender_role==='tenant'?'me':'them'}">${esc(m.body)}
        <div class="t">${m.sender_role==='tenant'?'You':esc(m.sender_name)} · ${when}</div></div>`;
     }).join(''):'<div class="card"><p class="note">No messages yet. Say hello — your servicer sees it right away.</p></div>';
@@ -1190,6 +1194,20 @@ async function refreshDiag(){
 const isNativeApp = () =>
   !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function'
      && window.Capacitor.isNativePlatform());
+
+// A link to a document is safe in a browser and a trap in the store apps. The apps are a
+// WebView around this site, so following the link navigates the WHOLE APP to the PDF —
+// and a WebView has no address bar, no back button and no tabs. The statement opened and
+// the app was stuck on it.
+//
+// So inside the apps every document goes through /doc-view, which is the same document
+// under a bar with a Done button. In a browser the plain link is still the right thing:
+// the server sends it as an attachment, it downloads, and the page never moves.
+function docLink(path, title){
+  return isNativeApp()
+    ? '/doc-view?src=' + encodeURIComponent(path) + '&title=' + encodeURIComponent(title || 'Document')
+    : path;
+}
 
 async function enableNativePush(){
   const Push = window.Capacitor.Plugins && window.Capacitor.Plugins.PushNotifications;

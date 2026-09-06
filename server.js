@@ -8702,6 +8702,61 @@ app.post('/api/tenant/messages', tenantReady, (req, res) => {
 // at the App Privacy and Data Safety answers, which now say no location is collected.
 
 // ---------- pages ----------
+// A document opened inside the store apps used to be a dead end. The apps are a WebView
+// around this site, so following a link to a PDF NAVIGATES THE APP to that PDF — and a
+// WebView has no address bar, no back button and no tabs. The statement appeared and the
+// app was stuck on it, with no way back to the loan screen short of force-quitting.
+//
+// Content-Disposition is already 'attachment', which is enough for a desktop browser but
+// not for a WebView: iOS renders PDFs itself and ignores it. So rather than fight over how
+// the document is displayed, this wraps it in a page that always has a way out. The Done
+// button is ours, it is drawn before the document loads, and it works even if the document
+// does not render at all — which matters, because rendering is the part that varies by
+// platform and the part we do not control. Nobody gets stranded.
+//
+// `src` is restricted to an /api/ path on this same server: no scheme, no host, no '..',
+// so this cannot be turned into a viewer for somebody else's URL.
+app.get('/doc-view', anyUser, (req, res) => {
+  const src = String(req.query.src || '');
+  if (!/^\/api\/[A-Za-z0-9/_.-]*$/.test(src) || src.includes('..')) {
+    return res.status(400).send('Bad document link');
+  }
+  const title = String(req.query.title || 'Document').slice(0, 80);
+  const esc = s => String(s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>${esc(title)}</title>
+<style>
+  :root{--brand:#54A32F;--ink:#16220D;--bg:#F7FBF3}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);
+    font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--ink)}
+  body{display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:12px;padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;
+    background:var(--brand);color:#fff;flex:0 0 auto}
+  header h1{font-size:16px;margin:0;font-weight:700;flex:1;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .done{background:#fff;color:var(--brand);border:0;border-radius:999px;
+    padding:9px 20px;font-size:15px;font-weight:800;cursor:pointer}
+  .doc{flex:1 1 auto;border:0;width:100%;background:#fff}
+  .fallback{padding:22px;text-align:center}
+  .fallback a{color:var(--brand);font-weight:700}
+</style></head><body>
+<header><h1>${esc(title)}</h1><button class="done" onclick="leave()">Done</button></header>
+<iframe class="doc" src="${esc(src)}" title="${esc(title)}"></iframe>
+<noscript><p class="fallback"><a href="${esc(src)}">Open the document</a></p></noscript>
+<script>
+  // Back if there is somewhere to go back to, otherwise the loan screen. Either way the
+  // button does something — a Done that does nothing is how this started.
+  function leave(){
+    if (history.length > 1) { history.back(); setTimeout(function(){ location.href='/'; }, 400); }
+    else location.href='/';
+  }
+</script>
+</body></html>`);
+});
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 app.get('/privacy', (req, res) => res.sendFile(path.join(__dirname, 'public', 'privacy.html')));
 app.get('/terms', (req, res) => res.sendFile(path.join(__dirname, 'public', 'terms.html')));
