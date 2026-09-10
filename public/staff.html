@@ -15,7 +15,12 @@
   --card:#FFFFFF; --red:#D64545; --amber:#B8860B; --pale:#EFF8E7;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%}
+/* The body grows with its content. It used to be pinned at height:100%, which put its
+   bottom padding (the room for the tab bar) at the bottom of the SCREEN instead of the
+   bottom of the page: the last rows of every long list sat under the tab bar and no
+   amount of scrolling would bring them out. */
+html{min-height:100%}
+body{min-height:100%}
 body{font-family:'Space Grotesk',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   background:var(--bg);color:var(--ink);font-size:15px;
   /* The app draws edge-to-edge on iPhone; the notch and status bar live inside the
@@ -139,9 +144,6 @@ audio{width:100%;height:30px;margin-top:6px}
 /* the conversation itself */
 body.in-thread{padding-bottom:calc(126px + env(safe-area-inset-bottom))}
 body.in-thread .nav{display:none}
-/* body is height:100%, so its own padding sits at the viewport's bottom edge, not after
-   the thread. The room for the composer has to live on the thread itself. */
-body.in-thread .tbody{padding-bottom:calc(118px + env(safe-area-inset-bottom))}
 body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
 .thead{position:sticky;top:0;z-index:4;margin-top:calc(-1 * env(safe-area-inset-top));
   padding:calc(4px + env(safe-area-inset-top)) 12px 10px;background:rgba(247,251,243,.95);
@@ -732,8 +734,7 @@ function threadFilter(f){
   document.querySelectorAll('#t-chips button').forEach(b=>b.classList.toggle('active',b.dataset.f===f));
   renderThread(); scrollBottom();
 }
-// html and body are both height:100%, so the body's own scrollHeight stops at the
-// viewport; the document's scrolling element is the one that knows the real bottom.
+// The document's scrolling element, not the body, is the one that knows the real bottom.
 function scrollBottom(){
   const go=()=>{ const el=document.scrollingElement||document.documentElement; window.scrollTo(0,el.scrollHeight); };
   go(); requestAnimationFrame(go);
