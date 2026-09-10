@@ -87,6 +87,184 @@ audio{width:100%;height:30px;margin-top:6px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom));background:var(--ink);color:#fff;
   padding:9px 16px;border-radius:11px;font-size:13.5px;opacity:0;transition:opacity .25s;z-index:9;pointer-events:none}
 .toast.show{opacity:.95}
+
+/* ─── Comms: one conversation per house ─────────────────────────────────────── */
+.top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:18px 14px 8px 18px}
+.top h1{padding:0}
+.iconbtn{width:40px;height:40px;border-radius:50%;padding:0;flex:none;display:inline-flex;align-items:center;
+  justify-content:center;background:#fff;border:1px solid var(--line);color:var(--ink)}
+.iconbtn svg{width:19px;height:19px}
+.iconbtn:disabled{opacity:.35}
+.searchbar{position:relative;margin:2px 14px 10px}
+.searchbar svg{position:absolute;left:13px;top:50%;transform:translateY(-50%);width:17px;height:17px;color:var(--mut);pointer-events:none}
+.searchbar input{padding:10px 12px 10px 38px;border-radius:12px;border:1px solid var(--line);-webkit-appearance:none;appearance:none}
+.seg2{display:flex;gap:3px;margin:0 14px 12px;background:#E8EFE0;border-radius:11px;padding:3px}
+.seg2 button{flex:1;padding:7px 0;font-size:13.5px;border-radius:9px;background:none;color:var(--mut);font-weight:600}
+.seg2 button.active{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(22,34,13,.14)}
+.list{background:#fff;border:1px solid var(--line);border-radius:18px;margin:0 14px 14px;overflow:hidden;
+  box-shadow:0 1px 3px rgba(22,34,13,.04)}
+.trow{display:flex;gap:12px;padding:12px 14px;cursor:pointer;position:relative;-webkit-tap-highlight-color:transparent}
+.trow+.trow::before{content:'';position:absolute;top:0;left:70px;right:0;border-top:1px solid var(--line)}
+.trow:active{background:var(--bg)}
+.avatar{flex:none;width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-weight:700;font-size:15px;letter-spacing:.3px}
+.avatar svg{width:21px;height:21px}
+.tmain{flex:1;min-width:0}
+.tl1{display:flex;align-items:baseline;gap:8px}
+.taddr{flex:1;min-width:0;font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ttime{flex:none;font-size:12px;color:var(--mut)}
+.tl2{font-size:13px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.tl3{display:flex;align-items:center;gap:6px;margin-top:4px;font-size:13.5px;color:#4A5741}
+.tl3 svg{flex:none;width:14px;height:14px;color:var(--mut)}
+.tl3 .pv{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trow.unread .taddr{font-weight:800}
+.trow.unread .tl3{color:var(--ink);font-weight:600}
+.trow.unread .ttime{color:var(--brand);font-weight:700}
+.trow.quiet .taddr{font-weight:500}
+.cnt{flex:none;min-width:20px;height:20px;border-radius:10px;background:var(--brand);color:#fff;font-size:11.5px;
+  font-weight:700;display:inline-flex;align-items:center;justify-content:center;padding:0 6px}
+.sechead{font-size:11.5px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:var(--mut);padding:8px 22px}
+.alertrow{display:flex;align-items:center;gap:12px;width:calc(100% - 28px);margin:0 14px 12px;text-align:left;
+  background:#FFF8E6;border:1px solid #F0DDA8;border-radius:16px;padding:12px 14px}
+.alertrow .ai{width:36px;height:36px;border-radius:50%;background:#FBEBC0;color:#8A6400;display:flex;
+  align-items:center;justify-content:center;flex:none}
+.alertrow .ai svg{width:18px;height:18px}
+.alertrow .at{flex:1;min-width:0}
+.alertrow .at b{display:block;font-size:14.5px}
+.alertrow .at span{font-size:12.5px;color:#7A6A3A}
+.chev{width:16px;height:16px;color:var(--mut);flex:none}
+.empty{padding:28px 20px;text-align:center;color:var(--mut);font-size:14px;line-height:1.5}
+.lede{color:var(--mut);font-size:13.5px;line-height:1.5;padding:0 18px 14px}
+
+/* the conversation itself */
+body.in-thread{padding-bottom:calc(126px + env(safe-area-inset-bottom))}
+body.in-thread .nav{display:none}
+/* body is height:100%, so its own padding sits at the viewport's bottom edge, not after
+   the thread. The room for the composer has to live on the thread itself. */
+body.in-thread .tbody{padding-bottom:calc(118px + env(safe-area-inset-bottom))}
+body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
+.thead{position:sticky;top:0;z-index:4;margin-top:calc(-1 * env(safe-area-inset-top));
+  padding:calc(4px + env(safe-area-inset-top)) 12px 10px;background:rgba(247,251,243,.95);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+.backbtn{display:inline-flex;align-items:center;gap:1px;background:none;padding:8px 6px 4px 0;color:var(--brand);
+  font-weight:600;font-size:15px;border-radius:0}
+.backbtn svg{width:19px;height:19px}
+.throw{display:flex;align-items:center;gap:11px;padding:4px 0 10px}
+.throw .avatar{width:40px;height:40px;font-size:14px}
+.thtxt{flex:1;min-width:0}
+.th1{font-weight:700;font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.th2{font-size:12.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.fchips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;margin:0 -12px;padding:0 12px}
+.fchips::-webkit-scrollbar{display:none}
+.fchips button{flex:none;font-size:13px;padding:6px 13px;border-radius:999px;background:#fff;border:1px solid var(--line);font-weight:600}
+.fchips button.active{background:var(--ink);border-color:var(--ink);color:#fff}
+.tbody{display:flex;flex-direction:column;padding:6px 12px 14px}
+.day{align-self:center;font-size:11px;font-weight:700;color:var(--mut);letter-spacing:.6px;text-transform:uppercase;margin:18px 0 6px}
+.b-row{display:flex;flex-direction:column;max-width:80%;margin-top:10px}
+.b-row.cont{margin-top:2px}
+.b-row.me{align-self:flex-end;align-items:flex-end}
+.b-row.them{align-self:flex-start;align-items:flex-start}
+.b-who{font-size:11.5px;font-weight:700;color:var(--mut);margin:0 0 3px 13px}
+.bubble{padding:9px 13px;border-radius:19px;font-size:15px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
+.bubble .subj{display:block;font-weight:700;margin-bottom:2px}
+.bubble.long{max-height:10.5em;overflow:hidden;position:relative}
+.bubble .more-btn{position:absolute;left:0;right:0;bottom:0;padding:30px 13px 9px;border-radius:0;text-align:left;
+  font-size:13px;font-weight:700;background:linear-gradient(rgba(255,255,255,0),#fff 32%);color:var(--brand)}
+.me .bubble .more-btn{background:linear-gradient(rgba(84,163,47,0),var(--brand) 32%);color:#fff}
+.me.other .bubble .more-btn{background:linear-gradient(rgba(47,107,26,0),#2F6B1A 32%)}
+.me .bubble{background:var(--brand);color:#fff}
+.them .bubble{background:#fff;border:1px solid var(--line)}
+.b-row.me.tail .bubble{border-bottom-right-radius:6px}
+.b-row.them.tail .bubble{border-bottom-left-radius:6px}
+.b-row.me.other .bubble{background:#2F6B1A}
+.b-row.bad .bubble{background:#FBEAEA;color:var(--red);border:1px solid #F3CFCF}
+.b-meta{font-size:11px;color:var(--mut);margin:4px 9px 0}
+.ev{align-self:center;width:min(100%,340px);display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0 2px;
+  padding:9px 11px;background:#fff;border:1px solid var(--line);border-radius:15px}
+.ev .ei{width:32px;height:32px;border-radius:50%;background:var(--pale);color:var(--brand);display:flex;
+  align-items:center;justify-content:center;flex:none}
+.ev .ei svg{width:15px;height:15px}
+.ev .et{flex:1;min-width:0}
+.ev .et b{display:block;font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev .et span{display:block;font-size:12px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev.bad .ei{background:#FBEAEA;color:var(--red)}
+.ev.legal .ei{background:#EDEFF6;color:#3B4A7A}
+.ev.mail .ei{background:#EAF3F8;color:#2B6A8C}
+.ev .quote{flex-basis:100%;font-size:13px;color:#3E4A35;background:var(--bg);border-radius:10px;padding:8px 10px;line-height:1.45}
+.play{flex:none;display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;padding:7px 12px;
+  border-radius:999px;background:var(--pale);color:var(--brand)}
+.play svg{width:11px;height:11px}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;border-radius:6px;padding:1px 6px;margin-left:5px;
+  vertical-align:1px;background:var(--pale);color:var(--brand)}
+.tag.bad{background:#FBEAEA;color:var(--red)}
+.composer2{position:fixed;left:0;right:0;bottom:0;z-index:5;background:rgba(255,255,255,.97);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border-top:1px solid var(--line);
+  padding:8px 12px calc(10px + env(safe-area-inset-bottom))}
+.crow{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.tochip{display:inline-flex;align-items:center;gap:6px;min-width:0;flex:1;background:none;padding:4px 2px;
+  font-size:13.5px;justify-content:flex-start;border-radius:8px}
+.tochip .to{color:var(--mut)}
+.tochip b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tochip svg{width:14px;height:14px;color:var(--mut);flex:none}
+.mseg{display:flex;background:#EEF3E8;border-radius:10px;padding:2px;flex:none}
+.mseg button{font-size:12.5px;padding:5px 11px;border-radius:8px;background:none;color:var(--mut);font-weight:600}
+.mseg button.active{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(22,34,13,.14)}
+.mseg button:disabled{opacity:.3}
+.mfixed{font-size:12.5px;color:var(--mut);font-weight:600;padding:5px 4px}
+.cbox{display:flex;align-items:flex-end;gap:8px}
+.cbox textarea{flex:1;resize:none;max-height:120px;border-radius:21px;padding:9px 15px;line-height:1.35;min-height:40px}
+.sendbtn{width:40px;height:40px;border-radius:50%;padding:0;background:var(--brand);color:#fff;display:flex;
+  align-items:center;justify-content:center;flex:none}
+.sendbtn svg{width:18px;height:18px}
+.cnote{font-size:12.5px;color:var(--mut);text-align:center;padding:8px 0 2px}
+
+/* bottom sheet */
+.sheet-bg{position:fixed;inset:0;background:rgba(22,34,13,.38);z-index:20}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:21;background:#fff;border-radius:22px 22px 0 0;
+  padding:8px 16px calc(16px + env(safe-area-inset-bottom));max-height:84vh;overflow:auto;
+  box-shadow:0 -10px 30px rgba(22,34,13,.18)}
+.grab{width:38px;height:5px;border-radius:3px;background:#D9E2D0;margin:0 auto 14px}
+.sheet h3{font-size:17px;margin-bottom:4px}
+.sheet .note{margin-bottom:12px}
+.opt{display:flex;align-items:center;gap:12px;width:100%;padding:11px 2px;background:none;border-radius:0;
+  border-bottom:1px solid var(--line);text-align:left}
+.opt:last-child{border-bottom:0}
+.opt .avatar{width:36px;height:36px;font-size:13px}
+.opt .ot{flex:1;min-width:0}
+.opt .ot b{display:block;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.opt .ot span{display:block;font-size:12.5px;color:var(--mut)}
+.opt .ck{width:20px;height:20px;color:var(--brand);flex:none;visibility:hidden}
+.opt.sel .ck{visibility:visible}
+.opt:disabled{opacity:.4}
+.plist{max-height:38vh;overflow:auto;border:1px solid var(--line);border-radius:14px;padding:0 10px;margin:8px 0 12px}
+.wide{width:100%}
+
+/* the unfiled numbers */
+.ucard{padding:14px}
+.uhead{display:flex;align-items:center;gap:11px;margin-bottom:10px}
+.uhead .avatar{width:40px;height:40px;background:#F1F3EE;color:var(--mut)}
+.uhead b{font-size:15.5px}
+.uitem{display:flex;gap:9px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
+.uitem svg{width:15px;height:15px;color:var(--mut);flex:none;margin-top:2px}
+.uitem .ub{flex:1;min-width:0}
+.uitem .ub span{display:block;font-size:12px;color:var(--mut);margin-top:1px}
+.uact{display:flex;gap:8px;margin-top:10px}
+.uact button{flex:1}
+
+/* the house page's doorway into its conversation */
+.actions{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:0 14px 14px}
+.actions button{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 0 9px;font-size:12.5px;
+  font-weight:600;background:#fff;border:1px solid var(--line)}
+.actions button svg{width:19px;height:19px}
+.actions button.primary{background:var(--brand);border-color:var(--brand)}
+.convo .ch{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.convo .ch h2{margin:0}
+.convo .last{display:flex;gap:8px;align-items:center;font-size:14px;color:#3E4A35}
+.convo .last svg{width:15px;height:15px;color:var(--mut);flex:none}
+.convo .more svg{width:17px;height:17px;flex:none}
+.convo .last .pv{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.convo .more{display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding-top:11px;
+  border-top:1px solid var(--line);color:var(--brand);font-weight:700;font-size:14px}
 </style>
 </head>
 <body>
@@ -117,27 +295,24 @@ audio{width:100%;height:30px;margin-top:6px}
 
   <!-- PROPERTY: thread + actions -->
   <section id="tab-prop" class="hidden">
-    <button class="back" onclick="go('home')">← Properties</button>
+    <button class="backbtn" style="padding:12px 16px 2px" onclick="go('home')"><i data-ico="chevL"></i>Properties</button>
     <h1 id="p-title" style="padding-top:2px"></h1>
     <div style="padding:0 16px 10px" class="note" id="p-sub"></div>
-    <div style="display:flex;gap:8px;padding:0 12px 12px">
-      <button class="primary" id="p-call" onclick="callBuyer()">📞 Call</button>
-      <button id="p-text" onclick="composeMode='sms';composeFocus()">💬 Text</button>
-      <button onclick="composeMode='app';composeFocus()">📩 Message</button>
-      <button id="p-email" onclick="composeMode='email';composeFocus()">✉️</button>
+    <div class="actions">
+      <button class="primary" id="p-call" onclick="callBuyer()"><i data-ico="phone"></i>Call</button>
+      <button id="p-text" onclick="openThread(CUR.id,{mode:'sms',from:'prop'})"><i data-ico="msg"></i>Text</button>
+      <button id="p-msg" onclick="openThread(CUR.id,{mode:'app',from:'prop'})"><i data-ico="app"></i>In-app</button>
+      <button id="p-email" onclick="openThread(CUR.id,{mode:'email',from:'prop'})"><i data-ico="mail"></i>Email</button>
     </div>
-    <div class="card">
-      <div id="p-thread" class="thread"><p class="note">Loading…</p></div>
-      <div class="composer">
-        <textarea id="p-input" rows="1" placeholder="Message the buyer…" oninput="growBox(this)"></textarea>
-        <button class="primary" onclick="sendToBuyer()">Send</button>
-      </div>
-      <p class="note" id="p-mode-note" style="margin-top:6px"></p>
+    <div class="card click convo" onclick="openThread(CUR.id,{from:'prop'})">
+      <div class="ch"><h2>Conversation</h2><span id="p-unread" class="cnt hidden"></span></div>
+      <div id="p-last" class="last"><span class="note">Loading…</span></div>
+      <div class="more"><span>Open the conversation</span><i data-ico="chevR"></i></div>
     </div>
     <div class="card">
       <h2>👥 People on this house</h2>
-      <p class="note" style="margin-bottom:6px">Co-buyers, sellers, and lenders — call and text only;
-        the in-app thread above belongs to the buyer.</p>
+      <p class="note" style="margin-bottom:6px">Co-buyers, sellers, lenders and crew. Texts to them file
+        into this house's conversation.</p>
       <div id="p-people"><p class="note">Loading…</p></div>
     </div>
     <div class="card">
@@ -171,20 +346,76 @@ audio{width:100%;height:30px;margin-top:6px}
     <div class="signout"><a onclick="logout()">Sign out</a></div>
   </section>
 
-  <!-- COMMS -->
+  <!-- COMMS: one conversation per house, newest first -->
   <section id="tab-comms" class="hidden">
-    <h1>Comms <button class="small" style="float:right;font-size:15px" onclick="toggleKeypad()">☎️ Keypad</button></h1>
-    <div class="card">
-      <p class="note" style="margin-bottom:10px">Everything across every house, newest first — calls, voicemail and
-        texts, including anything from a number nobody recognises. Each house still has its own thread.</p>
-      <div id="comms-list"><p class="note">Loading…</p></div>
+    <div class="top">
+      <h1>Comms</h1>
+      <button class="iconbtn" onclick="toggleKeypad()" aria-label="Open the keypad"><i data-ico="keypad"></i></button>
     </div>
+    <div class="searchbar"><i data-ico="search"></i>
+      <input id="cm-q" type="search" placeholder="Search houses or buyers" autocomplete="off" oninput="renderThreads()">
+    </div>
+    <div class="seg2">
+      <button id="cf-all" class="active" onclick="setThreadFilter('all')">All houses</button>
+      <button id="cf-unread" onclick="setThreadFilter('unread')">Unread</button>
+    </div>
+    <div id="cm-unknown"></div>
+    <div id="cm-list"><div class="list"><div class="empty">Loading…</div></div></div>
     <div class="signout"><a onclick="logout()">Sign out</a></div>
+  </section>
+
+  <!-- ONE HOUSE'S CONVERSATION: buyer, crew, calls, email, notices, in one thread -->
+  <section id="tab-thread" class="hidden">
+    <header class="thead">
+      <button class="backbtn" onclick="threadBack()"><i data-ico="chevL"></i><span id="t-back">Comms</span></button>
+      <div class="throw">
+        <div class="avatar" id="t-av"></div>
+        <div class="thtxt"><div class="th1" id="t-title"></div><div class="th2" id="t-sub"></div></div>
+        <button class="iconbtn" id="t-call" onclick="threadCall()" aria-label="Call"><i data-ico="phone"></i></button>
+        <button class="iconbtn" onclick="openProp(TH.pid)" aria-label="House details"><i data-ico="house"></i></button>
+      </div>
+      <div class="fchips" id="t-chips">
+        <button data-f="" class="active" onclick="threadFilter('')">Everything</button>
+        <button data-f="text" onclick="threadFilter('text')">Texts</button>
+        <button data-f="call" onclick="threadFilter('call')">Calls</button>
+        <button data-f="email" onclick="threadFilter('email')">Email</button>
+        <button data-f="notice" onclick="threadFilter('notice')">Notices</button>
+      </div>
+    </header>
+    <div id="t-body" class="tbody"></div>
+    <div class="composer2" id="t-comp">
+      <div class="crow">
+        <button class="tochip" id="t-tochip" onclick="openRecipients()"><span class="to">To</span><b id="t-to"></b><i data-ico="chevD"></i></button>
+        <div class="mseg" id="t-modes">
+          <button data-m="sms" onclick="setMode('sms')">Text</button>
+          <button data-m="app" onclick="setMode('app')">In-app</button>
+          <button data-m="email" onclick="setMode('email')">Email</button>
+        </div>
+        <span class="mfixed hidden" id="t-mfixed">Text</span>
+      </div>
+      <div class="cbox" id="t-cbox">
+        <textarea id="t-input" rows="1" placeholder="Message" oninput="growBox(this)"></textarea>
+        <button class="sendbtn" id="t-send" onclick="threadSend()" aria-label="Send"><i data-ico="send"></i></button>
+      </div>
+      <div class="cnote hidden" id="t-cnote"></div>
+    </div>
+  </section>
+
+  <!-- NUMBERS THAT MATCHED NO HOUSE -->
+  <section id="tab-unknown" class="hidden">
+    <button class="backbtn" style="padding:12px 16px 2px" onclick="go('comms')"><i data-ico="chevL"></i>Comms</button>
+    <h1 style="padding-top:4px">Not filed yet</h1>
+    <p class="lede">Calls and texts from numbers that don't match anyone. File a number to a house and everything
+      from it moves there, and its next call or text lands in the right place on its own.</p>
+    <div id="un-list"></div>
   </section>
 
   <!-- DIALER (overlay, opened from the Comms header) -->
   <section id="tab-dial" class="hidden">
-    <h1>Dialer <button class="small" style="float:right;font-size:15px" onclick="go('comms')">✕ Close</button></h1>
+    <div class="top">
+      <h1>Keypad</h1>
+      <button class="iconbtn" onclick="go('comms')" aria-label="Close the keypad"><i data-ico="x"></i></button>
+    </div>
     <div class="card" style="text-align:center">
       <input id="d-num" inputmode="tel" placeholder="(555) 555-5555" style="text-align:center;font-size:22px;letter-spacing:1px" oninput="dialFmt()">
       <div class="pad">
@@ -221,6 +452,8 @@ audio{width:100%;height:30px;margin-top:6px}
 </div>
 
 <div id="pp-toast" class="toast"></div>
+<div id="sheet-bg" class="sheet-bg hidden" onclick="closeSheet()"></div>
+<div id="sheet" class="sheet hidden" role="dialog"><div class="grab"></div><div id="sheet-body"></div></div>
 
 <script>
 const $=id=>document.getElementById(id);
@@ -239,7 +472,7 @@ function toast(m){const t=$('pp-toast');t.textContent=m;t.classList.add('show');
 function growBox(t){t.style.height='auto';t.style.height=Math.min(t.scrollHeight,120)+'px';}
 
 // ---------- boot ----------
-let OV=null, tab='home', CUR=null, CURV=null, composeMode='sms';
+let OV=null, tab='home', CUR=null, CURV=null, ME=null;
 async function boot(){
   try{
     const me=await api('/api/me');
@@ -247,10 +480,16 @@ async function boot(){
     // it in produced a shell with nothing in it and no reason given.
     if(me.role==='super_admin'){ platformNotice(me); return; }
     if(!['owner','admin'].includes(me.role)){ location.href='/'; return; }
+    ME=me;
     $('v-login').classList.add('hidden'); $('v-app').classList.remove('hidden');
     await refresh();
+    loadThreadList();
     registerPush().catch(()=>{});
-    setInterval(refresh, 30000);
+    setInterval(()=>{
+      refresh();
+      if(tab==='comms'||tab==='unknown') loadThreadList();
+      if(tab==='thread') loadThread(false);
+    }, 30000);
   }catch{ $('v-login').classList.remove('hidden'); }
 }
 async function doLogin(){
@@ -274,74 +513,463 @@ async function logout(){ await api('/api/logout',{method:'POST'}); location.relo
 
 function go(t){
   tab=t;
-  for(const k of ['home','prop','bog','vendor','dial','comms','money']){
+  for(const k of ['home','prop','bog','vendor','dial','comms','money','thread','unknown']){
     const el=$('tab-'+k); if(el) el.classList.toggle('hidden',k!==t);
     const nb=$('nb-'+k); if(nb) nb.classList.toggle('active',k===t);
   }
-  // The keypad lives inside Comms, so keep that nav button lit while it is open.
-  if(t==='dial'){ const nb=$('nb-comms'); if(nb) nb.classList.add('active'); }
+  // The keypad and the unfiled numbers live inside Comms, so keep that button lit.
+  if(t==='dial'||t==='unknown'||t==='thread'){ const nb=$('nb-comms'); if(nb) nb.classList.add('active'); }
+  // A conversation owns the whole screen, like any messaging app: no tab bar under
+  // the composer.
+  document.body.classList.toggle('in-thread',t==='thread');
+  if(t!=='thread'){ stopAudio(); closeSheet(); }
   if(t==='home'||t==='bog'||t==='money') refresh();
-  if(t==='comms') loadComms();
+  if(t==='comms') loadThreadList();
+  if(t==='unknown'){
+    renderUnknown();
+    // The unfiled bucket has no thread of its own, so looking at it clears it.
+    api('/api/admin/comms/seen',{method:'POST',body:JSON.stringify({property_id:0})})
+      .then(()=>{ refresh(); loadThreadList(); }).catch(()=>{});
+  }
   window.scrollTo(0,0);
 }
 function toggleKeypad(){ go(tab==='dial'?'comms':'dial'); }
 
-// ---------- comms inbox ----------
-// The same events the property threads show, but across every house at once, so a
-// call from a number that matched nothing is still somewhere a person can find it.
-async function loadComms(){
-  const el=$('comms-list'); if(!el) return;
-  let d; try{ d=await api('/api/admin/comms'); }
-  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
-  setBadge('b-comms', d.unread_total);
-  if(!d.events.length){ el.innerHTML='<p class="note">Nothing yet.</p>'; return; }
-  const ICON={call:'📞',voicemail:'📼',text:'💬',message:'📩'};
-  el.innerHTML=d.events.map(ev=>{
-    const dur=ev.duration_sec?` · ${Math.floor(ev.duration_sec/60)}:${String(ev.duration_sec%60).padStart(2,'0')}`:'';
-    const key=(ev.call_id?'c'+ev.call_id:'m'+ev.message_id);
-    const where=ev.address?esc(ev.address)
-      :`<span class="pill amber">no house yet</span> <button class="small" onclick="event.stopPropagation();toggleAttach('${key}')">Attach…</button>`;
-    const open=ev.property_id?` onclick="openProp(${ev.property_id})" style="cursor:pointer"`:'';
-    // The form sits inline rather than in a dialog: one tap, no overlay, and it works
-    // standing in a driveway on a small screen.
-    const form=ev.address?'':`<div id="ac-${key}" class="hidden" style="margin-top:8px;padding:8px;background:var(--bg);border-radius:8px">
-      <select id="acp-${key}" style="width:100%;padding:9px;font-size:16px;margin-bottom:6px">
-        ${(OV&&OV.properties||[]).map(p=>`<option value="${p.id}">${esc(p.address)}</option>`).join('')}
-      </select>
-      <input id="acn-${key}" placeholder="Who is this? (optional)" style="width:100%;padding:9px;font-size:16px;margin-bottom:6px">
-      <button class="primary" style="width:100%" onclick="event.stopPropagation();attachComm('${key}',${ev.message_id||'null'},${ev.call_id||'null'})">File it</button>
-    </div>`;
-    return `<div${open} style="padding:9px 0;border-bottom:1px solid var(--line)">
-      <div style="display:flex;justify-content:space-between;gap:8px">
-        <b>${ICON[ev.channel]||''} ${esc(ev.who||'unknown')}</b>
-        <span class="note" style="white-space:nowrap">${when(ev.ts)}</span>
-      </div>
-      <div class="note">${ev.direction==='in'?'Incoming':'Outgoing'}${dur} · ${where}</div>
-      ${ev.body?`<div style="font-size:13.5px;margin-top:3px;white-space:pre-wrap">${esc(String(ev.body).slice(0,220))}</div>`:''}
-      ${ev.transcript?`<div class="note" style="margin-top:3px">“${esc(String(ev.transcript).slice(0,160))}”</div>`:''}
-      ${ev.recording_id?`<audio controls preload="none" style="width:100%;height:30px;margin-top:5px" src="/api/admin/recordings/${ev.recording_id}/audio"></audio>`:''}
-      ${form}
-    </div>`;
-  }).join('');
-  // The unmatched bucket has no thread of its own, so opening the inbox clears it.
-  try{ await api('/api/admin/comms/seen',{method:'POST',body:JSON.stringify({property_id:0})}); }catch{}
-  refresh();
+// ---------- icons ----------
+// One small line-icon set instead of emoji, so the Comms screens read as one piece.
+const sv=(p)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const ICON={
+  phone:sv('<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>'),
+  missed:sv('<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/><line x1="23" y1="1" x2="17" y2="7"/><line x1="17" y1="1" x2="23" y2="7"/>'),
+  msg:sv('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
+  app:sv('<rect x="5" y="2" width="14" height="20" rx="2.5"/><line x1="11" y1="18" x2="13" y2="18"/>'),
+  mail:sv('<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>'),
+  vm:sv('<circle cx="6" cy="12" r="4"/><circle cx="18" cy="12" r="4"/><line x1="6" y1="16" x2="18" y2="16"/>'),
+  doc:sv('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/>'),
+  money:sv('<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>'),
+  search:sv('<circle cx="11" cy="11" r="7.5"/><line x1="21" y1="21" x2="16.5" y2="16.5"/>'),
+  keypad:'<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4.5" r="1.9"/><circle cx="12" cy="4.5" r="1.9"/><circle cx="19" cy="4.5" r="1.9"/><circle cx="5" cy="11" r="1.9"/><circle cx="12" cy="11" r="1.9"/><circle cx="19" cy="11" r="1.9"/><circle cx="5" cy="17.5" r="1.9"/><circle cx="12" cy="17.5" r="1.9"/><circle cx="19" cy="17.5" r="1.9"/><circle cx="12" cy="23" r="1.2"/></svg>',
+  chevL:sv('<polyline points="15 18 9 12 15 6"/>'),
+  chevR:sv('<polyline points="9 18 15 12 9 6"/>'),
+  chevD:sv('<polyline points="6 9 12 15 18 9"/>'),
+  house:sv('<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/>'),
+  send:sv('<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>'),
+  alert:sv('<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
+  check:sv('<polyline points="20 6 9 17 4 12"/>'),
+  x:sv('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'),
+  play:'<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5z"/></svg>',
+  pause:'<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4.5" width="4" height="15" rx="1"/><rect x="14" y="4.5" width="4" height="15" rx="1"/></svg>',
+};
+function paintIcons(root){ (root||document).querySelectorAll('i[data-ico]').forEach(el=>{ el.outerHTML=ICON[el.dataset.ico]||''; }); }
+
+// ---------- little formatters ----------
+const tsDate=ts=>new Date(String(ts).replace(' ','T')+(/Z|[+-]\d\d:?\d\d$/.test(String(ts))?'':'Z'));
+const clock=ts=>tsDate(ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+const dayKey=d=>d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate();
+function relTime(ts){
+  if(!ts) return '';
+  const d=tsDate(ts), now=new Date();
+  if(dayKey(d)===dayKey(now)) return clock(ts);
+  const y=new Date(now); y.setDate(now.getDate()-1);
+  if(dayKey(d)===dayKey(y)) return 'Yesterday';
+  if(now-d<6*864e5) return d.toLocaleDateString('en-US',{weekday:'short'});
+  return d.toLocaleDateString('en-US',d.getFullYear()===now.getFullYear()?{month:'short',day:'numeric'}:{month:'short',day:'numeric',year:'2-digit'});
 }
-// File a stray call or text against a house, from the phone. The house list is the
-// one already loaded for the Homes tab, so there is nothing extra to fetch.
-function toggleAttach(key){ const el=$('ac-'+key); if(el) el.classList.toggle('hidden'); }
-async function attachComm(key, messageId, callId){
-  const sel=$('acp-'+key); if(!sel||!sel.value){ toast('No house to file it against.'); return; }
-  const name=($('acn-'+key)||{}).value||'';
-  const body={ property_id:Number(sel.value) };
-  if(messageId) body.message_id=messageId;
-  if(callId) body.call_id=callId;
-  if(name.trim()) body.new_contact_name=name.trim();
+function dayLabel(d){
+  const now=new Date(); const y=new Date(now); y.setDate(now.getDate()-1);
+  if(dayKey(d)===dayKey(now)) return 'Today';
+  if(dayKey(d)===dayKey(y)) return 'Yesterday';
+  return d.toLocaleDateString('en-US',d.getFullYear()===now.getFullYear()
+    ?{weekday:'long',month:'short',day:'numeric'}:{month:'short',day:'numeric',year:'numeric'});
+}
+const mmss=s=>s?`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`:'';
+function fmtPhone(n){
+  const d=String(n||'').replace(/\D/g,'').slice(-10);
+  return d.length===10?`(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`:(n||'Unknown number');
+}
+function initials(name){
+  const w=String(name||'').replace(/[^A-Za-z\s'-]/g,'').trim().split(/\s+/).filter(Boolean);
+  return w.length?(w[0][0]+(w.length>1?w[w.length-1][0]:'')).toUpperCase():'';
+}
+// Soft tints, picked by house so a house keeps its colour everywhere it appears.
+const TINTS=[['#E4F2DA','#3F7F22'],['#DDEFEA','#1F6B5A'],['#FBEFD5','#8A6400'],['#E6ECF7','#3B4F86'],['#F5E4E0','#8C3B2C'],['#ECE6F4','#5B4485']];
+function avatarHtml(pid,name,cls){
+  const [bg,fg]=TINTS[Math.abs(Number(pid)||0)%TINTS.length];
+  const ini=initials(name);
+  return `<div class="avatar ${cls||''}" style="background:${bg};color:${fg}">${ini?esc(ini):ICON.house}</div>`;
+}
+function roleLabel(role){
+  const t=ROLE_TAG[role]?ROLE_TAG[role].replace(/^\S+\s/,''):(role||'contact');
+  return t==='BOG'?t:t.charAt(0).toUpperCase()+t.slice(1);
+}
+function chanIcon(ch,status){
+  if(ch==='call') return status==='missed'?ICON.missed:ICON.phone;
+  return {voicemail:ICON.vm,text:ICON.msg,message:ICON.app,email:ICON.mail,notice:ICON.doc,payment:ICON.money}[ch]||ICON.msg;
+}
+
+// ---------- the conversation list: one row per house ----------
+let THREADS=null, TFILTER='all';
+async function loadThreadList(){
+  try{ THREADS=await api('/api/admin/comms/threads'); }
+  catch(e){ if(!THREADS) $('cm-list').innerHTML=`<div class="list"><div class="empty">${esc(e.message)}</div></div>`; return; }
+  setBadge('b-comms', THREADS.unread_total);
+  renderThreads();
+  if(tab==='unknown') renderUnknown();
+  if(tab==='prop') renderPropConvo();
+}
+function setThreadFilter(f){
+  TFILTER=f;
+  $('cf-all').classList.toggle('active',f==='all');
+  $('cf-unread').classList.toggle('active',f==='unread');
+  renderThreads();
+}
+function previewOf(last){
+  if(!last) return '';
+  const who=last.who?String(last.who).split(/\s+/)[0]:'';
+  if(last.channel==='call'||last.channel==='voicemail') return last.preview;
+  if(last.channel==='email') return 'Email: '+last.preview;
+  if(last.direction==='out') return 'You: '+last.preview;
+  return (last.party==='contact'&&who?who+': ':'')+last.preview;
+}
+function threadRow(t){
+  const last=t.last;
+  const sub=[t.buyer_name,[t.city,t.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ');
+  return `<div class="trow ${t.unread?'unread':''} ${last?'':'quiet'}" onclick="openThread(${t.property_id})">
+    ${avatarHtml(t.property_id,t.buyer_name)}
+    <div class="tmain">
+      <div class="tl1"><span class="taddr">${esc(t.address)}</span><span class="ttime">${last?esc(relTime(last.ts)):''}</span></div>
+      <div class="tl2">${esc(sub||'No buyer on this house')}</div>
+      <div class="tl3">${last?chanIcon(last.channel,last.preview&&/^Missed/.test(last.preview)?'missed':''):''}
+        <span class="pv">${last?esc(previewOf(last)):'No messages yet'}</span>
+        ${t.unread?`<span class="cnt">${t.unread>99?'99+':t.unread}</span>`:''}</div>
+    </div>
+  </div>`;
+}
+function renderThreads(){
+  if(!THREADS) return;
+  const q=($('cm-q').value||'').trim().toLowerCase();
+  const nUnread=THREADS.threads.filter(t=>t.unread).length;
+  $('cf-unread').textContent=nUnread?`Unread (${nUnread})`:'Unread';
+  // Numbers nobody recognises get one tidy row at the top instead of a card each.
+  const un=THREADS.unknown||[];
+  $('cm-unknown').innerHTML=un.length&&!q?`<button class="alertrow" onclick="go('unknown')">
+      <span class="ai">${ICON.alert}</span>
+      <span class="at"><b>${un.length} ${un.length===1?'number':'numbers'} not filed to a house</b>
+        <span>Calls and texts from people we don't recognize</span></span>
+      ${THREADS.unknown_unread?`<span class="cnt" style="background:var(--amber)">${THREADS.unknown_unread}</span>`:''}
+      ${ICON.chevR.replace('<svg','<svg class="chev"')}
+    </button>`:'';
+  let rows=THREADS.threads;
+  if(q) rows=rows.filter(t=>[t.address,t.city,t.state,t.zip,t.buyer_name].join(' ').toLowerCase().includes(q));
+  if(TFILTER==='unread') rows=rows.filter(t=>t.unread);
+  const active=rows.filter(t=>t.last), quiet=rows.filter(t=>!t.last);
+  if(!rows.length){
+    $('cm-list').innerHTML=`<div class="list"><div class="empty">${q?'No house matches that search.'
+      :TFILTER==='unread'?'You’re all caught up.':'No houses yet.'}</div></div>`;
+    return;
+  }
+  $('cm-list').innerHTML=(active.length?`<div class="list">${active.map(threadRow).join('')}</div>`:'')
+    +(quiet.length?`<div class="sechead">No conversation yet</div><div class="list">${quiet.map(threadRow).join('')}</div>`:'');
+}
+
+// ---------- one house's conversation ----------
+let TH=null;   // { pid, prop, filter, mode, to, from, events }
+const MODE_OK={
+  sms:p=>!!(p.loan_id&&p.buyer&&p.buyer.phone),
+  app:p=>!!p.loan_id,
+  email:p=>!!(p.loan_id&&p.buyer&&p.buyer.email),
+};
+async function openThread(pid,opts={}){
+  if(!OV||!OV.properties.find(p=>p.id===pid)) await refresh();
+  const prop=OV&&OV.properties.find(p=>p.id===pid);
+  if(!prop){ toast('That house is not on this account any more.'); return; }
+  CUR=prop;
+  const people=(prop.people||[]).map((x,i)=>({...x,key:'p'+i})).filter(x=>x.phone);
+  const firstTo=prop.buyer&&prop.loan_id?'buyer':(people[0]?people[0].key:null);
+  let mode=opts.mode&&MODE_OK[opts.mode](prop)?opts.mode:['sms','app','email'].find(m=>MODE_OK[m](prop))||'sms';
+  TH={pid,prop,people,filter:'',mode,to:opts.to||firstTo,from:opts.from||'comms',events:[]};
+  go('thread');
+  $('t-back').textContent=TH.from==='prop'?'House':'Comms';
+  $('t-av').outerHTML=avatarHtml(pid,prop.buyer&&prop.buyer.name,'').replace('class="avatar ','id="t-av" class="avatar ');
+  $('t-title').textContent=prop.address;
+  $('t-sub').textContent=[prop.buyer?prop.buyer.name:'No buyer',[prop.city,prop.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ');
+  $('t-call').disabled=!recipientPhone();
+  document.querySelectorAll('#t-chips button').forEach(b=>b.classList.toggle('active',b.dataset.f===''));
+  $('t-body').innerHTML='<div class="empty">Loading…</div>';
+  renderComposer();
+  await loadThread(true);
+}
+function threadBack(){ stopAudio(); if(TH&&TH.from==='prop') openProp(TH.pid); else go('comms'); }
+function recipient(){
+  if(!TH||!TH.to) return null;
+  if(TH.to==='buyer') return TH.prop.buyer?{kind:'buyer',name:TH.prop.buyer.name,phone:TH.prop.buyer.phone}:null;
+  const x=TH.people.find(p=>p.key===TH.to);
+  return x?{kind:'person',name:x.name,phone:x.phone,person:x}:null;
+}
+function recipientPhone(){ const r=recipient(); return r&&r.phone; }
+function threadCall(){ const r=recipient(); if(r&&r.phone) bridgeCall(r.phone,r.name); }
+function renderComposer(){
+  const r=recipient();
+  const has=!!r;
+  $('t-tochip').classList.toggle('hidden',!has);
+  $('t-cbox').classList.toggle('hidden',!has);
+  $('t-cnote').classList.toggle('hidden',has);
+  if(!has){ $('t-modes').classList.add('hidden'); $('t-mfixed').classList.add('hidden');
+    $('t-cnote').textContent='Nobody with a phone or a buyer account on this house yet.'; return; }
+  $('t-to').textContent=r.name+(r.kind==='person'?` · ${roleLabel(r.person.role)}`:'');
+  const buyer=r.kind==='buyer';
+  $('t-modes').classList.toggle('hidden',!buyer);
+  $('t-mfixed').classList.toggle('hidden',buyer);
+  if(buyer) document.querySelectorAll('#t-modes button').forEach(b=>{
+    b.disabled=!MODE_OK[b.dataset.m](TH.prop); b.classList.toggle('active',b.dataset.m===TH.mode); });
+  const first=String(r.name||'').split(/\s+/)[0];
+  $('t-input').placeholder=!buyer||TH.mode==='sms'?`Text ${first}`:TH.mode==='email'?`Email ${first}`:`Message ${first} in the app`;
+  $('t-call').disabled=!r.phone;
+}
+function setMode(m){ if(!TH||!MODE_OK[m](TH.prop)) return; TH.mode=m; renderComposer(); $('t-input').focus(); }
+function threadFilter(f){
+  if(!TH) return; TH.filter=f;
+  document.querySelectorAll('#t-chips button').forEach(b=>b.classList.toggle('active',b.dataset.f===f));
+  renderThread(); scrollBottom();
+}
+// html and body are both height:100%, so the body's own scrollHeight stops at the
+// viewport; the document's scrolling element is the one that knows the real bottom.
+function scrollBottom(){
+  const go=()=>{ const el=document.scrollingElement||document.documentElement; window.scrollTo(0,el.scrollHeight); };
+  go(); requestAnimationFrame(go);
+}
+// A voicemail is the tail end of a call that nobody answered. Show it once, on the
+// call, with the tape and the words attached — not as a call and a voicemail apart.
+function foldVoicemail(events){
+  const bySid={};
+  for(const e of events) if(e.channel==='call'&&e.call_sid) bySid[e.call_sid]=e;
+  return events.filter(e=>{
+    if(e.channel!=='voicemail'||!e.call_sid||!bySid[e.call_sid]) return true;
+    const c=bySid[e.call_sid];
+    c.status='voicemail'; c.recording_id=c.recording_id||e.recording_id; c.transcript=e.transcript||c.transcript;
+    c.duration_sec=c.duration_sec||e.duration_sec;
+    return false;
+  });
+}
+async function loadThread(stick){
+  if(!TH) return;
+  const pid=TH.pid;
+  const atBottom=stick||(window.innerHeight+window.scrollY>=(document.scrollingElement||document.documentElement).scrollHeight-120);
+  let d; try{ d=await api(`/api/admin/properties/${pid}/comms?limit=300`); }
+  catch(e){ $('t-body').innerHTML=`<div class="empty">${esc(e.message)}</div>`; return; }
+  if(!TH||TH.pid!==pid) return;
+  TH.events=foldVoicemail(d.events||[]).reverse();
+  renderThread();
+  if(atBottom) scrollBottom();
+  // Reading the conversation is what clears this house's badge — every part of it.
+  try{ await api('/api/admin/comms/seen',{method:'POST',body:JSON.stringify({property_id:pid})}); }catch{}
+  refresh(); loadThreadList();
+}
+const FILTERS={
+  text:e=>e.channel==='text'||e.channel==='message',
+  call:e=>e.channel==='call'||e.channel==='voicemail',
+  email:e=>e.channel==='email',
+  notice:e=>e.channel==='notice',
+};
+function isBubble(e){ return e.channel==='text'||e.channel==='message'; }
+function senderKey(e){ return e.direction+'|'+(e.party==='contact'?'c'+(e.contact_id||e.who):'b'); }
+function renderThread(){
+  const el=$('t-body'); if(!TH) return;
+  const list=TH.filter?TH.events.filter(FILTERS[TH.filter]):TH.events;
+  if(!list.length){
+    el.innerHTML=`<div class="empty">${TH.filter?'Nothing of that kind on this house yet.'
+      :'No history on this house yet.<br>Anything you send from here files itself to it.'}</div>`;
+    return;
+  }
+  const buyerName=TH.prop.buyer&&TH.prop.buyer.name;
+  let html='', lastDay='';
+  list.forEach((e,i)=>{
+    const d=tsDate(e.ts), dk=dayKey(d);
+    if(dk!==lastDay){ html+=`<div class="day">${esc(dayLabel(d))}</div>`; lastDay=dk; }
+    if(!isBubble(e)){ html+=eventCard(e); return; }
+    const prev=list[i-1], next=list[i+1];
+    const near=(a,b)=>a&&b&&isBubble(a)&&isBubble(b)&&senderKey(a)===senderKey(b)
+      &&dayKey(tsDate(a.ts))===dayKey(tsDate(b.ts))&&Math.abs(tsDate(b.ts)-tsDate(a.ts))<5*60e3;
+    const cont=near(prev,e), contNext=near(e,next);
+    const mine=e.direction!=='in';
+    const other=e.party==='contact';        // crew, co-buyer, lender — not the buyer
+    const how=e.channel==='message'?'In-app':String(e.channels||'').includes('email')&&!String(e.channels||'').includes('sms')?'In-app + email':'Text';
+    const whoLbl=!mine&&other&&!cont?`<div class="b-who">${esc(e.who||'')}</div>`
+      :mine&&other&&!cont?`<div class="b-who">To ${esc(e.who||'')}</div>`:'';
+    const meta=contNext?'':`<div class="b-meta">${esc(clock(e.ts))} · ${esc(how)}${
+      mine&&!other&&e.who&&ME&&e.who!==ME.name?' · '+esc(e.who):''}${
+      e.status==='failed'?' · <b style="color:var(--red)">not delivered</b>':e.status==='not_sent'?' · not sent':''}</div>`;
+    // Notices copied into the buyer's thread run to pages. Fold anything that long.
+    const long=String(e.body||'').length>320;
+    const subj=e.summary&&e.channel==='message'?`<span class="subj">${esc(e.summary)}</span>`:'';
+    html+=`<div class="b-row ${mine?'me':'them'} ${cont?'cont':''} ${contNext?'':'tail'} ${other&&mine?'other':''} ${e.status==='failed'?'bad':''}">
+      ${whoLbl}<div class="bubble ${long?'long':''}">${subj}${esc(e.body||'')}${long?`<button class="more-btn" onclick="this.parentNode.classList.remove('long');this.remove()">Show all</button>`:''}</div>${meta}</div>`;
+  });
+  el.innerHTML=html;
+}
+function eventCard(e){
+  const t=clock(e.ts);
+  if(e.channel==='call'||e.channel==='voicemail'){
+    const vm=e.status==='voicemail'||e.channel==='voicemail';
+    const missed=e.status==='missed';
+    const title=vm?'Voicemail':missed?(e.direction==='in'?'Missed call':'No answer')
+      :e.direction==='in'?'Incoming call':'Outgoing call';
+    const who=e.who&&e.who!=='unknown'?(/^\+?\d[\d\s()-]+$/.test(e.who)?fmtPhone(e.who):e.who):'';
+    return `<div class="ev ${missed?'bad':''}">
+      <span class="ei">${vm?ICON.vm:missed?ICON.missed:ICON.phone}</span>
+      <span class="et"><b>${title}${e.duration_sec&&!missed?' · '+mmss(e.duration_sec):''}</b><span>${esc([who,t].filter(Boolean).join(' · '))}</span></span>
+      ${e.recording_id?playBtn(e.recording_id,e.duration_sec):''}
+      ${e.transcript?`<div class="quote">“${esc(String(e.transcript).slice(0,400))}”</div>`:''}
+    </div>`;
+  }
+  if(e.channel==='email'){
+    const bad=e.status==='failed'||e.status==='bounced';
+    return `<div class="ev mail ${bad?'bad':''}"><span class="ei">${ICON.mail}</span>
+      <span class="et"><b>${esc(e.summary||'Email')}</b><span>Email to ${esc(e.who||'')} · ${esc(t)}${bad?` <span class="tag bad">${esc(e.status)}</span>`:''}</span></span></div>`;
+  }
+  if(e.channel==='notice'){
+    return `<div class="ev legal"><span class="ei">${ICON.doc}</span>
+      <span class="et"><b>${esc(e.summary||'Notice')}</b><span>Notice sent · ${esc(t)}${e.served?' <span class="tag">served</span>':''}</span></span></div>`;
+  }
+  if(e.channel==='payment'){
+    const fee=/^Late fee/.test(e.summary||'');
+    return `<div class="ev ${fee?'bad':''}"><span class="ei">${ICON.money}</span>
+      <span class="et"><b>${esc(String(e.summary||'').replace(/ — /,' · '))}</b><span>${esc(t)}</span></span></div>`;
+  }
+  return '';
+}
+function playBtn(id,sec){ return `<button class="play" onclick="playRec(${Number(id)},this)">${ICON.play}<span>${sec?mmss(sec):'Play'}</span></button>`; }
+// One player for the whole app: starting a second tape stops the first.
+let AUD=null, AUDBTN=null;
+function setPlayIcon(btn,on){ if(btn) btn.firstElementChild.outerHTML=on?ICON.pause:ICON.play; }
+function stopAudio(){ if(AUD){ AUD.pause(); setPlayIcon(AUDBTN,false); } AUD=null; AUDBTN=null; }
+function playRec(id,btn){
+  if(AUD&&AUDBTN===btn){ AUD.paused?AUD.play().catch(()=>{}):AUD.pause(); return; }
+  stopAudio();
+  AUD=new Audio(`/api/admin/recordings/${id}/audio`); AUDBTN=btn;
+  AUD.onplay=()=>setPlayIcon(btn,true);
+  AUD.onpause=AUD.onended=()=>setPlayIcon(btn,false);
+  AUD.onerror=()=>{ setPlayIcon(btn,false); toast('That recording would not play.'); };
+  AUD.play().catch(()=>{});
+}
+async function threadSend(){
+  const t=$('t-input'); const body=t.value.trim(); if(!body||!TH) return;
+  const r=recipient(); if(!r){ toast('Nobody to send to on this house yet.'); return; }
+  const btn=$('t-send'); btn.disabled=true;
+  try{
+    if(r.kind==='buyer'){
+      const res=await api(`/api/admin/loans/${TH.prop.loan_id}/messages`,{method:'POST',
+        body:JSON.stringify({body,channels:TH.mode==='app'?[]:[TH.mode]})});
+      const f=(res.failures||[]).filter(x=>!/^app:/.test(x));
+      toast(f.length?'Saved in the app, but '+f[0].replace(/^\w+: /,'').replace(/^./,c=>c.toLowerCase())
+        :TH.mode==='sms'?'Text sent.':TH.mode==='email'?'Email sent.':'Sent to their app.');
+    } else {
+      let cid=r.person.contact_id;
+      if(!cid&&r.person.pml_id){
+        const x=await api(`/api/admin/pml/${r.person.pml_id}/ensure-contact`,{method:'POST',body:'{}'});
+        cid=x.contact_id; r.person.contact_id=cid;
+      }
+      if(!cid) throw new Error('No contact card for this person yet.');
+      await api(`/api/admin/contacts/${cid}/messages`,{method:'POST',body:JSON.stringify({body,property_id:TH.pid})});
+      toast('Text sent.');
+    }
+    t.value=''; growBox(t);
+    await loadThread(true);
+  }catch(e){ toast(e.message); }
+  finally{ btn.disabled=false; }
+}
+
+// ---------- bottom sheet ----------
+function openSheet(html){ $('sheet-body').innerHTML=html; $('sheet').classList.remove('hidden'); $('sheet-bg').classList.remove('hidden'); }
+function closeSheet(){ $('sheet').classList.add('hidden'); $('sheet-bg').classList.add('hidden'); }
+function openRecipients(){
+  if(!TH) return;
+  const p=TH.prop, opts=[];
+  if(p.buyer&&p.loan_id) opts.push({key:'buyer',name:p.buyer.name,sub:'Buyer · text, in-app or email'});
+  for(const x of TH.people) opts.push({key:x.key,name:x.name,sub:roleLabel(x.role)+' · '+fmtPhone(x.phone)});
+  openSheet(`<h3>Send to</h3><p class="note">Everything you send files under ${esc(p.address)}.</p>
+    ${opts.map(o=>`<button class="opt ${TH.to===o.key?'sel':''}" onclick="pickRecipient('${o.key}')">
+      ${avatarHtml(TH.pid,o.name)}<span class="ot"><b>${esc(o.name)}</b><span>${esc(o.sub)}</span></span>${ICON.check.replace('<svg','<svg class="ck"')}
+    </button>`).join('')||'<p class="note">Nobody attached to this house yet.</p>'}`);
+}
+function pickRecipient(k){ TH.to=k; closeSheet(); renderComposer(); }
+
+// ---------- numbers that matched no house ----------
+function renderUnknown(){
+  const el=$('un-list'); if(!el) return;
+  const list=(THREADS&&THREADS.unknown)||[];
+  if(!list.length){ el.innerHTML='<div class="card"><div class="empty">Everything is filed. Nothing waiting.</div></div>'; return; }
+  el.innerHTML=list.map((g,i)=>`<div class="card ucard">
+    <div class="uhead"><div class="avatar">${ICON.phone}</div>
+      <div><b>${esc(fmtPhone(g.phone))}</b><div class="note">${esc(countLabel(g))} · ${esc(relTime(g.last_ts))}</div></div></div>
+    ${g.items.slice(0,3).map(it=>{
+      const what=it.channel==='text'?esc(it.body||'')
+        :it.channel==='voicemail'?'Voicemail'+(it.duration_sec?' · '+mmss(it.duration_sec):'')
+        :it.status==='missed'?'Missed call':'Call'+(it.duration_sec?' · '+mmss(it.duration_sec):'');
+      return `<div class="uitem">${chanIcon(it.channel,it.status)}<div class="ub">${what}
+        ${it.transcript?`<div class="note" style="margin-top:3px">“${esc(String(it.transcript).slice(0,200))}”</div>`:''}
+        <span>${esc(relTime(it.ts))}</span></div>${it.recording_id?playBtn(it.recording_id,it.duration_sec):''}</div>`;
+    }).join('')}
+    <div class="uact">
+      <button class="primary" onclick="fileSheet(${i})">File to a house</button>
+      <button onclick="bridgeCall('${esc(String(g.phone||''))}','')">Call back</button>
+    </div>
+  </div>`).join('');
+}
+function countLabel(g){
+  const texts=g.items.filter(x=>x.channel==='text').length, calls=g.items.length-texts;
+  if(g.count===1) return g.items[0].channel==='text'?'1 text':g.items[0].channel==='voicemail'?'1 voicemail'
+    :g.items[0].status==='missed'?'1 missed call':'1 call';
+  if(!calls) return g.count+' texts';
+  if(!texts) return g.count+' calls';
+  return g.count+' calls and texts';
+}
+function fileSheet(i){
+  const g=THREADS.unknown[i]; if(!g) return;
+  const houses=(OV&&OV.properties)||[];
+  openSheet(`<h3>File ${esc(fmtPhone(g.phone))}</h3>
+    <p class="note">Everything from this number moves to the house you pick.</p>
+    <div class="searchbar" style="margin:0">${ICON.search}<input id="fs-q" type="search" placeholder="Search houses" oninput="filterFileList()"></div>
+    <div class="plist" id="fs-list">${houses.map(p=>`<button class="opt" data-id="${p.id}" data-s="${esc([p.address,p.city,p.buyer&&p.buyer.name].join(' ').toLowerCase())}" onclick="pickFileHouse(this)">
+      ${avatarHtml(p.id,p.buyer&&p.buyer.name)}<span class="ot"><b>${esc(p.address)}</b><span>${esc(p.buyer?p.buyer.name:'No buyer')}</span></span>${ICON.check.replace('<svg','<svg class="ck"')}
+    </button>`).join('')||'<p class="note" style="padding:12px 0">No houses yet.</p>'}</div>
+    <input id="fs-name" placeholder="Who is this? (optional)">
+    <p class="note" style="margin-top:6px">Naming them makes a contact card, so their next call shows up by name.</p>
+    <button class="primary wide" id="fs-go" disabled onclick="fileGo(${i})">File it</button>`);
+}
+function filterFileList(){
+  const q=($('fs-q').value||'').toLowerCase();
+  document.querySelectorAll('#fs-list .opt').forEach(b=>b.classList.toggle('hidden',!!q&&!b.dataset.s.includes(q)));
+}
+function pickFileHouse(btn){
+  document.querySelectorAll('#fs-list .opt').forEach(b=>b.classList.toggle('sel',b===btn));
+  $('fs-go').disabled=false;
+}
+async function fileGo(i){
+  const g=THREADS.unknown[i]; const sel=document.querySelector('#fs-list .opt.sel');
+  if(!g||!sel) return;
+  const it=g.items.find(x=>x.call_id)||g.items[0];
+  const name=($('fs-name').value||'').trim();
+  const body={property_id:Number(sel.dataset.id)};
+  if(it.call_id) body.call_id=it.call_id; else body.message_id=it.message_id;
+  if(name) body.new_contact_name=name;
+  $('fs-go').disabled=true;
   try{
     await api('/api/admin/comms/attach',{method:'POST',body:JSON.stringify(body)});
-    toast(name.trim()?'Filed — contact created.':'Filed.');
-    loadComms();
-  }catch(e){ toast(e.message); }
+    closeSheet(); toast(name?'Filed, and saved as a contact.':'Filed.');
+    await refresh(); await loadThreadList();
+  }catch(e){ toast(e.message); $('fs-go').disabled=false; }
+}
+
+// ---------- the house page's doorway into its conversation ----------
+function renderPropConvo(){
+  if(!CUR) return;
+  const t=THREADS&&THREADS.threads.find(x=>x.property_id===CUR.id);
+  const n=t?t.unread:(CUR.unread||0);
+  const b=$('p-unread'); b.classList.toggle('hidden',!n); b.textContent=n;
+  $('p-last').innerHTML=t&&t.last
+    ?`${chanIcon(t.last.channel)}<span class="pv">${esc(previewOf(t.last))}</span><span class="note">${esc(relTime(t.last.ts))}</span>`
+    :`<span class="note">${THREADS?'No messages on this house yet.':'Loading…'}</span>`;
 }
 
 // ---------- overview: home, badges, money, bog ----------
@@ -399,10 +1027,11 @@ async function openProp(id){
   $('p-title').textContent=CUR.address;
   $('p-sub').textContent=[CUR.buyer&&CUR.buyer.name,[CUR.city,CUR.state].filter(Boolean).join(', ')+(CUR.zip?' '+CUR.zip:'')].filter(Boolean).join(' · ');
   $('p-call').disabled=!(CUR.buyer&&CUR.buyer.phone);
-  $('p-text').disabled=!(CUR.loan_id&&CUR.buyer&&CUR.buyer.phone);
-  $('p-email').disabled=!(CUR.loan_id&&CUR.buyer&&CUR.buyer.email);
-  composeMode='sms'; modeNote();
-  loadPropThread(); loadPropPays(); renderPeople();
+  $('p-text').disabled=!MODE_OK.sms(CUR);
+  $('p-msg').disabled=!MODE_OK.app(CUR);
+  $('p-email').disabled=!MODE_OK.email(CUR);
+  renderPropConvo(); loadPropPays(); renderPeople();
+  loadThreadList();
 }
 // Everyone else on the house: rows with a role tag and call/text one tap away.
 // PML lenders come straight off their loans; the first text makes them a contact.
@@ -417,55 +1046,15 @@ function renderPeople(){
       <span><b>${esc(x.name)}</b> <span class="note">${ROLE_TAG[x.role]||esc(x.role)}</span>
         <div class="note">${esc(x.phone||'no phone')}</div></span>
       <span style="white-space:nowrap">
-        <button ${x.phone?'':'disabled'} onclick="bridgeCall('${esc(String(x.phone||''))}','${esc(x.name)}')">📞</button>
-        <button ${x.phone?'':'disabled'} onclick="textPerson(${i})">💬</button>
+        <button class="iconbtn" ${x.phone?'':'disabled'} aria-label="Call" onclick="bridgeCall('${esc(String(x.phone||''))}','${esc(x.name)}')">${ICON.phone}</button>
+        <button class="iconbtn" ${x.phone?'':'disabled'} aria-label="Text" onclick="textPerson(${i})">${ICON.msg}</button>
       </span>
     </div>`).join('');
 }
-async function textPerson(i){
-  const x=CUR.people[i]; if(!x) return;
-  let cid=x.contact_id;
-  if(!cid && x.pml_id){
-    try{ const r=await api(`/api/admin/pml/${x.pml_id}/ensure-contact`,{method:'POST',body:'{}'}); cid=r.contact_id; x.contact_id=cid; }
-    catch(e){ toast(e.message); return; }
-  }
-  if(!cid){ toast('No contact card for this person yet.'); return; }
-  openVendor(cid, x.name, x.phone||'', CUR.id, CUR.address, true);
-}
-function modeNote(){
-  $('p-mode-note').textContent = composeMode==='sms'
-    ? 'Sends as a real text from the business number, and files in the thread.'
-    : composeMode==='email' ? 'Sends as a branded email, and files in the thread.'
-    : 'In-app message — the buyer sees it in their PorchPay app.';
-}
-function composeFocus(){ modeNote(); $('p-input').focus(); }
-async function loadPropThread(){
-  const el=$('p-thread');
-  // The whole history of this house, the way a phone shows it: message bubbles for
-  // texts and in-app messages, centered entries for calls — each stamped with when
-  // it happened and how it traveled.
-  let d; try{ d=await api(`/api/admin/properties/${CUR.id}/comms`); }
-  catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
-  const events=(d.events||[]).filter(ev=>['call','voicemail','text','message'].includes(ev.channel)).reverse();
-  const CH={text:'💬 text',message:'📩 in-app'};
-  el.innerHTML=events.map(ev=>{
-    if(ev.channel==='call'||ev.channel==='voicemail'){
-      const dur=ev.duration_sec?` · ${Math.floor(ev.duration_sec/60)}:${String(ev.duration_sec%60).padStart(2,'0')}`:'';
-      return `<div style="align-self:center;text-align:center;font-size:12px;color:var(--mut);padding:2px 0">
-        ${ev.channel==='voicemail'?'📼':'📞'} ${ev.direction==='in'?'Incoming':'Outgoing'} ${ev.channel==='voicemail'?'voicemail':'call'}
-        ${ev.status==='missed'?'· missed':ev.status==='voicemail'?'· to voicemail':''}${dur} · ${when(ev.ts)}
-        ${ev.transcript?`<div style="max-width:260px;white-space:pre-wrap">“${esc(String(ev.transcript).slice(0,140))}”</div>`:''}
-        ${ev.recording_id?`<audio controls preload="none" src="/api/admin/recordings/${ev.recording_id}/audio"></audio>`:''}
-      </div>`;
-    }
-    const mine=ev.direction!=='in';
-    return `<div class="msg ${mine?'me':'them'}">${esc(ev.summary&&ev.channel==='message'?ev.summary+'\n':'')}${esc(ev.body||ev.summary||'')}
-      <div class="t">${mine?'You':esc(ev.who||'')} · ${when(ev.ts)} · ${CH[ev.channel]||esc(ev.channel)}</div></div>`;
-  }).join('')||'<p class="note">No history yet — say hello.</p>';
-  el.scrollTop=el.scrollHeight;
-  // Reading the thread is what clears this house's badge — for this person only.
-  try{ await api('/api/admin/comms/seen',{method:'POST',body:JSON.stringify({property_id:CUR.id})}); }catch{}
-  refresh();
+function textPerson(i){
+  if(!CUR||!CUR.people[i]) return;
+  // Same key openThread gives this person: the index in the house's people list.
+  openThread(CUR.id,{to:'p'+i,from:'prop'});
 }
 async function loadPropPays(){
   if(!CUR.loan_id){ $('p-pays').innerHTML='<p class="note">No loan.</p>'; return; }
@@ -480,15 +1069,6 @@ async function loadPropPays(){
           :r.status==='partial'?`<span style="color:var(--amber)">${fmt(r.paid_cents)} of ${fmt(r.due_cents)}</span>`
           :'<span style="color:var(--red)">unpaid</span>'}</span></div>`).join('');
   }catch(e){ $('p-pays').innerHTML=`<p class="note">${esc(e.message)}</p>`; }
-}
-async function sendToBuyer(){
-  const t=$('p-input'); const body=t.value.trim(); if(!body||!CUR.loan_id) return;
-  try{
-    await api(`/api/admin/loans/${CUR.loan_id}/messages`,{method:'POST',
-      body:JSON.stringify({ body, channels: composeMode==='app'?[]:[composeMode] })});
-    t.value=''; growBox(t); loadPropThread();
-    toast(composeMode==='sms'?'Text sent.':composeMode==='email'?'Email sent.':'Message sent.');
-  }catch(e){ toast(e.message); }
 }
 function callBuyer(){ if(CUR&&CUR.buyer&&CUR.buyer.phone) bridgeCall(CUR.buyer.phone, CUR.buyer.name); }
 
@@ -635,7 +1215,7 @@ async function registerNativePush(){
   await Push.register();
 }
 
-document.addEventListener('DOMContentLoaded',boot);
+document.addEventListener('DOMContentLoaded',()=>{ paintIcons(); boot(); });
 $('li-pw')&&$('li-pw').addEventListener('keydown',e=>{ if(e.key==='Enter') doLogin(); });
 </script>
 </body>

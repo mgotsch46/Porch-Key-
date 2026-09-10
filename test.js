@@ -811,6 +811,76 @@ async function main() {
     ok(!r.json.properties.some(x => x.id === pB), 'and an archived house leaves the staff overview');
   }
 
+  console.log('— Comms on the phone: one conversation per house, and its badge clears');
+  {
+    const dbc = require('./db.js');
+    const loanRow = dbc.get('SELECT property_id, tenant_user_id FROM loans WHERE id=?', loanId);
+    const pid = loanRow.property_id;
+    const co = dbc.get('SELECT company_id FROM properties WHERE id=?', pid).company_id;
+    // A new buyer message and a crew text on this house, both unread.
+    dbc.run(`INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin, channels)
+      VALUES (?,?,?,0,'app')`, loanId, loanRow.tenant_user_id, 'Is my payment due Friday?');
+    const crew = dbc.run(`INSERT INTO contacts (company_id, name, role, phone) VALUES (?,?,?,?)`,
+      co, 'Casey Crew', 'bog', '555-313-2121').lastInsertRowid;
+    dbc.run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
+      VALUES (?,?,?,'in',?,?,'received')`, co, crew, pid, '+15553132121', 'Lockbox code changed');
+
+    r = await req('/api/admin/comms/threads');
+    ok(r.status === 200 && Array.isArray(r.json.threads) && Array.isArray(r.json.unknown), 'the conversation list answers');
+    const row = r.json.threads.find(t => t.property_id === pid);
+    ok(row && row.last && row.last.ts, 'each house carries its latest activity');
+    ok(row.unread >= 2, 'and counts what is new on it');
+    ok(r.json.threads[0].last, 'busiest houses come first');
+    ok((await req('/api/admin/comms/threads', {}, tbCookie)).status !== 200, 'a buyer cannot read the conversation list');
+
+    // The tile and the list agree, and one message is not counted twice.
+    let ov = (await req('/api/admin/staff/overview')).json;
+    const tile = ov.properties.find(p => p.id === pid);
+    ok(tile.unread === row.unread, 'the house tile and the conversation row show the same number');
+    ok(tile.unread < tile.unread_buyer + tile.unread_vendor + tile.unread_comms, 'a new message is no longer counted twice');
+
+    // Opening the conversation on the phone clears every part of the badge. (Seen marks
+    // compare against the end of an item's second, so open it in a later second.)
+    await new Promise(res => setTimeout(res, 1100));
+    r = await req('/api/admin/comms/seen', { method: 'POST', body: JSON.stringify({ property_id: pid }) });
+    ok(r.status === 200, 'the conversation is marked read');
+    ov = (await req('/api/admin/staff/overview')).json;
+    const after = ov.properties.find(p => p.id === pid);
+    ok(after.unread === 0, 'and the red dot on the house is gone');
+    ok(after.unread_buyer === 0 && after.unread_vendor === 0, 'buyer messages and crew texts on it are read too');
+
+    // Unknown numbers group by number; filing one text files its siblings.
+    for (const body of ['Hi, is the house on Elm still available?', 'Following up on Elm']) {
+      dbc.run(`INSERT INTO contact_messages (company_id, direction, phone, body, status)
+        VALUES (?,'in',?,?,'received')`, co, '+15559990001', body);
+    }
+    r = await req('/api/admin/comms/threads');
+    const g = r.json.unknown.find(u => String(u.phone).endsWith('5559990001'));
+    ok(g && g.count === 2 && g.items.length === 2, 'two texts from one stranger are one row');
+    // A house of its own, so the exact contact counts on the main house stay untouched.
+    const elm = (await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({
+      address: '88 Filing Way', city: 'Flint', state: 'MI', zip: '48503' }) })).json.id;
+    r = await req('/api/admin/comms/attach', { method: 'POST', body: JSON.stringify({
+      property_id: elm, message_id: g.items[0].message_id, new_contact_name: 'Elm Caller' }) });
+    ok(r.status === 200 && r.json.contact_id, 'filing a stranger from a text works');
+    r = await req('/api/admin/comms/threads');
+    ok(!r.json.unknown.some(u => String(u.phone).endsWith('5559990001')), 'and every text from that number moved with it');
+    ok(dbc.get(`SELECT COUNT(*) c FROM contact_messages WHERE phone='+15559990001' AND property_id=?`, elm).c === 2,
+      'both of them now live on the house they were filed to');
+    // Leave the company-wide vendor inbox as the later tests expect to find it.
+    dbc.run(`UPDATE contact_messages SET read_at=datetime('now') WHERE phone='+15559990001'`);
+
+    // The per-house feed says who each text was with.
+    r = await req(`/api/admin/properties/${pid}/comms?limit=300`);
+    ok(r.json.events.some(e => e.party === 'contact' && e.contact_id === crew), 'crew texts carry who they were with');
+    ok(r.json.events.some(e => e.party === 'buyer'), 'buyer messages are marked as the buyer\'s');
+
+    // The phone app itself has the new screens.
+    const html = await (await fetch(BASE + '/staff')).text();
+    ok(/id="tab-thread"/.test(html) && /id="tab-unknown"/.test(html), 'the staff app has the conversation and unfiled screens');
+    ok(!/class="pill amber"/.test(html), 'and the old unstyled inbox rows are gone');
+  }
+
   console.log('— inbound calls announce themselves and can be dismissed everywhere at once');
   {
     plantAuthToken();
