@@ -3219,6 +3219,10 @@ async function main() {
       const pr = await fetch(BASE + pg);
       ok(pr.status === 200, pg + ' loads signed out');
     }
+    // Play's web deletion route has to work for the staff app too, owners included.
+    const dh = await (await fetch(BASE + '/delete-account')).text();
+    ok(dh.includes('PorchPay Admin') && dh.includes('step2owner') && dh.includes('/api/account/delete-request'),
+      'the web deletion page covers staff accounts and lets an owner file a request');
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

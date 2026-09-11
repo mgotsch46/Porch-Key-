@@ -19,6 +19,12 @@
   <p class="updated">This page satisfies Google Play's requirement for a web-accessible account deletion route.
   You can also delete your account inside the app under Settings → Delete account.</p>
 
+  <h2>PorchPay Admin (staff app)</h2>
+  <p>Servicing staff can delete their account in PorchPay Admin under Properties → person icon →
+  Delete my account, or on this page. A staff account is deleted right away. A company owner's account
+  holds other people's loan records, so it is closed by request: sign in below and send the request, and
+  support will contact you within 2 business days to close it.</p>
+
   <h2>What gets deleted</h2>
   <ul>
     <li>Your login and password</li>
@@ -52,6 +58,13 @@
       style="width:100%;padding:13px;border:1.5px solid var(--line);border-radius:10px;font-size:16px;font-family:inherit"></div>
     <button class="btn danger" onclick="doDelete()">Permanently delete my account</button>
   </div>
+  <div id="step2owner" style="display:none">
+    <p>Signed in as <b id="who2"></b>, a company owner. Your company's loan records must be kept by law,
+    so support closes owner accounts by request. Tell us anything we should know (optional), then send the request.</p>
+    <div style="margin-bottom:12px"><textarea id="reason" rows="3" placeholder="Reason (optional)"
+      style="width:100%;padding:13px;border:1.5px solid var(--line);border-radius:10px;font-size:16px;font-family:inherit"></textarea></div>
+    <button class="btn danger" onclick="doRequest()">Send deletion request</button>
+  </div>
 </div>
 </main>
 <footer>
@@ -69,13 +82,26 @@ async function api(path, opts={}) {
   if (!res.ok) throw new Error(json.error || 'Something went wrong');
   return json;
 }
+function showStep(me) {
+  $('who').textContent = me.email;
+  $('who2').textContent = me.email;
+  $('step1').style.display = 'none';
+  const owner = me.role === 'owner';
+  $('step2').style.display = owner ? 'none' : '';
+  $('step2owner').style.display = owner ? '' : 'none';
+}
 async function signIn() {
   try {
     const me = await api('/api/login', { method:'POST', body: JSON.stringify({ email:$('email').value, password:$('pw').value }) });
-    $('who').textContent = me.email;
-    $('step1').style.display = 'none';
-    $('step2').style.display = '';
+    showStep(me);
     note('');
+  } catch(e) { note(e.message); }
+}
+async function doRequest() {
+  try {
+    const r = await api('/api/account/delete-request', { method:'POST', body: JSON.stringify({ reason: $('reason').value }) });
+    $('step2owner').style.display = 'none';
+    note('✅ ' + r.message, true);
   } catch(e) { note(e.message); }
 }
 async function doDelete() {
@@ -85,8 +111,7 @@ async function doDelete() {
     note('✅ ' + r.message + ' You may close this page.', true);
   } catch(e) { note(e.message); }
 }
-(async () => { try { const me = await api('/api/me'); $('who').textContent = me.email;
-  $('step1').style.display='none'; $('step2').style.display=''; } catch {} })();
+(async () => { try { showStep(await api('/api/me')); } catch {} })();
 </script>
 </body>
 </html>
