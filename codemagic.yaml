@@ -630,7 +630,10 @@ workflows:
           # upload is refused with "Version code 1 has already been used." The iOS side
           # has always stamped the build number with agvtool; this is the missing
           # Android half of that.
-          sed -i '' "s/versionCode 1$/versionCode $BUILD_NUMBER/" android/app/build.gradle
+          # The admin app is new to Play, so its own workflow count starts at 1, which the
+          # check below refuses (1 is burned on the buyer app's history). The app-wide
+          # PROJECT_BUILD_NUMBER only ever goes up and is already past 1.
+          sed -i '' "s/versionCode 1$/versionCode $PROJECT_BUILD_NUMBER/" android/app/build.gradle
           echo "--- version, as generated ---"
           grep -n "versionCode\|versionName" android/app/build.gradle
       - name: Wire release signing into the generated project
