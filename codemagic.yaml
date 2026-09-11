@@ -466,8 +466,19 @@ workflows:
           # Firebase config for FCM. Upload google-services.json to Codemagic as the
           # environment variable GOOGLE_SERVICES_JSON (base64).
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            echo "$GOOGLE_SERVICES_JSON" | base64 --decode > android/app/google-services.json
-            echo "google-services.json written"
+            APPID=$(node -p "require('./capacitor.config.json').appId")
+            echo "$GOOGLE_SERVICES_JSON" | base64 --decode > /tmp/google-services.json
+            # One Firebase config holds every Android app in the project. If this app is
+            # not in it, the Google Services plugin fails the whole build with "No
+            # matching client found", which is how the first admin bundle died. Leave
+            # the file out instead: the build ships, just without push, and says so.
+            if grep -q "\"package_name\": *\"$APPID\"" /tmp/google-services.json; then
+              cp /tmp/google-services.json android/app/google-services.json
+              echo "google-services.json written for $APPID"
+            else
+              echo "WARNING: GOOGLE_SERVICES_JSON has no client for $APPID. Add the app in Firebase"
+              echo "and upload the new file to Codemagic. This build ships without push."
+            fi
           else
             echo "WARNING: GOOGLE_SERVICES_JSON is not set — this build cannot receive push."
           fi
@@ -617,8 +628,19 @@ workflows:
           # Firebase config for FCM. Upload google-services.json to Codemagic as the
           # environment variable GOOGLE_SERVICES_JSON (base64).
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            echo "$GOOGLE_SERVICES_JSON" | base64 --decode > android/app/google-services.json
-            echo "google-services.json written"
+            APPID=$(node -p "require('./capacitor.config.json').appId")
+            echo "$GOOGLE_SERVICES_JSON" | base64 --decode > /tmp/google-services.json
+            # One Firebase config holds every Android app in the project. If this app is
+            # not in it, the Google Services plugin fails the whole build with "No
+            # matching client found", which is how the first admin bundle died. Leave
+            # the file out instead: the build ships, just without push, and says so.
+            if grep -q "\"package_name\": *\"$APPID\"" /tmp/google-services.json; then
+              cp /tmp/google-services.json android/app/google-services.json
+              echo "google-services.json written for $APPID"
+            else
+              echo "WARNING: GOOGLE_SERVICES_JSON has no client for $APPID. Add the app in Firebase"
+              echo "and upload the new file to Codemagic. This build ships without push."
+            fi
           else
             echo "WARNING: GOOGLE_SERVICES_JSON is not set — this build cannot receive push."
           fi
