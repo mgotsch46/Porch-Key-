@@ -27,16 +27,12 @@ Decision (Sep 11, 2026): public listing on both stores, iOS first, then Android.
 | Version / copyright | 1.0 · 2026 SAA Property Management, LLC |
 | Release | Manually release this version |
 
-### Still to do on iOS
+### Ready on iOS (Sep 11, 2026, verified by reloading the page)
 
-1. **Build.** The admin app has never been built. Codemagic workflow `porchpay-admin-ios` builds and sends it to TestFlight. Needs someone signed in to Codemagic.
-2. **Screenshots.** Upload the six files in `store-assets/admin/ios-6.9/` (1320x2868) to the 6.9 inch iPhone slot (Media Manager). The app is iPhone only, so no iPad set is needed.
-3. **App Review Information.** Tick *Sign-in required*, then:
-   - User name: `demo-admin@porchpay.app`
-   - Password: the demo admin password chosen when DEMO-ACCOUNT.bat was run (typed by Marisa, never stored here)
-   - Contact: same as the buyer app
-   - Notes: text below
-4. **Add build, then Add for Review.**
+- Screenshots: six 1320x2868 files in the 6.9 inch iPhone slot, in order (Properties, Comms, House, Conversation, Crew, Payments); smaller iPhone sizes use them.
+- Build 3 (1.0) attached.
+- App Review Information: sign-in required, user `demo-admin@porchpay.app`, password entered by Marisa, contact Marisa Gotsch +1 651 894 3635 marisa@reneweqllc.com, review notes below.
+- Only step left: **Add for Review**, then **Submit**. Held on purpose (next section).
 
 ### Hold before submitting to Apple
 
