@@ -48,15 +48,44 @@ Apple rejected the buyer app on Sep 9 under Guideline 5.1.1(ix): apps in regulat
 
 The Play developer account (REQ-SF, ID 5172876456754898309) is already an **Organization** account, so Google's organization requirement for financial apps is met, and the 12-tester closed test rule for new personal accounts does not apply. Porch Pay (buyer) is already in Production there.
 
-### Steps
+App ID `4972096024930091966`.
 
-1. **Create app**: name *Porch Pay Admin*, English (US), App, Free, accept the two declarations.
-2. **Store listing**: text below, plus `store-assets/admin/play-icon-512.png`, `play-feature-graphic-1024x500.png`, `play-phone/` (6), `play-tablet7/` (6), `play-tablet10/` (6).
-3. **Store settings**: category Business; contact servicing@saapm.com, +1 810 242 0422, support URL.
-4. **App content**: mirror the buyer app (see PLAY-SUBMISSION.md): privacy policy URL, no ads, target audience 18+, content rating questionnaire (all no), government no, health no, advertising ID no, financial features "My app doesn't provide any financial features", sign-in details = the same demo admin login.
-5. **Data safety**: collected, not shared, encrypted in transit, deletion available at /delete-account and in the app. Types: Name, Email, Phone, Address, User IDs, Other financial info, Other in-app messages, App interactions, Device or other IDs (optional, push token).
-6. **First release by hand**: download the `.aab` from Codemagic workflow `porchpay-admin-android`, then Production > Create new release > upload. After that the pipeline can publish.
-7. **Android developer verification**: register the new package name `com.porchpay.admin` (Play shows a Sep 30, 2026 deadline for registration).
+### Done (Sep 11, 2026)
+
+| Section | Value |
+|---|---|
+| App created | Porch Pay Admin, English (US), App, Free |
+| Store listing | Title, short and full description, icon, feature graphic, 6 phone, 6 7-inch and 6 10-inch tablet screenshots (fictional data) |
+| Store settings | Category Business; servicing@saapm.com, +1 810 242 0422, support URL |
+| Privacy policy | https://porchpay-production.up.railway.app/privacy |
+| Ads | No ads |
+| Government apps | No |
+| Advertising ID | No (the bundle declares no AD_ID permission) |
+| Health | My app does not have any health features |
+| Financial features | My app doesn't provide any financial features |
+| Content rating | All Other App Types. Downloaded content No. User content sharing **Yes** (staff message buyers and crews), not the primary content, no public nudity or violence, no block, report or moderation tools, interactions limited to invited people. Online content No, age-restricted products No, location sharing No, digital purchases No, cash rewards No, browser No, news/education No. Result: Everyone / PEGI 3 / ClassInd All ages, interactive element "Users Interact". |
+| Production countries | United States (1) |
+| Production release | Draft saved: bundle versionCode 26, versionName 1.0, release name "26 (1.0)", en-US notes |
+| Android developer verification | com.porchpay.admin shows **Registered** (3 keys) |
+
+### Data safety (answers entered, saved as draft)
+
+Blocked from final submit until Target audience is done, which is blocked until Sign in details is saved.
+
+- Collects data: Yes. Encrypted in transit: Yes.
+- Account creation: the app does not create accounts; users sign in with accounts created outside the app, **through employment or enterprise accounts** (the company owner creates staff accounts on the web).
+- Deletion: Yes. Delete account URL and delete data URL both `https://porchpay-production.up.railway.app/delete-account`. That page now covers PorchPay Admin: staff delete on the spot, a company owner files a request (commit 2e7d160).
+- Shared with third parties: none.
+- Collected, not ephemeral, required, purpose App functionality: Name, Email address, User IDs, Address, Phone number, Other financial info, Other in-app messages, App interactions. Account management is added for Name, Email, User IDs and Phone; Developer communications for Email.
+- Device or other IDs: collected, not ephemeral, **optional** (the push token), App functionality.
+
+### Still to do on Play
+
+1. **Sign in details**: name "Demo staff account", user `demo-admin@porchpay.app`, reviewer notes and the full-access box are filled in. Marisa types the password, clicks Add, then Save.
+2. **Target audience**: 18 and over (same reasoning as the buyer app in PLAY-SUBMISSION.md).
+3. **Data safety**: open it, go to Preview, Save (answers above are already in).
+4. **Production release**: open the draft, Next, Save, then Publishing overview > Send changes for review. Managed publishing is off, so the app goes live when Google approves it.
+5. **Push on Android**: this build ships without push because the Firebase config only knows com.porchpay.app. Add an Android app for com.porchpay.admin in Firebase, upload the new google-services.json to Codemagic (GOOGLE_SERVICES_JSON), rebuild.
 
 ---
 
