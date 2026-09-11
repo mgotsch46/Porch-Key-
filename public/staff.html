@@ -267,6 +267,27 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
 .convo .last .pv{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .convo .more{display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding-top:11px;
   border-top:1px solid var(--line);color:var(--brand);font-weight:700;font-size:14px}
+
+/* account, legal and the in-app reader. The store apps are a WebView with no back
+   button, so a legal page opened by plain navigation would strand the user on it.
+   The reader draws its own Done bar and keeps the app underneath. */
+.signout .dot{color:var(--mut);margin:0 8px}
+.legal{text-align:center;padding:14px 18px 4px;font-size:13px;color:var(--mut);line-height:1.6}
+.legal a{color:var(--mut);text-decoration:underline;cursor:pointer;margin:0 6px}
+.acct-id{display:flex;align-items:center;gap:12px;padding:6px 0 14px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.acct-id .av{width:44px;height:44px;border-radius:50%;background:var(--pale);color:var(--brand);font-weight:700;
+  display:flex;align-items:center;justify-content:center;font-size:16px;flex:none}
+.acct-id b{display:block;font-size:15.5px}
+.acct-id span{display:block;font-size:13px;color:var(--mut)}
+.acct-row{display:flex;align-items:center;justify-content:space-between;width:100%;padding:13px 2px;background:none;
+  border-radius:0;border-bottom:1px solid var(--line);text-align:left;font-size:15px}
+.acct-row svg{width:17px;height:17px;color:var(--mut)}
+.acct-row.danger{color:var(--red);border-bottom:0}
+.reader{position:fixed;inset:0;z-index:30;background:#fff;display:flex;flex-direction:column}
+.reader .rbar{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:calc(10px + env(safe-area-inset-top)) 14px 10px 18px;border-bottom:1px solid var(--line);background:#fff}
+.reader .rbar b{font-size:16px}
+.reader iframe{flex:1;width:100%;border:0;background:#fff}
 </style>
 </head>
 <body>
@@ -283,6 +304,10 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
       <button class="primary" onclick="doLogin()">Sign in</button>
     </div>
   </div>
+  <p class="note" style="margin:0 18px;text-align:center">For loan servicing staff. Staff accounts are set up by
+    your company's owner in PorchPay; there is no public sign up.</p>
+  <div class="legal"><a onclick="openReader('/privacy','Privacy Policy')">Privacy</a><a
+    onclick="openReader('/terms','Terms of Use')">Terms</a><a onclick="openReader('/support','Support')">Support</a></div>
 </div>
 
 <!-- ── app ── -->
@@ -290,9 +315,10 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
 
   <!-- HOME: properties -->
   <section id="tab-home">
-    <h1 id="h-title">Properties</h1>
+    <div class="top"><h1 id="h-title">Properties</h1>
+      <button class="iconbtn" onclick="openAccount()" aria-label="Account and privacy"><i data-ico="user"></i></button></div>
     <div id="home-list"><div class="card"><p class="note">Loading…</p></div></div>
-    <div class="signout"><a onclick="logout()">Sign out</a></div>
+    <div class="signout"><a onclick="openAccount()">Account &amp; privacy</a><span class="dot">·</span><a onclick="logout()">Sign out</a></div>
   </section>
 
   <!-- PROPERTY: thread + actions -->
@@ -321,14 +347,14 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
       <h2>💵 Payments on this house</h2>
       <div id="p-pays"><p class="note">Loading…</p></div>
     </div>
-    <div class="signout"><a onclick="logout()">Sign out</a></div>
+    <div class="signout"><a onclick="openAccount()">Account &amp; privacy</a><span class="dot">·</span><a onclick="logout()">Sign out</a></div>
   </section>
 
   <!-- BOG / vendors -->
   <section id="tab-bog" class="hidden">
     <h1>Boots on the ground</h1>
     <div id="bog-list"><div class="card"><p class="note">Loading…</p></div></div>
-    <div class="signout"><a onclick="logout()">Sign out</a></div>
+    <div class="signout"><a onclick="openAccount()">Account &amp; privacy</a><span class="dot">·</span><a onclick="logout()">Sign out</a></div>
   </section>
   <section id="tab-vendor" class="hidden">
     <button class="back" id="v-back" onclick="vendorBack()">← Contacts</button>
@@ -345,7 +371,7 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
         <button class="primary" onclick="sendToVendor()">Send</button>
       </div>
     </div>
-    <div class="signout"><a onclick="logout()">Sign out</a></div>
+    <div class="signout"><a onclick="openAccount()">Account &amp; privacy</a><span class="dot">·</span><a onclick="logout()">Sign out</a></div>
   </section>
 
   <!-- COMMS: one conversation per house, newest first -->
@@ -363,7 +389,7 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
     </div>
     <div id="cm-unknown"></div>
     <div id="cm-list"><div class="list"><div class="empty">Loading…</div></div></div>
-    <div class="signout"><a onclick="logout()">Sign out</a></div>
+    <div class="signout"><a onclick="openAccount()">Account &amp; privacy</a><span class="dot">·</span><a onclick="logout()">Sign out</a></div>
   </section>
 
   <!-- ONE HOUSE'S CONVERSATION: buyer, crew, calls, email, notices, in one thread -->
@@ -434,14 +460,14 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
         number, and the call is recorded and transcribed like every other.</p>
       <div id="d-status" class="ok hidden"></div>
     </div>
-    <div class="signout"><a onclick="logout()">Sign out</a></div>
+    <div class="signout"><a onclick="openAccount()">Account &amp; privacy</a><span class="dot">·</span><a onclick="logout()">Sign out</a></div>
   </section>
 
   <!-- MONEY -->
   <section id="tab-money" class="hidden">
     <h1>Payments</h1>
     <div class="card"><div id="money-list"><p class="note">Loading…</p></div></div>
-    <div class="signout"><a onclick="logout()">Sign out</a></div>
+    <div class="signout"><a onclick="openAccount()">Account &amp; privacy</a><span class="dot">·</span><a onclick="logout()">Sign out</a></div>
   </section>
 
   <!-- nav -->
@@ -454,6 +480,10 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
 </div>
 
 <div id="pp-toast" class="toast"></div>
+<div id="reader" class="reader hidden" role="dialog" aria-modal="true">
+  <div class="rbar"><b id="reader-title"></b><button class="primary" onclick="closeReader()">Done</button></div>
+  <iframe id="reader-frame" title="Document"></iframe>
+</div>
 <div id="sheet-bg" class="sheet-bg hidden" onclick="closeSheet()"></div>
 <div id="sheet" class="sheet hidden" role="dialog"><div class="grab"></div><div id="sheet-body"></div></div>
 
@@ -513,6 +543,68 @@ function platformNotice(me){
 }
 async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
 
+// ---------- account & privacy ----------
+// App Store 5.1.1: the privacy policy must be reachable inside the app, and an account
+// must be deletable from inside the app. Staff (admin) accounts delete themselves on the
+// spot. An owner's company holds its buyers' loan records, which the law says to keep, so
+// an owner files a request and a person closes it - the flow Apple allows for regulated
+// services, and a real way out rather than a refusal.
+function openReader(path,title){
+  $('reader-title').textContent=title||'';
+  $('reader-frame').src=path;
+  $('reader').classList.remove('hidden');
+}
+function closeReader(){ $('reader').classList.add('hidden'); $('reader-frame').src='about:blank'; }
+const ROLE_NAME={owner:'Owner',admin:'Staff admin'};
+function openAccount(){
+  const m=ME||{};
+  const ini=String(m.name||m.email||'?').split(/\s+/).map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  openSheet(`<div class="acct-id"><div class="av">${esc(ini)}</div><div><b>${esc(m.name||'Your account')}</b>
+      <span>${esc(m.email||'')}</span><span>${esc(ROLE_NAME[m.role]||m.role||'')}</span></div></div>
+    <button class="acct-row" onclick="closeSheet();openReader('/privacy','Privacy Policy')">Privacy Policy${ICON.chevR}</button>
+    <button class="acct-row" onclick="closeSheet();openReader('/terms','Terms of Use')">Terms of Use${ICON.chevR}</button>
+    <button class="acct-row" onclick="closeSheet();openReader('/support','Support')">Help &amp; support${ICON.chevR}</button>
+    <button class="acct-row" onclick="logout()">Sign out${ICON.chevR}</button>
+    <button class="acct-row danger" onclick="openDelete()">Delete my account${ICON.chevR}</button>`);
+}
+function openDelete(){
+  const owner=ME&&ME.role==='owner';
+  if(owner){
+    openSheet(`<h3>Delete my account</h3>
+      <p class="note">You own this servicing company. Its loan records belong to your buyers and must be kept by law,
+        so an owner account is closed with our support team rather than instantly. Send the request here and we
+        will contact you within 2 business days and confirm by email once your account and personal details are
+        removed.</p>
+      <textarea id="del-reason" rows="3" placeholder="Anything we should know (optional)"></textarea>
+      <div id="del-msg" class="note hidden" style="margin-top:10px"></div>
+      <button class="warn" id="del-go" style="width:100%;margin-top:12px" onclick="requestDeletion()">Request account deletion</button>
+      <button style="width:100%;margin-top:8px" onclick="closeSheet()">Cancel</button>`);
+    return;
+  }
+  openSheet(`<h3>Delete my account</h3>
+    <p class="note">This permanently removes your sign in and your personal details. Loan records and payments you
+      posted stay with the company, as the law requires, but no longer show your name. This cannot be undone.</p>
+    <input id="del-confirm" placeholder="Type DELETE to confirm" autocapitalize="characters" autocomplete="off">
+    <div id="del-msg" class="err hidden" style="margin-top:10px"></div>
+    <button class="warn" id="del-go" style="width:100%;margin-top:12px" onclick="deleteMyAccount()">Permanently delete my account</button>
+    <button style="width:100%;margin-top:8px" onclick="closeSheet()">Cancel</button>`);
+}
+async function deleteMyAccount(){
+  const msg=$('del-msg'); msg.classList.add('hidden');
+  try{
+    await api('/api/account/delete',{method:'POST',body:JSON.stringify({confirm:$('del-confirm').value.trim()})});
+    openSheet(`<h3>Account deleted</h3><p class="note">Your account and personal details have been removed.</p>
+      <button class="primary" style="width:100%" onclick="location.reload()">Done</button>`);
+  }catch(e){ msg.textContent=e.message; msg.classList.remove('hidden'); }
+}
+async function requestDeletion(){
+  const btn=$('del-go'), msg=$('del-msg'); btn.disabled=true;
+  try{
+    const r=await api('/api/account/delete-request',{method:'POST',body:JSON.stringify({reason:$('del-reason').value})});
+    msg.textContent=r.message; msg.classList.remove('hidden'); btn.textContent='Request sent';
+  }catch(e){ msg.textContent=e.message; msg.classList.remove('hidden'); btn.disabled=false; }
+}
+
 function go(t){
   tab=t;
   for(const k of ['home','prop','bog','vendor','dial','comms','money','thread','unknown']){
@@ -558,6 +650,7 @@ const ICON={
   send:sv('<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>'),
   alert:sv('<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
   check:sv('<polyline points="20 6 9 17 4 12"/>'),
+  user:sv('<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>'),
   x:sv('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'),
   play:'<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5z"/></svg>',
   pause:'<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4.5" width="4" height="15" rx="1"/><rect x="14" y="4.5" width="4" height="15" rx="1"/></svg>',

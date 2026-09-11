@@ -1281,6 +1281,23 @@ CREATE TABLE IF NOT EXISTS comms_seen (
 );
 `);
 
+// A request to close an account that cannot close itself. Company owners hold the loan
+// records their buyers depend on, and those carry legal retention duties, so an owner's
+// account is closed by a person rather than by a button. Apple allows exactly this for
+// regulated services (5.1.1(v)): the app starts the request, a human finishes it.
+db.exec(`
+CREATE TABLE IF NOT EXISTS account_deletion_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  company_id INTEGER,
+  role TEXT,
+  reason TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  closed_at TEXT
+);
+`);
+
 ensureSeed();
 
 // Emergency password reset. Set RESET_OWNER_PASSWORD (optionally RESET_OWNER_EMAIL) and

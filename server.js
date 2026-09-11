@@ -4,7 +4,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { db, get, all, run, hashPassword, verifyPassword, inheritsEnv } = require('./db');
+const { db, get, all, run, hashPassword, verifyPassword, inheritsEnv, hostCompanyId } = require('./db');
 const loanEngine = require('./loan');
 const pay = require('./payments');
 const ai = require('./ai');
@@ -8686,6 +8686,45 @@ app.post('/api/account/delete', anyUser, (req, res, next) => {
     eraseUser(req.user.id, req.user.role);
     res.setHeader('Set-Cookie', 'session=; HttpOnly; Path=/; Max-Age=0');
     res.json({ ok: true, message: 'Your account and personal data have been deleted.' });
+  } catch (e) { next(e); }
+});
+
+// The owner's way out. /api/account/delete refuses owners, because an owner's company
+// holds other people's loan records. Refusing with nothing further is a dead end, and in
+// the store apps it is an App Review rejection. So an owner files a request here, the
+// request is kept, support is emailed, and a person closes it. Anyone else can file one
+// too, but for them the delete button above already does the whole job.
+app.post('/api/account/delete-request', anyUser, async (req, res, next) => {
+  try {
+    const open = get(`SELECT id, created_at FROM account_deletion_requests
+      WHERE user_id=? AND status='open' ORDER BY id DESC LIMIT 1`, req.user.id);
+    if (open) {
+      return res.json({ ok: true, already: true, request_id: open.id, created_at: open.created_at,
+        message: 'Your request is already with support. We will confirm by email when your account is closed.' });
+    }
+    const reason = String((req.body && req.body.reason) || '').slice(0, 1000) || null;
+    const r = run(`INSERT INTO account_deletion_requests (user_id, company_id, role, reason)
+      VALUES (?,?,?,?)`, req.user.id, req.user.company_id || null, req.user.role, reason);
+    const co = req.user.company_id ? get('SELECT * FROM companies WHERE id=?', req.user.company_id) : null;
+    const host = get('SELECT * FROM companies WHERE id=?', hostCompanyId()) || {};
+    const to = process.env.SUPPORT_EMAIL || host.email_reply_to || host.email_from_servicing
+      || process.env.EMAIL_REPLY_TO || process.env.EMAIL_FROM_SERVICING;
+    if (to) {
+      // Best effort. The request is already recorded, so a mail failure loses nothing.
+      email.sendEmail(to, {
+        subject: `Account deletion request #${r.lastInsertRowid} (${req.user.email})`,
+        text: [
+          `${req.user.name || 'A user'} <${req.user.email}> asked to delete their PorchPay account.`,
+          `Role: ${req.user.role}`,
+          co ? `Company: ${co.name} (id ${co.id})` : 'Company: none',
+          reason ? `Reason given: ${reason}` : 'No reason given.',
+          '', 'Reply to them within 30 days and close the request once done.',
+        ].join('\n'),
+        kind: 'general',
+      }, null).catch(e => console.error('Deletion request email:', e.message));
+    }
+    res.json({ ok: true, request_id: r.lastInsertRowid,
+      message: 'Request received. Support will contact you within 2 business days and confirm by email when your account is closed.' });
   } catch (e) { next(e); }
 });
 

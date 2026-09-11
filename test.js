@@ -3183,6 +3183,44 @@ async function main() {
   r = await req('/api/admin/company');
   ok(!r.json.staff.some(u => u.email === 'temp@test.com'), 'removed staff gone from team list');
 
+  console.log('— staff app: account deletion and legal links (App Store 5.1.1)');
+  {
+    r = await req('/api/account/delete', { method: 'POST', body: JSON.stringify({ confirm: 'DELETE' }) });
+    ok(r.status === 400 && /owner/i.test(r.json.error), 'an owner cannot delete instantly');
+    r = await req('/api/account/delete-request', { method: 'POST', body: JSON.stringify({ reason: 'closing the company' }) });
+    ok(r.status === 200 && r.json.ok && r.json.request_id, 'an owner can file a deletion request instead');
+    const D2 = require('./db.js');
+    const row = D2.get('SELECT * FROM account_deletion_requests WHERE id=?', r.json.request_id);
+    ok(row && row.role === 'owner' && row.status === 'open' && row.reason === 'closing the company', 'the request is recorded with role and reason');
+    r = await req('/api/account/delete-request', { method: 'POST', body: '{}' });
+    ok(r.status === 200 && r.json.already, 'a second request does not pile up');
+    ok(D2.get("SELECT COUNT(*) AS c FROM account_deletion_requests WHERE status='open'").c === 1, 'still one open request');
+    r = await req('/api/account/delete-request', { method: 'POST', body: '{}' }, '');
+    ok(r.status === 401, 'a deletion request needs a signed in user');
+    r = await req('/api/me');
+    ok(r.status === 200, 'filing a request does not sign the owner out or delete anything');
+
+    // A staff admin deletes themselves on the spot, from the phone app.
+    r = await req('/api/admin/staff', { method: 'POST', body: JSON.stringify({ name: 'Phone Staff', email: 'phonestaff@test.com' }) });
+    const ps = r.json;
+    let psCookie = (await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'phonestaff@test.com', password: ps.temp_password }) }, '')).cookie;
+    await req('/api/change-password', { method: 'POST', body: JSON.stringify({ password: 'PhoneStaff123!' }) }, psCookie);
+    r = await req('/api/account/delete', { method: 'POST', body: JSON.stringify({ confirm: 'DELETE' }) }, psCookie);
+    ok(r.status === 200, 'a staff admin can delete their own account');
+    r = await req('/api/login', { method: 'POST', body: JSON.stringify({ email: 'phonestaff@test.com', password: 'PhoneStaff123!' }) }, '');
+    ok(r.status === 401, 'the deleted staff account cannot sign back in');
+
+    const html = await (await fetch(BASE + '/staff')).text();
+    ok(html.includes("openReader('/privacy'") && html.includes("openReader('/terms'") && html.includes("openReader('/support'"),
+      'staff app links privacy, terms and support');
+    ok(html.includes('Delete my account') && html.includes('/api/account/delete-request'), 'staff app offers account deletion');
+    ok(html.includes('id="reader"') && html.includes('closeReader()'), 'legal pages open in a reader with a Done button');
+    for (const pg of ['/privacy', '/terms', '/support']) {
+      const pr = await fetch(BASE + pg);
+      ok(pr.status === 200, pg + ' loads signed out');
+    }
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }
