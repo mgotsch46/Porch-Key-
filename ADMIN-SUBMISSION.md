@@ -75,13 +75,26 @@ Blocked from final submit until Target audience is done, which is blocked until 
 - Collected, not ephemeral, required, purpose App functionality: Name, Email address, User IDs, Address, Phone number, Other financial info, Other in-app messages, App interactions. Account management is added for Name, Email, User IDs and Phone; Developer communications for Email.
 - Device or other IDs: collected, not ephemeral, **optional** (the push token), App functionality.
 
+### Google rejection, Sep 12, 2026: "Login credentials are incorrect"
+
+Play Console saved the Demo staff account entry with the **Password field empty** (0 of 100
+characters). The name, the user name and the reviewer instructions all saved; the password
+did not, most likely because Add was clicked before the field registered what was typed.
+Google's evidence screenshot shows their reviewer on our own sign-in screen with
+demo-admin@porchpay.app and "Invalid email or password" under it.
+
+The account itself was never the problem: signing in against production with that email and
+password returns 200, role owner, no forced password change. Rejections of this kind do not
+count against the app; it goes back into the normal queue.
+
+Fixed and resubmitted Sep 13, 2026. **Whenever this entry is edited, reopen it afterwards and
+check that the row reads "Username / phone number, password, instructions" and not just
+"Username / phone number, instructions".** That one word is the whole difference.
+
 ### Still to do on Play
 
-1. **Sign in details**: name "Demo staff account", user `demo-admin@porchpay.app`, reviewer notes and the full-access box are filled in. Marisa types the password, clicks Add, then Save.
-2. **Target audience**: 18 and over (same reasoning as the buyer app in PLAY-SUBMISSION.md).
-3. **Data safety**: open it, go to Preview, Save (answers above are already in).
-4. **Production release**: open the draft, Next, Save, then Publishing overview > Send changes for review. Managed publishing is off, so the app goes live when Google approves it.
-5. **Push on Android**: this build ships without push because the Firebase config only knows com.porchpay.app. Add an Android app for com.porchpay.admin in Firebase, upload the new google-services.json to Codemagic (GOOGLE_SERVICES_JSON), rebuild.
+1. Sign in details, target audience (18 and over), data safety and the production release are all done and **sent for review on Sep 13, 2026**. Managed publishing is off, so the app goes live when Google approves it.
+2. **Push on Android**: this build ships without push because the Firebase config only knows com.porchpay.app. Add an Android app for com.porchpay.admin in Firebase, upload the new google-services.json to Codemagic (GOOGLE_SERVICES_JSON), rebuild.
 
 ---
 
