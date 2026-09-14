@@ -465,23 +465,42 @@ workflows:
             sed -i 's|<application|<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n\n    <application|' "$MANIFEST"
           # Firebase config for FCM. Upload google-services.json to Codemagic as the
           # environment variable GOOGLE_SERVICES_JSON (base64).
-          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            APPID=$(node -p "require('./capacitor.config.json').appId")
-            echo "$GOOGLE_SERVICES_JSON" | base64 --decode > /tmp/google-services.json
-            # One Firebase config holds every Android app in the project. If this app is
-            # not in it, the Google Services plugin fails the whole build with "No
-            # matching client found", which is how the first admin bundle died. Leave
-            # the file out instead: the build ships, just without push, and says so.
-            if grep -q "\"package_name\": *\"$APPID\"" /tmp/google-services.json; then
-              cp /tmp/google-services.json android/app/google-services.json
-              echo "google-services.json written for $APPID"
-            else
-              echo "WARNING: GOOGLE_SERVICES_JSON has no client for $APPID. Add the app in Firebase"
-              echo "and upload the new file to Codemagic. This build ships without push."
-            fi
-          else
-            echo "WARNING: GOOGLE_SERVICES_JSON is not set — this build cannot receive push."
+          #
+          # A bundle that carries the push plugin without a Firebase client is not a
+          # bundle without push. It is a bundle that CRASHES. @capacitor/push-notifications
+          # is a dependency, so PushNotificationsPlugin is always in the native project;
+          # its register() calls FirebaseMessaging.getInstance(), which throws
+          # IllegalStateException("Default FirebaseApp is not initialized") when no
+          # google-services.json was compiled in. Capacitor's Bridge does not swallow
+          # that: callPluginMethod catches only PluginLoadException and
+          # InvalidPluginMethodException, and rethrows everything else as a
+          # RuntimeException from a Runnable on the main thread. The app dies the moment
+          # the user grants notification permission, on every launch, and no JS catch can
+          # stop it. That is how admin version code 26 was rejected by Google under the
+          # Broken Functionality policy: "the app opens, but it keeps crashing".
+          #
+          # So this step now refuses to build rather than warn. To turn it green: add the
+          # app in the Firebase console, download the project's google-services.json (one
+          # file holds every Android app in the project), base64 it, and replace
+          # GOOGLE_SERVICES_JSON in the Codemagic "appstore" group.
+          APPID=$(node -p "require('./capacitor.config.json').appId")
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo "BUILD STOPPED — GOOGLE_SERVICES_JSON is not set, so this bundle would"
+            echo "ship the push plugin with no Firebase config and crash on first sign-in."
+            exit 1
           fi
+          echo "$GOOGLE_SERVICES_JSON" | base64 --decode > /tmp/google-services.json
+          if ! grep -q "\"package_name\": *\"$APPID\"" /tmp/google-services.json; then
+            echo "BUILD STOPPED — GOOGLE_SERVICES_JSON has no client for $APPID."
+            echo "Clients it does have:"
+            grep -o '\"package_name\": *\"[^\"]*\"' /tmp/google-services.json | sort -u
+            echo "Add $APPID in the Firebase console, download the new google-services.json,"
+            echo "and re-upload it as GOOGLE_SERVICES_JSON. Shipping without it would crash"
+            echo "the app the moment a user grants notification permission."
+            exit 1
+          fi
+          cp /tmp/google-services.json android/app/google-services.json
+          echo "google-services.json written for $APPID"
           npx cap sync android
           # Capacitor regenerates android/app/build.gradle on every build with
           # versionCode 1 hardcoded, so every Android bundle ever produced here claimed
@@ -627,23 +646,42 @@ workflows:
             sed -i 's|<application|<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n\n    <application|' "$MANIFEST"
           # Firebase config for FCM. Upload google-services.json to Codemagic as the
           # environment variable GOOGLE_SERVICES_JSON (base64).
-          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            APPID=$(node -p "require('./capacitor.config.json').appId")
-            echo "$GOOGLE_SERVICES_JSON" | base64 --decode > /tmp/google-services.json
-            # One Firebase config holds every Android app in the project. If this app is
-            # not in it, the Google Services plugin fails the whole build with "No
-            # matching client found", which is how the first admin bundle died. Leave
-            # the file out instead: the build ships, just without push, and says so.
-            if grep -q "\"package_name\": *\"$APPID\"" /tmp/google-services.json; then
-              cp /tmp/google-services.json android/app/google-services.json
-              echo "google-services.json written for $APPID"
-            else
-              echo "WARNING: GOOGLE_SERVICES_JSON has no client for $APPID. Add the app in Firebase"
-              echo "and upload the new file to Codemagic. This build ships without push."
-            fi
-          else
-            echo "WARNING: GOOGLE_SERVICES_JSON is not set — this build cannot receive push."
+          #
+          # A bundle that carries the push plugin without a Firebase client is not a
+          # bundle without push. It is a bundle that CRASHES. @capacitor/push-notifications
+          # is a dependency, so PushNotificationsPlugin is always in the native project;
+          # its register() calls FirebaseMessaging.getInstance(), which throws
+          # IllegalStateException("Default FirebaseApp is not initialized") when no
+          # google-services.json was compiled in. Capacitor's Bridge does not swallow
+          # that: callPluginMethod catches only PluginLoadException and
+          # InvalidPluginMethodException, and rethrows everything else as a
+          # RuntimeException from a Runnable on the main thread. The app dies the moment
+          # the user grants notification permission, on every launch, and no JS catch can
+          # stop it. That is how admin version code 26 was rejected by Google under the
+          # Broken Functionality policy: "the app opens, but it keeps crashing".
+          #
+          # So this step now refuses to build rather than warn. To turn it green: add the
+          # app in the Firebase console, download the project's google-services.json (one
+          # file holds every Android app in the project), base64 it, and replace
+          # GOOGLE_SERVICES_JSON in the Codemagic "appstore" group.
+          APPID=$(node -p "require('./capacitor.config.json').appId")
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo "BUILD STOPPED — GOOGLE_SERVICES_JSON is not set, so this bundle would"
+            echo "ship the push plugin with no Firebase config and crash on first sign-in."
+            exit 1
           fi
+          echo "$GOOGLE_SERVICES_JSON" | base64 --decode > /tmp/google-services.json
+          if ! grep -q "\"package_name\": *\"$APPID\"" /tmp/google-services.json; then
+            echo "BUILD STOPPED — GOOGLE_SERVICES_JSON has no client for $APPID."
+            echo "Clients it does have:"
+            grep -o '\"package_name\": *\"[^\"]*\"' /tmp/google-services.json | sort -u
+            echo "Add $APPID in the Firebase console, download the new google-services.json,"
+            echo "and re-upload it as GOOGLE_SERVICES_JSON. Shipping without it would crash"
+            echo "the app the moment a user grants notification permission."
+            exit 1
+          fi
+          cp /tmp/google-services.json android/app/google-services.json
+          echo "google-services.json written for $APPID"
           npx cap sync android
           # Capacitor regenerates android/app/build.gradle on every build with
           # versionCode 1 hardcoded, so every Android bundle ever produced here claimed
