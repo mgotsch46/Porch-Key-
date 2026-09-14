@@ -441,6 +441,9 @@ aside button.signout{margin-top:6px;color:#7FA3B2}
   line-height:1;cursor:pointer;color:var(--gray,#6B7A5F);padding:6px;border-radius:8px;z-index:2}
 .modal-x:hover{background:rgba(0,0,0,.06)}
 .modal{position:relative;background:#fff;border-radius:18px;padding:26px;width:100%;max-width:660px;max-height:92vh;overflow:auto}
+@keyframes pp-nudge{0%,100%{transform:translateX(0)}18%{transform:translateX(-8px)}36%{transform:translateX(8px)}
+  56%{transform:translateX(-5px)}76%{transform:translateX(5px)}}
+.modal.nudge{animation:pp-nudge .36s ease}
 .tabs-inline{display:flex;gap:7px;margin-bottom:16px;flex-wrap:wrap}
 .tabs-inline button{background:#EDF2F0;border:none;border-radius:10px;padding:8px 16px;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer;color:var(--mut)}
 .tabs-inline button.active{background:var(--brand);color:#fff}
@@ -1269,7 +1272,7 @@ a{color:var(--brand);font-weight:600}
 </div>
 
 <!-- generic modal -->
-<div id="modal" class="modal-bg hidden" onclick="if(event.target===this)closeModal()">
+<div id="modal" class="modal-bg hidden" onclick="if(event.target===this)dismissModal()">
   <div class="modal" id="modal-content"></div>
 </div>
 
@@ -6606,19 +6609,42 @@ async function allocateSubmit(loanId,available){
   }catch(e){ alert(e.message); if(go) go.disabled=false; }
 }
 
+// Losing a half-filled form to a stray click on the backdrop is the worst kind of bug:
+// the work is gone, there is nothing to undo, and it always happens on the long forms.
+// So the moment anything inside the dialog is typed in or picked, the dialog stops
+// answering to the backdrop and to Escape. The ✕ and Cancel still close it; the ✕ asks first.
+var MODAL_DIRTY=false;
+['input','change'].forEach(ev=>document.addEventListener(ev,(e)=>{
+  const m=$('modal'); if(!m||m.classList.contains('hidden')) return;
+  if($('modal-content').contains(e.target)) MODAL_DIRTY=true;
+},true));
+function dismissModal(viaX){
+  if(!MODAL_DIRTY){ closeModal(); return; }
+  if(viaX){
+    if(confirm('Close without saving? What you have typed here will be lost.')) closeModal();
+    return;
+  }
+  // Accidental: refuse to close, and say why rather than just ignoring the click.
+  const box=$('modal-content');
+  box.classList.remove('nudge'); void box.offsetWidth; box.classList.add('nudge');
+  setTimeout(()=>box.classList.remove('nudge'),420);
+  toast('Kept open so you do not lose what you typed. Use the ✕ or Cancel to close.');
+}
 function modal(html,{wide}={}){
   // The document viewer wants most of the screen; everything else keeps the compact
   // default. Reset each call so one wide modal doesn't stretch the next.
   $('modal-content').style.maxWidth=wide?'min(1000px,96vw)':'';
   // Every dialog gets a way out. The ✕ is injected here, in the shell, so no individual
-  // modal can forget it — clicking outside and pressing Escape close it too.
+  // modal can forget it — clicking outside and pressing Escape close it too, but only
+  // while nothing has been typed (see dismissModal above).
   $('modal-content').innerHTML=
-    '<button class="modal-x" title="Close" aria-label="Close" onclick="closeModal()">✕</button>'+html;
+    '<button class="modal-x" title="Close" aria-label="Close" onclick="dismissModal(true)">✕</button>'+html;
   $('modal').classList.remove('hidden');
+  MODAL_DIRTY=false;
   setTimeout(()=>{ wireInputs(); wireAddressFields(); },0);
 }
 document.addEventListener('keydown',(e)=>{
-  if(e.key==='Escape' && !$('modal').classList.contains('hidden')) closeModal();
+  if(e.key==='Escape' && !$('modal').classList.contains('hidden')) dismissModal();
 });
 // Most people want the year-by-year picture; the month-by-month detail is one tap away.
 let CALC_OPEN=false;
@@ -6925,7 +6951,7 @@ async function saveTenantEdits(id){
   }catch(e){ $('et-err').textContent=e.message; $('et-err').classList.remove('hidden'); }
 }
 
-function closeModal(){ $('modal').classList.add('hidden'); }
+function closeModal(){ $('modal').classList.add('hidden'); MODAL_DIRTY=false; }
 async function remindModal(loanId){
   if(!REMINDERS.length){ try{ await loadReminders(); }catch{} }
   modal(`<h2>Send a payment reminder</h2>

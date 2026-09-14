@@ -222,6 +222,9 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
 
 /* bottom sheet */
 .sheet-bg{position:fixed;inset:0;background:rgba(22,34,13,.38);z-index:20}
+@keyframes pp-nudge{0%,100%{transform:translateX(0)}18%{transform:translateX(-8px)}36%{transform:translateX(8px)}
+  56%{transform:translateX(-5px)}76%{transform:translateX(5px)}}
+.sheet.nudge{animation:pp-nudge .36s ease}
 .sheet{position:fixed;left:0;right:0;bottom:0;z-index:21;background:#fff;border-radius:22px 22px 0 0;
   padding:8px 16px calc(16px + env(safe-area-inset-bottom));max-height:84vh;overflow:auto;
   box-shadow:0 -10px 30px rgba(22,34,13,.18)}
@@ -484,7 +487,7 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
   <div class="rbar"><b id="reader-title"></b><button class="primary" onclick="closeReader()">Done</button></div>
   <iframe id="reader-frame" title="Document"></iframe>
 </div>
-<div id="sheet-bg" class="sheet-bg hidden" onclick="closeSheet()"></div>
+<div id="sheet-bg" class="sheet-bg hidden" onclick="dismissSheet()"></div>
 <div id="sheet" class="sheet hidden" role="dialog"><div class="grab"></div><div id="sheet-body"></div></div>
 
 <script>
@@ -974,8 +977,23 @@ async function threadSend(){
 }
 
 // ---------- bottom sheet ----------
-function openSheet(html){ $('sheet-body').innerHTML=html; $('sheet').classList.remove('hidden'); $('sheet-bg').classList.remove('hidden'); }
-function closeSheet(){ $('sheet').classList.add('hidden'); $('sheet-bg').classList.add('hidden'); }
+function openSheet(html){ $('sheet-body').innerHTML=html; $('sheet').classList.remove('hidden'); $('sheet-bg').classList.remove('hidden'); SHEET_DIRTY=false; }
+function closeSheet(){ $('sheet').classList.add('hidden'); $('sheet-bg').classList.add('hidden'); SHEET_DIRTY=false; }
+// Tapping the dimmed area behind a sheet used to close it instantly, which on a phone
+// is an easy thumb slip and took anything typed with it. Once something has been entered,
+// that tap asks before it throws the entry away.
+var SHEET_DIRTY=false;
+['input','change'].forEach(ev=>document.addEventListener(ev,(e)=>{
+  const sh=$('sheet'); if(!sh||sh.classList.contains('hidden')) return;
+  if($('sheet-body').contains(e.target)) SHEET_DIRTY=true;
+},true));
+function dismissSheet(){
+  if(!SHEET_DIRTY){ closeSheet(); return; }
+  const sh=$('sheet');
+  sh.classList.remove('nudge'); void sh.offsetWidth; sh.classList.add('nudge');
+  setTimeout(()=>sh.classList.remove('nudge'),420);
+  if(confirm('Close without saving? What you have entered here will be lost.')) closeSheet();
+}
 function openRecipients(){
   if(!TH) return;
   const p=TH.prop, opts=[];
