@@ -3799,12 +3799,24 @@ app.post('/api/voice/staff-screen-action', twilioWebhook, async (req, res) => {
   res.send('<Response><Hangup/></Response>');
 });
 
+// Did a person actually end up talking to the caller? DialCallStatus alone cannot say:
+// a screened cell leg that picks up, hears "press 1", and hangs up without pressing
+// anything still reports "completed", because the handset did answer. Twilio's
+// DialBridged flag is the honest one — it is only true once the two ends were joined.
+// Treating a screened-and-dropped leg as answered is how a caller got silence and a
+// hang-up where the voicemail greeting should have been.
+function dialWasAnswered(b) {
+  if (b.DialCallStatus !== 'completed') return false;
+  if (b.DialBridged === undefined) return true;
+  return String(b.DialBridged) === 'true';
+}
+
 // A <Dial> finished — Twilio reports how it went and for how long. That is the moment a
 // call_log row learns its outcome.
 app.post('/api/voice/dial-done', twilioWebhook, (req, res) => {
   const b = req.body || {};
   if (b.CallSid) {
-    const done = b.DialCallStatus === 'completed';
+    const done = dialWasAnswered(b);
     run(`UPDATE call_log SET status=?, duration_sec=COALESCE(?, duration_sec) WHERE call_sid=?`,
       done ? 'completed' : 'missed', Number(b.DialCallDuration) || null, b.CallSid);
   }
@@ -3816,7 +3828,7 @@ app.post('/api/voice/vm-fallback', twilioWebhook, (req, res) => {
   res.type('text/xml');
   if (!co) return res.send('<Response/>');
   const b = req.body || {};
-  const answered = b.DialCallStatus === 'completed';
+  const answered = dialWasAnswered(b);
   if (b.CallSid) {
     run(`UPDATE call_log SET status=?, duration_sec=COALESCE(?, duration_sec) WHERE call_sid=?`,
       answered ? 'completed' : 'voicemail', Number(b.DialCallDuration) || null, b.CallSid);
