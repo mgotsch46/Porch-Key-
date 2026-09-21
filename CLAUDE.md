@@ -31,12 +31,15 @@ Mobile builds go through Codemagic (`codemagic.yaml`).
 ## Vocabulary
 "BOG" means boots on ground: local field reps who physically check properties, handle lockouts, take photos, and meet contractors. Other roles are tenant buyers and co-buyers.
 
+## Voice and texting, verified working September 21, 2026
+The 810 number's voice and messaging webhooks point at PorchPay. Inbound calls ring the owner's cell (with a press 1 screen) and the browser softphone at the same time, and unanswered calls fall through to a voicemail greeting that records and transcribes. The softphone in the web app can place and receive calls. Settings → Texting → "Check my calling setup" asks Twilio live and lists the last eight calls; use it before guessing. Railway http logs show the Twilio webhook trail (`/api/voice/incoming` → `staff-screen` → `vm-fallback`) for any call.
+
+Lesson: Twilio reports `DialCallStatus=completed` for a screened cell leg that picked up and hung up without pressing 1. Only `DialBridged=true` means a person was actually connected.
+
 ## Open items, current focus first
 1. **Inbound communication routing.** The goal is one unified communication log per property across SMS, voice, and email. Inbound SMS may only resolve contacts scoped to vendors rather than the full contacts table, so buyer messages arrive with no `contact_id` or `property_id`. Fix that first.
-2. **No voice webhook on the 810 number.** Inbound calls likely fail silently with no record, and the number is already published on `support.html` and on outgoing notices. Minimum viable fix is a TwiML bin forwarding to a real phone with recording on.
-3. Verify inbound records actually get `property_id` and `contact_id` attribution. Both columns already exist on `email_log`.
-4. Enable making and receiving calls and texts from inside the web app.
-5. The admin app Comms section needs reorganizing per property and a much cleaner look.
+2. Verify inbound records actually get `property_id` and `contact_id` attribution. Both columns already exist on `email_log`.
+3. The admin app Comms section needs reorganizing per property and a much cleaner look.
 
 ## Known feature gaps against competitors
 1098 and 1099-INT generation, a double entry or trust accounting ledger, deeper escrow disbursement handling, payoff letter generation, and compliance posture work (Dodd-Frank, SAFE Act, Reg Z, state contract for deed statutes).
