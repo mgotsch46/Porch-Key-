@@ -34,7 +34,11 @@ Decision (Sep 11, 2026): public listing on both stores, iOS first, then Android.
 - App Review Information: sign-in required, user `demo-admin@porchpay.app`, password entered by Marisa, contact Marisa Gotsch +1 651 894 3635 marisa@reneweqllc.com, review notes below.
 - Only step left: **Add for Review**, then **Submit**. Held on purpose (next section).
 
-### Hold before submitting to Apple
+### Live on the App Store since Sep 15, 2026
+
+PorchPay Admin 1.0 was approved and released on Sep 15, 2026, with seller RenewEQ, LLC: https://apps.apple.com/us/app/porchpay-admin/id6806890021. It still carries the old name and the SAA copyright. The next version should be named Porch Pay Admin by RenewEQ, with copyright 2026 RenewEQ, LLC. In App Store Connect, "Ready for Distribution" means live, not waiting for a release click.
+
+### Earlier: hold before submitting to Apple (history)
 
 Apple rejected the buyer app on Sep 9 under Guideline 5.1.1(ix): apps in regulated financial services must come from an **organization** developer account, and this account is still an individual one. The admin app is on the same account and services the same loans, so it will get the same rejection. The conversion request to RENEWEQ, LLC is open (case 102957813212; see `claude/porch-pay-app-store-rejection.md` in the project). Submit the admin app the day App Store Connect > Business shows RENEWEQ, LLC.
 
