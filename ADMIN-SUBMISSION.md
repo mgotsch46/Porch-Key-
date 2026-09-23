@@ -47,6 +47,8 @@ The account is now an organization enrollment for RenewEQ, LLC, so the App Store
 - App Store name: **Porch Pay by RenewEQ, LLC** (buyer app, 25 of 30 characters) and **Porch Pay Admin by RenewEQ** (admin app; the version with ", LLC" is 31 characters, one over the limit).
 - Copyright on both: **2026 RenewEQ, LLC**.
 - On the web pages the apps load: sign in screens, app footer, and the header and footer of privacy, terms, support and delete account all say RenewEQ, LLC. Support names RenewEQ, LLC (info@reneweqllc.com) as the app support contact and sends loan questions to each borrower's own servicer, because Porch Pay is white labeled for many servicing companies and SAA Property Management, LLC is only one of them.
+- **Buyer app resubmitted Sep 22, 2026, 10:14 PM** (build 12, submission 51ea31ee). In App Store Connect: name changed to Porch Pay by RenewEQ, LLC, copyright to 2026 RenewEQ, LLC, description ends "Porch Pay is a product of RenewEQ, LLC.", review notes open with a SELLER paragraph, and a reply was posted to App Review. Status: Waiting for Review. Release is set to automatic, so it goes live when approved.
+- To resubmit a rejected version, click **Update Review** on the version page first. Clicking **Resubmit to App Review** straight from the submission page does nothing until the item shows Ready for Review.
 - No new build is needed for this. The apps load their screens from Railway, and the home screen name can stay short.
 
 ## Google Play
