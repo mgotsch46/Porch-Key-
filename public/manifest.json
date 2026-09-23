@@ -1,6 +1,6 @@
 {
-  "name": "PorchPay",
-  "short_name": "PorchPay",
+  "name": "Porch Pay by RenewEQ, LLC",
+  "short_name": "Porch Pay",
   "description": "View your loan, make payments, and message your servicer.",
   "start_url": "/",
   "scope": "/",

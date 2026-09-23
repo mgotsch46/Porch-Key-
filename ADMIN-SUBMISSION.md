@@ -24,7 +24,7 @@ Decision (Sep 11, 2026): public listing on both stores, iOS first, then Android.
 | Promotional text, description, keywords | Saved (text below) |
 | Support URL | https://porchpay-production.up.railway.app/support |
 | Marketing URL | https://porchpay-production.up.railway.app/ |
-| Version / copyright | 1.0 · 2026 SAA Property Management, LLC |
+| Version / copyright | 1.0 · 2026 RenewEQ, LLC (was SAA Property Management, LLC; changed Sep 22, 2026, see below) |
 | Release | Manually release this version |
 
 ### Ready on iOS (Sep 11, 2026, verified by reloading the page)
@@ -39,6 +39,15 @@ Decision (Sep 11, 2026): public listing on both stores, iOS first, then Android.
 Apple rejected the buyer app on Sep 9 under Guideline 5.1.1(ix): apps in regulated financial services must come from an **organization** developer account, and this account is still an individual one. The admin app is on the same account and services the same loans, so it will get the same rejection. The conversion request to RENEWEQ, LLC is open (case 102957813212; see `claude/porch-pay-app-store-rejection.md` in the project). Submit the admin app the day App Store Connect > Business shows RENEWEQ, LLC.
 
 ---
+
+## Sep 22, 2026: the apps carry the RenewEQ, LLC name
+
+The account is now an organization enrollment for RenewEQ, LLC, so the App Store seller is RenewEQ, LLC on every app. Apple Developer Support (case 102957813212) refused to show the seller as "Porch Pay": they do not accept a DBA or fictitious name as the seller, even with the Florida registration. The only fix is for each app to say RenewEQ, LLC itself so it matches the seller.
+
+- App Store name: **Porch Pay by RenewEQ, LLC** (buyer app, 25 of 30 characters) and **Porch Pay Admin by RenewEQ** (admin app; the version with ", LLC" is 31 characters, one over the limit).
+- Copyright on both: **2026 RenewEQ, LLC**.
+- On the web pages the apps load: sign in screens, app footer, and the header and footer of privacy, terms, support and delete account all say RenewEQ, LLC. Support names RenewEQ, LLC (info@reneweqllc.com) as the app support contact and sends loan questions to each borrower's own servicer, because Porch Pay is white labeled for many servicing companies and SAA Property Management, LLC is only one of them.
+- No new build is needed for this. The apps load their screens from Railway, and the home screen name can stay short.
 
 ## Google Play
 

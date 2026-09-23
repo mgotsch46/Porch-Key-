@@ -1,6 +1,6 @@
 # PorchPay
 
-Loan servicing and property management for SAA Property Management, LLC. Built for contract for deed and land trust beneficial interest deals with tenant buyers, which is why off the shelf tools like Buildium and Innago do not fit: PorchPay handles declining balances, amortization, interest accrual, escrow, and payoff mechanics.
+Loan servicing and property management software, a product of RenewEQ, LLC. Servicing companies use it white labeled as their own, each with its own borrowers, properties and payments; SAA Property Management, LLC is one of them. Built for contract for deed and land trust beneficial interest deals with tenant buyers, which is why off the shelf tools like Buildium and Innago do not fit: PorchPay handles declining balances, amortization, interest accrual, escrow, and payoff mechanics.
 
 Node and Express with better-sqlite3 on a persistent Railway volume (`DATA_DIR`).
 
@@ -44,5 +44,8 @@ Lesson: Twilio reports `DialCallStatus=completed` for a screened cell leg that p
 ## Known feature gaps against competitors
 1098 and 1099-INT generation, a double entry or trust accounting ledger, deeper escrow disbursement handling, payoff letter generation, and compliance posture work (Dodd-Frank, SAFE Act, Reg Z, state contract for deed statutes).
 
-## Undecided
-Whether PorchPay stays an internal portfolio tool or becomes a product sold to other investors. That fork decides which of the gaps above are urgent, so flag it rather than assuming.
+## App Store seller name
+The Apple developer account is an organization enrollment for RenewEQ, LLC, and Apple will not show a DBA as the seller. Every app on that account must carry the RenewEQ, LLC name in its store name, copyright and in app pages, or App Review rejects it under Guideline 5.1.1(ix). Details in `ADMIN-SUBMISSION.md`.
+
+## Decided Sep 22, 2026
+PorchPay is a product for other servicing companies, not only an internal tool (Marisa confirmed). Weigh the competitor gaps above with that in mind.
