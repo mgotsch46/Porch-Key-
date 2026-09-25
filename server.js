@@ -4531,7 +4531,7 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
         events.push({ ts: m.created_at, channel: chans.includes('sms') ? 'text' : 'message',
           direction: m.sender_role === 'tenant' ? 'in' : 'out',
           who: m.sender_name, summary: m.subject || null, party: 'buyer',
-          body: String(m.body || '').slice(0, 500), channels: chans });
+          body: String(m.body || '').slice(0, 4000), channels: chans });
       }
     }
     // Vendor texts, filed against this property.
@@ -4539,7 +4539,7 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
         LEFT JOIN contacts c ON c.id=cm.contact_id
         WHERE cm.company_id=? AND cm.property_id=? ORDER BY cm.id DESC LIMIT ?`, req.companyId, prop.id, limit)) {
       events.push({ ts: t.created_at, channel: 'text', direction: t.direction,
-        who: t.contact_name || t.phone, body: String(t.body || '').slice(0, 500),
+        who: t.contact_name || t.phone, body: String(t.body || '').slice(0, 4000),
         status: t.status, party: 'contact', contact_id: t.contact_id || null });
     }
     // Email — through the loan, or filed directly against the property.
@@ -8466,6 +8466,7 @@ app.get('/api/admin/push-status', ownerOnly, (req, res) => {
     vapid_public_key: notify.vapid().publicKey,
     vapid_private_key: stored ? stored.value : null,
     native_push: notify.nativePushEnabled(),
+    apple_push: notify.apnsEnabled(),
     web_subscriptions: get('SELECT COUNT(*) c FROM push_subscriptions').c,
     devices: get('SELECT COUNT(*) c FROM device_tokens').c,
     warnings: [
@@ -8476,6 +8477,9 @@ app.get('/api/admin/push-status', ownerOnly, (req, res) => {
       notify.nativePushEnabled() ? null
         : 'Native push is not configured, so the App Store and Play builds cannot receive ' +
           'notifications. Set FIREBASE_SERVICE_ACCOUNT to the service-account JSON.',
+      notify.apnsEnabled() ? null
+        : 'Apple push is not configured, so iPhones running the store apps get no notifications ' +
+          '(Firebase cannot deliver to an iPhone token). Set APNS_KEY_P8, APNS_KEY_ID and APNS_TEAM_ID.',
     ].filter(Boolean),
   });
 });

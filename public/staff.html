@@ -160,29 +160,31 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
 .fchips::-webkit-scrollbar{display:none}
 .fchips button{flex:none;font-size:13px;padding:6px 13px;border-radius:999px;background:#fff;border:1px solid var(--line);font-weight:600}
 .fchips button.active{background:var(--ink);border-color:var(--ink);color:#fff}
-.tbody{display:flex;flex-direction:column;padding:6px 12px 14px}
-.day{align-self:center;font-size:11px;font-weight:700;color:var(--mut);letter-spacing:.6px;text-transform:uppercase;margin:18px 0 6px}
-.b-row{display:flex;flex-direction:column;max-width:80%;margin-top:10px}
+.tbody{display:flex;flex-direction:column;padding:6px 12px 14px;background:#fff;min-height:60vh;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif}
+.day{align-self:center;font-size:11px;font-weight:400;color:#8E8E93;margin:16px 0 6px}
+.day b{font-weight:600;color:#6C6C70}
+.b-row{display:flex;flex-direction:column;max-width:78%;margin-top:8px}
 .b-row.cont{margin-top:2px}
 .b-row.me{align-self:flex-end;align-items:flex-end}
 .b-row.them{align-self:flex-start;align-items:flex-start}
-.b-who{font-size:11.5px;font-weight:700;color:var(--mut);margin:0 0 3px 13px}
-.bubble{padding:9px 13px;border-radius:19px;font-size:15px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
+.b-who{font-size:11px;font-weight:400;color:#8E8E93;margin:0 0 2px 13px}
+.bubble{padding:7px 12px 8px;border-radius:18px;font-size:16px;line-height:1.33;white-space:pre-wrap;word-break:break-word}
 .bubble .subj{display:block;font-weight:700;margin-bottom:2px}
 .bubble.long{max-height:10.5em;overflow:hidden;position:relative}
 .bubble .more-btn{position:absolute;left:0;right:0;bottom:0;padding:30px 13px 9px;border-radius:0;text-align:left;
-  font-size:13px;font-weight:700;background:linear-gradient(rgba(255,255,255,0),#fff 32%);color:var(--brand)}
-.me .bubble .more-btn{background:linear-gradient(rgba(84,163,47,0),var(--brand) 32%);color:#fff}
-.me.other .bubble .more-btn{background:linear-gradient(rgba(47,107,26,0),#2F6B1A 32%)}
-.me .bubble{background:var(--brand);color:#fff}
-.them .bubble{background:#fff;border:1px solid var(--line)}
-.b-row.me.tail .bubble{border-bottom-right-radius:6px}
-.b-row.them.tail .bubble{border-bottom-left-radius:6px}
-.b-row.me.other .bubble{background:#2F6B1A}
-.b-row.bad .bubble{background:#FBEAEA;color:var(--red);border:1px solid #F3CFCF}
-.b-meta{font-size:11px;color:var(--mut);margin:4px 9px 0}
+  font-size:13px;font-weight:700;background:linear-gradient(rgba(233,233,235,0),#E9E9EB 32%);color:#0A84FF}
+.me .bubble .more-btn{background:linear-gradient(rgba(10,132,255,0),#0A84FF 32%);color:#fff}
+.me.sms .bubble .more-btn{background:linear-gradient(rgba(52,199,89,0),#34C759 32%)}
+/* Blue went through the app, green went as a text message — the way an iPhone tells iMessage from SMS. */
+.me .bubble{background:#0A84FF;color:#fff}
+.b-row.me.sms .bubble{background:#34C759}
+.them .bubble{background:#E9E9EB;color:#000}
+.b-row.me.tail .bubble{border-bottom-right-radius:5px}
+.b-row.them.tail .bubble{border-bottom-left-radius:5px}
+.b-row.bad .bubble,.b-row.me.sms.bad .bubble{background:#fff;color:#D70015;border:1px solid #FFB3B8}
+.b-meta{font-size:11px;color:#8E8E93;margin:3px 8px 0}
 .ev{align-self:center;width:min(100%,340px);display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0 2px;
-  padding:9px 11px;background:#fff;border:1px solid var(--line);border-radius:15px}
+  padding:8px 11px;background:#F2F2F7;border-radius:14px}
 .ev .ei{width:32px;height:32px;border-radius:50%;background:var(--pale);color:var(--brand);display:flex;
   align-items:center;justify-content:center;flex:none}
 .ev .ei svg{width:15px;height:15px}
@@ -880,10 +882,12 @@ function renderThread(){
     return;
   }
   const buyerName=TH.prop.buyer&&TH.prop.buyer.name;
-  let html='', lastDay='';
+  let html='', lastDay='', lastT=0;
   list.forEach((e,i)=>{
     const d=tsDate(e.ts), dk=dayKey(d);
-    if(dk!==lastDay){ html+=`<div class="day">${esc(dayLabel(d))}</div>`; lastDay=dk; }
+    // Like Messages: a time header on each new day, and again after an hour of quiet.
+    if(dk!==lastDay||d-lastT>=60*60e3){ html+=`<div class="day"><b>${esc(dayLabel(d))}</b> ${esc(clock(e.ts))}</div>`; lastDay=dk; }
+    lastT=d;
     if(!isBubble(e)){ html+=eventCard(e); return; }
     const prev=list[i-1], next=list[i+1];
     const near=(a,b)=>a&&b&&isBubble(a)&&isBubble(b)&&senderKey(a)===senderKey(b)
@@ -900,7 +904,8 @@ function renderThread(){
     // Notices copied into the buyer's thread run to pages. Fold anything that long.
     const long=String(e.body||'').length>320;
     const subj=e.summary&&e.channel==='message'?`<span class="subj">${esc(e.summary)}</span>`:'';
-    html+=`<div class="b-row ${mine?'me':'them'} ${cont?'cont':''} ${contNext?'':'tail'} ${other&&mine?'other':''} ${e.status==='failed'?'bad':''}">
+    const sms=e.channel==='text';
+    html+=`<div class="b-row ${mine?'me':'them'} ${cont?'cont':''} ${contNext?'':'tail'} ${sms?'sms':''} ${e.status==='failed'?'bad':''}">
       ${whoLbl}<div class="bubble ${long?'long':''}">${subj}${esc(e.body||'')}${long?`<button class="more-btn" onclick="this.parentNode.classList.remove('long');this.remove()">Show all</button>`:''}</div>${meta}</div>`;
   });
   el.innerHTML=html;
@@ -1221,10 +1226,25 @@ async function loadVendorThread(){
         +props.map(p=>`<button class="${CURV.property_id===p.id?'active':''}"
           onclick="vendorChip(${p.id},'${esc(p.address)}')">${esc(p.address)}</button>`).join('');
     } else chips.classList.add('hidden');
-    el.innerHTML=d.messages.map(m=>`
-      <div class="msg ${m.direction==='out'?'me':'them'}">${esc(m.body)}
-        <div class="t">${m.direction==='out'?(m.sent_by_name?esc(m.sent_by_name):'You'):esc(CURV.name)} · ${when(m.created_at)}${!CURV.property_id&&m.property_address?' · '+esc(m.property_address):''}</div></div>`
-    ).join('')||`<p class="note">${CURV.property_id?'No texts about this house yet.':'No texts yet.'}</p>`;
+    // Same bubbles as the house thread: these are all text messages, so green and gray.
+    const ms=d.messages;
+    let html='', lastDay='', lastT=0;
+    ms.forEach((m,i)=>{
+      const t=tsDate(m.created_at), dk=dayKey(t);
+      if(dk!==lastDay||t-lastT>=60*60e3){ html+=`<div class="day"><b>${esc(dayLabel(t))}</b> ${esc(clock(m.created_at))}</div>`; lastDay=dk; }
+      lastT=t;
+      const near=(a,b)=>a&&b&&a.direction===b.direction&&dayKey(tsDate(a.created_at))===dayKey(tsDate(b.created_at))
+        &&Math.abs(tsDate(b.created_at)-tsDate(a.created_at))<5*60e3;
+      const mine=m.direction==='out', contNext=near(m,ms[i+1]);
+      const failed=m.status==='failed';
+      const meta=contNext?'':`<div class="b-meta">${esc(clock(m.created_at))}${mine&&m.sent_by_name?' · '+esc(m.sent_by_name):''}${
+        !CURV.property_id&&m.property_address?' · '+esc(m.property_address):''}${
+        failed?' · <b style="color:var(--red)">not delivered</b>':m.status==='not_sent'?' · not sent':''}</div>`;
+      html+=`<div class="b-row ${mine?'me':'them'} sms ${near(ms[i-1],m)?'cont':''} ${contNext?'':'tail'} ${failed?'bad':''}">
+        <div class="bubble">${esc(m.body)}</div>${meta}</div>`;
+    });
+    el.innerHTML=html?`<div class="tbody" style="min-height:0;padding:4px 2px 10px">${html}</div>`
+      :`<p class="note">${CURV.property_id?'No texts about this house yet.':'No texts yet.'}</p>`;
     el.scrollTop=el.scrollHeight;
     refresh();
   }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; }

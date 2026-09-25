@@ -386,6 +386,42 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand)}
 .msg.me{background:var(--brand);color:#fff;margin-left:auto;border-bottom-right-radius:5px}
 .msg.them{background:#EDF2F0;border-bottom-left-radius:5px}
 .msg .t{font-size:10.5px;opacity:.72;margin-top:3px}
+
+/* ---------- iPhone-style threads ----------
+   One look for every conversation: buyer messages, vendor texts, and the Activity
+   timeline. Yours on the right, theirs on the left in gray. Blue went through the app,
+   green went as a text message, the same way an iPhone tells iMessage from SMS. */
+.ios{display:flex;flex-direction:column;padding:6px 4px 10px;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif}
+.ios-scroll{max-height:520px;overflow-y:auto;background:#fff;border:1px solid var(--line);border-radius:14px}
+.ios-stamp{align-self:center;font-size:11px;color:#8E8E93;margin:14px 0 6px;text-align:center}
+.ios-stamp b{font-weight:600;color:#6C6C70}
+.ios-name{font-size:11px;color:#8E8E93;margin:6px 0 2px 14px}
+.ios-b{position:relative;max-width:72%;padding:7px 12px 8px;border-radius:18px;font-size:14.5px;line-height:1.35;
+  white-space:pre-wrap;overflow-wrap:anywhere;margin-top:2px}
+.ios-b.in{align-self:flex-start;background:#E9E9EB;color:#000}
+.ios-b.out{align-self:flex-end;background:#0A84FF;color:#fff}
+.ios-b.out.sms{background:#34C759}
+.ios-b.out.failed,.ios-b.in.failed{background:#fff;color:#D70015;border:1px solid #FFB3B8}
+/* Only the last bubble of a run gets the tail, like Messages. */
+.ios-b.tail.in{border-bottom-left-radius:5px}
+.ios-b.tail.out{border-bottom-right-radius:5px}
+.ios-b.gap{margin-top:8px}
+.ios-b a{color:inherit;text-decoration:underline}
+.ios-rcpt{font-size:10.5px;color:#8E8E93;margin:3px 6px 2px;align-self:flex-end;text-align:right}
+.ios-rcpt.in{align-self:flex-start;text-align:left;margin-left:12px}
+.ios-rcpt .bad{color:#D70015;font-weight:600}
+/* Everything that is not a message — calls, email, notices, payments — sits centered
+   between the bubbles as a quiet event line, so the conversation still reads as one. */
+.ios-ev{align-self:center;max-width:88%;margin:8px 0;padding:7px 12px;border-radius:12px;background:#F2F2F7;
+  font-size:12.5px;color:#3A3A3C;text-align:center}
+.ios-ev .h{font-weight:600}
+.ios-ev .s{color:#8E8E93;font-weight:400}
+.ios-ev.pay{background:#E8F7EC;color:#1E6B34}
+.ios-ev.fee,.ios-ev.bad{background:#FFEDEE;color:#A1000F}
+.ios-ev .x{margin-top:4px;color:#6C6C70;font-style:italic;white-space:pre-wrap;text-align:left}
+.ios-ev audio{display:block;height:30px;width:260px;max-width:100%;margin:6px auto 0}
+.ios-empty{padding:28px 10px;text-align:center;color:#8E8E93;font-size:13px}
+.ios-letter{align-self:flex-end;max-width:94%;margin:8px 0}
 .modal-bg{position:fixed;inset:0;background:rgba(10,35,28,.55);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
 /* Sidebar grouping. Headings orient you; sub-items sit under their parent. */
 aside .navgrp{padding:18px 20px 6px;font-size:10.5px;text-transform:uppercase;letter-spacing:1.1px;
@@ -1038,7 +1074,7 @@ a{color:var(--brand);font-weight:600}
         <button class="small" onclick="openMsgs()">← All conversations</button>
         <div class="card" style="margin-top:12px">
           <h2 id="mt-title"></h2>
-          <div id="mt-list" style="max-height:460px;overflow:auto;padding:6px 0"></div>
+          <div id="mt-list" class="ios-scroll" style="max-height:520px"></div>
 
           <!-- Composer: a real writing area, not a one-line box. Grows as you type. -->
           <div class="composer" id="mt-composer">
@@ -1453,8 +1489,40 @@ async function boot(){
     // browser has to be registered with Twilio *before* the call arrives — not when a
     // Call button is pressed.
     startSoftphoneListener().catch(()=>{});
+    // The desktop portal never subscribed to push, so a text arriving while this tab sat
+    // in the background made no sound at all. Quietly re-subscribe when permission is
+    // already granted; asking for it needs a click, which Settings and the Comms banner offer.
+    registerDesktopPush(false).catch(()=>{});
   }catch{ $('v-login').classList.remove('hidden'); }
 }
+async function registerDesktopPush(ask){
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window)) return 'unsupported';
+  if(ask && Notification.permission==='default') await Notification.requestPermission();
+  if(Notification.permission!=='granted') return Notification.permission;
+  const reg=await navigator.serviceWorker.register('/sw.js');
+  await navigator.serviceWorker.ready;
+  const {key}=await api('/api/push/public-key');
+  const sub=await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({userVisibleOnly:true,
+    applicationServerKey:Uint8Array.from(atob(key.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0))});
+  await api('/api/push/subscribe',{method:'POST',body:JSON.stringify({subscription:sub})});
+  return 'granted';
+}
+async function enableDesktopPush(){
+  const out=$('desk-push-result');
+  try{
+    const r=await registerDesktopPush(true);
+    if(out) out.textContent = r==='granted' ? 'On for this computer.'
+      : r==='denied' ? 'Blocked in this browser. Click the lock icon by the address bar → Notifications → Allow.'
+      : r==='unsupported' ? 'This browser cannot receive notifications.' : 'Not turned on.';
+    if(r==='granted') loadPush();
+  }catch(e){ if(out) out.textContent=e.message; }
+}
+// The notification click lands here when the portal is already open.
+if('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message',(e)=>{
+  if(e.data&&e.data.type==='open-url'&&e.data.url){
+    const h=String(e.data.url).split('#')[1]; if(h) nav(h==='contacts'?'contacts':h==='msgs'?'msgs':'comms');
+  }
+});
 // The platform account maintains other people's companies; it has none of its own, so
 // there is nothing for this screen to show it. Say that, instead of rendering an empty
 // dashboard and leaving the person to guess.
@@ -1865,7 +1933,7 @@ async function openProp(id){
   </div>
   <div class="card"><h2>📡 Communications</h2>
     <p class="note" style="margin-bottom:10px">Every call, text, and email that touched this house — buyer and
-      vendors alike, newest first.</p>
+      vendors alike, as one conversation with the newest at the bottom.</p>
     <div class="segbtn" style="margin-bottom:12px">
       <button id="cx-all" class="active" onclick="loadPropComms('')">All</button>
       <button id="cx-call" onclick="loadPropComms('call')">📞 Calls</button>
@@ -1895,26 +1963,9 @@ async function loadPropComms(channel){
   let d;
   try{ d=await api(`/api/admin/properties/${currentPropId}/comms${channel?'?channel='+channel:''}`); }
   catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
-  if(!d.events.length){
-    el.innerHTML='<p class="note">Nothing yet — calls, texts, and emails will appear here as they happen.</p>';
-    return;
-  }
-  const ICON={call:'📞',voicemail:'📼',text:'💬',message:'📩',email:'✉️'};
-  const mmss=(sec)=>sec?` · ${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`:'';
-  el.innerHTML=d.events.map(ev=>`
-    <div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13.5px">
-      <span style="flex:0 0 auto">${ICON[ev.channel]||'•'}</span>
-      <span style="flex:1;min-width:0">
-        <b>${ev.direction==='in'?'⬅':'➡'} ${esc(ev.who||'')}</b>
-        ${ev.summary?` — ${esc(ev.summary)}`:''}
-        ${ev.status==='failed'||ev.status==='bounced'?` <span class="pill due">${esc(ev.status)}</span>`:''}
-        ${ev.body?`<div class="note" style="white-space:pre-wrap;overflow:hidden;text-overflow:ellipsis;max-height:60px">${esc(ev.body)}</div>`:''}
-        ${ev.transcript?`<div class="note" style="white-space:pre-wrap;max-height:60px;overflow:hidden">“${esc(ev.transcript)}”</div>`:''}
-        ${ev.recording_id?`<audio controls preload="none" style="height:28px;max-width:100%;margin-top:4px"
-          src="/api/admin/recordings/${ev.recording_id}/audio"></audio>`:''}
-      </span>
-      <span class="note" style="flex:0 0 auto;white-space:nowrap">${ago(ev.ts)}${mmss(ev.duration_sec)}</span>
-    </div>`).join('');
+  el.innerHTML=`<div class="ios-scroll" id="prop-comms-scroll">${iosThread(activityItems(d.events),
+    {names:true, empty:'Nothing yet — calls, texts, and emails will appear here as they happen.'})}</div>`;
+  pinThread($('prop-comms-scroll'));
 }
 
 // ---------- payment methods ----------
@@ -3449,6 +3500,12 @@ async function loadPush(){
     <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
       <span class="note">App Store and Play installs</span>
       <b>${d.native_push?`${d.devices} device${d.devices===1?'':'s'}`:'not configured'}</b></div>
+    <div class="row" style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+      <span class="note">iPhone delivery (Apple)</span><b>${d.apple_push?'on':'not configured'}</b></div>
+    <div style="margin-top:12px">
+      <button class="small" onclick="enableDesktopPush()">Turn on notifications on this computer</button>
+      <span id="desk-push-result" class="note" style="margin-left:10px">${'Notification' in window?(Notification.permission==='granted'?'On for this computer.':Notification.permission==='denied'?'Blocked in this browser.':''):''}</span>
+    </div>
 
     ${(d.warnings||[]).map(w=>`<div class="err" style="margin-top:10px">${esc(w)}</div>`).join('')}
 
@@ -4641,15 +4698,13 @@ async function contactThread(id, propertyId){
       ? 'Real two-way texting. Their replies land here and you get a notification — unlike the buyer invitation, which is send-only.'
       : 'Texting is not connected yet. Write the message and you get a copyable version to send from your phone.'}
       Every message is signed with your name and company automatically.</p>
-    <div id="ct-thread" style="max-height:340px;overflow:auto;padding:6px 2px;margin-bottom:12px">
-      ${r.messages.length?r.messages.map(m=>`
-        <div class="tmsg ${m.direction==='out'?'out':'in'}${m.status==='failed'?' failed':''}">${esc(m.body)}
-          <div class="t">${m.direction==='out'?(m.sent_by_name?esc(m.sent_by_name):'Sent'):'Received'}
-            · ${new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}
-            ${m.property_address?' · '+esc(m.property_address):''}
-            ${m.status==='failed'?' · failed: '+esc(m.error||''):''}
-            ${m.status==='not_sent'?' · not sent':''}</div></div>`).join('')
-        :'<p class="note">No texts yet.</p>'}
+    <div id="ct-thread" class="ios-scroll" style="max-height:380px;margin-bottom:12px">
+      ${iosThread(r.messages.map(m=>({kind:'msg', ts:m.created_at, mine:m.direction==='out', sms:true,
+        failed:m.status==='failed'||m.status==='not_sent', body:m.body, name:m.direction==='out'?(m.sent_by_name||''):c.name,
+        receipt: m.status==='failed' ? `<span class="bad">Not delivered</span>${m.error?' · '+esc(m.error):''}`
+          : m.status==='not_sent' ? '<span class="bad">Not sent</span>'
+          : [m.direction==='out'?esc(m.sent_by_name||'Sent'):'', m.property_address?esc(m.property_address):''].filter(Boolean).join(' · ')
+      })), {empty:'No texts yet.'})}
     </div>
     ${PROPS.length?`<div class="field"><label>About which property <span class="note">— optional, it gets added to the top of the text</span></label>
       <select id="ct-prop"><option value="">— none —</option>
@@ -6258,20 +6313,8 @@ async function loadActivity(pid,channel){
   catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
   // Opening a house's activity clears that house's badge, for this person only.
   api('/api/admin/comms/seen',{method:'POST',body:JSON.stringify({property_id:Number(pid)})}).catch(()=>{});
-  if(!d.events.length){ el.innerHTML='<p class="note">Nothing yet.</p>'; return; }
-  const ICON={call:'📞',voicemail:'📼',text:'💬',message:'📩',email:'✉️',notice:'⚖️',payment:'💵'};
-  const when=(ts)=>new Date(String(ts).replace(' ','T')+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
-  el.innerHTML=d.events.map(ev=>`
-    <div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px">
-      <span style="flex:0 0 auto">${ICON[ev.channel]||'•'}</span>
-      <span style="flex:1;min-width:0">
-        ${ev.channel==='payment'?`<b style="color:${/Late fee/.test(ev.summary)?'var(--red)':'var(--brand)'}">${esc(ev.summary)}</b>`
-         :ev.channel==='notice'?`<b>${esc(ev.summary||'Notice')}</b>${ev.tracking?` <span class="note">· certified ${esc(ev.tracking)}</span>`:''}`
-         :`<b>${ev.direction==='in'?'⬅':'➡'} ${esc(ev.who||'')}</b>${ev.summary?` — ${esc(ev.summary)}`:''}`}
-        ${ev.body?`<div class="note" style="white-space:pre-wrap;max-height:48px;overflow:hidden">${esc(ev.body)}</div>`:''}
-      </span>
-      <span class="note" style="flex:0 0 auto;white-space:nowrap">${when(ev.ts)}</span>
-    </div>`).join('');
+  el.innerHTML=`<div class="ios-scroll" id="act-scroll">${iosThread(activityItems(d.events),{names:true,empty:'Nothing yet.'})}</div>`;
+  pinThread($('act-scroll'));
 }
 
 // The state's late-payment track, drawn as a stepper. Green happened, amber is waiting
@@ -7336,20 +7379,103 @@ async function openThread(loanId,title){
   $('msg-threads').classList.add('hidden'); $('msg-thread').classList.remove('hidden');
   $('mt-title').textContent=title||'Conversation';
   const msgs=await api(`/api/admin/loans/${loanId}/messages`);
-  $('mt-list').innerHTML=msgs.map(m=>{
-    const when=new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
-    if(m.body_html) return `<div style="margin:0 0 12px auto;max-width:94%">${m.body_html}
-      <div class="note" style="text-align:right;margin-top:4px">Sent by ${esc(m.sender_name)} · ${when}
-        · <a href="/api/admin/messages/${m.id}/pdf">PDF</a>${deliveryNote(m)}</div></div>`;
+  $('mt-list').innerHTML=iosThread(msgs.map(m=>{
+    if(m.body_html) return {kind:'html', ts:m.created_at, html:`${m.body_html}
+      <div class="ios-rcpt">Sent by ${esc(m.sender_name)} · <a href="/api/admin/messages/${m.id}/pdf">PDF</a>${deliveryNote(m)}</div>`};
     const viaSms=(m.channels||'').split(',').includes('sms');
     // Staff messages sit on the right like your own texts do — owner and admin alike.
     // (sender_role==='admin' alone put the owner's messages on the wrong side.)
     const mine=m.sender_role!=='tenant';
-    return `<div class="msg ${mine?'me':'them'}">${esc(m.body)}<div class="t">${mine?'You':esc(m.sender_name)} · ${when}${viaSms?(mine?' · sent as 📲 text':' · 📲 arrived by text'):''}</div></div>`;
-  }).join('')||'<p class="note">No messages yet.</p>';
+    return {kind:'msg', ts:m.created_at, mine, sms:viaSms, body:m.body, name:m.sender_name,
+      receipt: mine ? `${esc(m.sender_name||'You')} · ${viaSms?'Text Message':'In app'}${deliveryNote(m)}`
+                    : (viaSms?'Text Message':'')};
+  }));
   pinThread($('mt-list'));
   if($('mt-input')){ $('mt-input').style.height=''; growComposer(); }
   loadDash();
+}
+
+// ---------- iPhone-style thread ----------
+// Takes items oldest first and draws them the way Messages does: a centered time header
+// whenever an hour or a day has passed, bubbles grouped into runs from the same person,
+// a tail only on the last bubble of a run, and a small receipt line under it.
+//   {kind:'msg', mine, body, ts, name, sms, failed, receipt}
+//   {kind:'event', ts, html, cls}      calls, email, notices, payments
+//   {kind:'html', ts, html}            a formatted letter, drawn as-is
+const tsMs=(ts)=>{ const t=Date.parse(String(ts||'').replace(' ','T')+(/[zZ]|[+-]\d\d:?\d\d$/.test(String(ts))?'':'Z')); return isNaN(t)?0:t; };
+function iosStamp(ms){
+  const d=new Date(ms), now=new Date();
+  const time=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  const day0=(x)=>new Date(x.getFullYear(),x.getMonth(),x.getDate()).getTime();
+  const days=Math.round((day0(now)-day0(d))/86400000);
+  if(days===0) return `<b>Today</b> ${time}`;
+  if(days===1) return `<b>Yesterday</b> ${time}`;
+  if(days<7) return `<b>${d.toLocaleDateString('en-US',{weekday:'long'})}</b> ${time}`;
+  return `<b>${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',
+    ...(d.getFullYear()!==now.getFullYear()?{year:'numeric'}:{})})}</b> at ${time}`;
+}
+function iosThread(items, opts={}){
+  if(!items.length) return `<div class="ios-empty">${opts.empty||'No messages yet.'}</div>`;
+  let out='', lastMs=0;
+  items.forEach((it,i)=>{
+    const ms=tsMs(it.ts);
+    const stamp = i===0 || ms-lastMs>=60*60000 || new Date(ms).toDateString()!==new Date(lastMs).toDateString();
+    if(stamp) out+=`<div class="ios-stamp">${iosStamp(ms)}</div>`;
+    lastMs=ms;
+    if(it.kind==='event'){ out+=`<div class="ios-ev ${it.cls||''}">${it.html}</div>`; return; }
+    if(it.kind==='html'){ out+=`<div class="ios-letter">${it.html}</div>`; return; }
+    const prev=items[i-1], next=items[i+1];
+    const same=(a,b)=>a&&b&&a.kind==='msg'&&b.kind==='msg'&&!!a.mine===!!b.mine&&(a.name||'')===(b.name||'');
+    const startsRun=stamp||!same(prev,it)||ms-tsMs(prev.ts)>5*60000;
+    const nextStamp=next&&(tsMs(next.ts)-ms>=60*60000||new Date(tsMs(next.ts)).toDateString()!==new Date(ms).toDateString());
+    const endsRun=!next||nextStamp||!same(it,next)||tsMs(next.ts)-ms>5*60000;
+    if(startsRun && !it.mine && opts.names && it.name) out+=`<div class="ios-name">${esc(it.name)}</div>`;
+    out+=`<div class="ios-b ${it.mine?'out':'in'}${it.sms?' sms':''}${it.failed?' failed':''}${endsRun?' tail':''}${startsRun&&!stamp?' gap':''}"
+      title="${esc(new Date(ms).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}))}">${esc(it.body||'')}</div>`;
+    if(endsRun && it.receipt) out+=`<div class="ios-rcpt ${it.mine?'':'in'}">${it.receipt}</div>`;
+  });
+  return `<div class="ios">${out}</div>`;
+}
+// The Activity timeline, in the same visual language: texts and in-app messages become
+// bubbles, everything else a quiet centered line between them.
+function activityItems(events){
+  const mmss=(s)=>s?`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`:'';
+  return events.slice().sort((a,b)=>tsMs(a.ts)-tsMs(b.ts)).map(ev=>{
+    if(ev.channel==='text'||ev.channel==='message'){
+      const sms=ev.channel==='text', mine=ev.direction!=='in';
+      const failed=ev.status==='failed'||ev.status==='not_sent';
+      const via=sms?'Text Message':'In app';
+      return {kind:'msg', ts:ev.ts, mine, sms, failed, body:ev.body||ev.summary||'',
+        name: ev.who||'',
+        receipt: failed ? '<span class="bad">Not delivered</span>'
+          : mine ? `${esc(ev.who||'You')} · ${via}` : via};
+    }
+    const time=new Date(tsMs(ev.ts)).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    if(ev.channel==='call'||ev.channel==='voicemail'){
+      const vm=ev.channel==='voicemail'||ev.status==='voicemail';
+      const missed=ev.status==='missed';
+      const head=ev.channel==='voicemail'?'📼 Voicemail':(ev.direction==='in'?'📞 Incoming call':'📞 Outgoing call');
+      return {kind:'event', ts:ev.ts, cls:missed?'bad':'',
+        html:`<div><span class="h">${head}</span> <span class="s">· ${esc(ev.who||'unknown')} · ${time}${ev.duration_sec?' · '+mmss(ev.duration_sec):''}${missed?' · not answered':vm&&ev.channel==='call'?' · went to voicemail':''}</span></div>
+          ${ev.transcript?`<div class="x">“${esc(String(ev.transcript).slice(0,400))}”</div>`:''}
+          ${ev.recording_id?`<audio controls preload="none" src="/api/admin/recordings/${ev.recording_id}/audio"></audio>`:''}`};
+    }
+    if(ev.channel==='email'){
+      const bad=ev.status==='failed'||ev.status==='bounced';
+      return {kind:'event', ts:ev.ts, cls:bad?'bad':'',
+        html:`<span class="h">✉️ ${esc(ev.summary||'Email')}</span> <span class="s">· to ${esc(ev.who||'')} · ${time}${bad?' · '+esc(ev.status):''}</span>`};
+    }
+    if(ev.channel==='notice'){
+      return {kind:'event', ts:ev.ts,
+        html:`<span class="h">⚖️ ${esc(ev.summary||'Notice')}</span> <span class="s">· ${time}${ev.served?' · served':''}${ev.tracking?' · certified '+esc(ev.tracking):''}</span>`};
+    }
+    if(ev.channel==='payment'){
+      const fee=/Late fee/.test(ev.summary||'');
+      return {kind:'event', ts:ev.ts, cls:fee?'fee':'pay',
+        html:`<span class="h">${fee?'⏰':'💵'} ${esc(ev.summary||'')}</span>`};
+    }
+    return {kind:'event', ts:ev.ts, html:`<span class="h">${esc(ev.summary||ev.channel)}</span> <span class="s">· ${time}</span>`};
+  });
 }
 
 // ---------- thread scrolling ----------

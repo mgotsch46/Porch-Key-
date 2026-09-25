@@ -21,6 +21,7 @@
 const webpush = require('web-push');
 const crypto = require('crypto');
 const { get, all, run } = require('./db');
+const apns = require('./apns');
 
 // ---------- VAPID keys ----------
 // Generated once and kept in settings so subscriptions survive restarts. Set
@@ -216,10 +217,15 @@ async function notify(userId, { kind, title, body, url, dedupeKey }) {
   }
 
   // ---- native push: the App Store and Play builds ----
-  if (devices.length && nativePushEnabled()) {
+  // An iPhone registers a raw APNs token, which Firebase rejects as invalid, so those go
+  // to Apple directly. Everything else is an FCM token and goes through Firebase.
+  if (devices.length) {
     for (const d of devices) {
+      const viaApple = apns.isApnsToken(d.token);
+      if (viaApple ? !apns.apnsConfigured() : !nativePushEnabled()) continue;
       try {
-        const outcome = await sendToDevice(d, { title, body, url, badge: unread, kind: k });
+        const msg = { title, body, url, badge: unread, kind: k };
+        const outcome = viaApple ? await apns.sendApns(d, msg) : await sendToDevice(d, msg);
         if (outcome === 'gone') {
           // The app was uninstalled or the token was reissued. Nothing to keep.
           run('DELETE FROM device_tokens WHERE id=?', d.id);
@@ -286,4 +292,4 @@ function setPrefs(userId, prefs) {
   run('UPDATE users SET notify_prefs=? WHERE id=?', JSON.stringify(prefs || {}), userId);
 }
 
-module.exports = { vapid, notify, nativePushEnabled, unreadCount, markRead, list, subscribe, unsubscribe, setPrefs, prefsFor, KINDS };
+module.exports = { vapid, notify, nativePushEnabled, apnsEnabled: apns.apnsConfigured, unreadCount, markRead, list, subscribe, unsubscribe, setPrefs, prefsFor, KINDS };
