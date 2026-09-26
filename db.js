@@ -377,6 +377,21 @@ CREATE TABLE IF NOT EXISTS push_diags (
 );
 CREATE INDEX IF NOT EXISTS idx_push_diags_created ON push_diags(created_at);
 
+-- Every edit or deletion of a loan ledger row, with the row as it stood before and
+-- after. The ledger is the money record, so a correction must leave a trail.
+CREATE TABLE IF NOT EXISTS ledger_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  loan_id INTEGER NOT NULL REFERENCES loans(id),
+  ledger_id INTEGER NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('edit','delete')),
+  before_json TEXT NOT NULL,
+  after_json TEXT,
+  reason TEXT,
+  user_id INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_audit_loan ON ledger_audit(loan_id);
+
 -- Payment reminder rules. The admin decides when they fire and what they say.
 -- offset_days is relative to the due date: -3 means three days before, +5 means five after.
 CREATE TABLE IF NOT EXISTS reminder_rules (

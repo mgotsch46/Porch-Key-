@@ -7119,6 +7119,161 @@ app.post('/api/admin/loans/:id/latefee', adminOnly, (req, res) => {
   run('UPDATE loans SET fees_due_cents = fees_due_cents + ? WHERE id=?', amt, loan.id);
   res.json({ ok: true });
 });
+// ---------- correcting the ledger ----------
+// A payment keyed against the wrong loan, a duplicate, the wrong amount or date. Each
+// row's effect on the loan is undone exactly: a payment gives back the principal, fees
+// and escrow it paid down, and every later row's "balance after" moves by the same
+// principal. Which month a payment covers is never stored; it is always worked out by
+// pouring payments into the oldest unpaid month first, so removing or changing a
+// payment re-sorts the months on its own. Every change is written to ledger_audit.
+const LEDGER_EDITABLE = ['payment', 'late_fee', 'fee', 'note', 'adjustment', 'escrow_disbursement'];
+const LEDGER_DELETABLE = ['payment', 'late_fee', 'fee', 'note'];
+
+function ledgerRowFor(req) {
+  return get(`SELECT l.* FROM ledger l JOIN loans ln ON ln.id=l.loan_id
+    WHERE l.id=? AND ln.company_id=?`, req.params.id, req.companyId);
+}
+
+// The loan's figures with this payment taken back out. Pending and returned payments
+// never moved anything, so there is nothing to take back.
+function unapplyPayment(row) {
+  if (row.type !== 'payment' || (row.status || 'cleared') !== 'cleared') return;
+  const loan = get('SELECT * FROM loans WHERE id=?', row.loan_id);
+  const toPrincipal = row.to_principal_cents || 0;
+  const toEscrow = row.to_escrow_cents || 0;
+  // A payment's escrow column also holds any overpayment that went to Unapplied.
+  // Escrow takes at most one month's worth, so the rest came out of Unapplied.
+  const fromUnapplied = Math.min(loan.unapplied_cents || 0, Math.max(0, toEscrow - (loan.escrow_cents || 0)));
+  run(`UPDATE loans SET principal_balance_cents=principal_balance_cents+?,
+        escrow_balance_cents=MAX(0, escrow_balance_cents-?), unapplied_cents=unapplied_cents-?,
+        fees_due_cents=fees_due_cents+?,
+        status=CASE WHEN status='paid_off' AND principal_balance_cents+?>0 THEN 'active' ELSE status END
+       WHERE id=?`,
+    toPrincipal, toEscrow - fromUnapplied, fromUnapplied, row.to_fees_cents || 0, toPrincipal, row.loan_id);
+  if (toPrincipal) {
+    run(`UPDATE ledger SET principal_balance_after_cents=principal_balance_after_cents+?
+      WHERE loan_id=? AND principal_balance_after_cents IS NOT NULL AND (entry_date>? OR (entry_date=? AND id>?))`,
+      toPrincipal, row.loan_id, row.entry_date, row.entry_date, row.id);
+  }
+}
+
+// The journal was filled once from the ledger. A row that has changed takes its old
+// entry back out, so the books never carry money the ledger no longer shows.
+function reverseLedgerJournal(row, userId, reason) {
+  const je = get(`SELECT id FROM journal_entries WHERE idempotency_key=?`, `bf:ledger:${row.id}`);
+  if (je && !get('SELECT id FROM journal_entries WHERE reverses_id=?', je.id)) {
+    journal.reverseEntry(je.id, { created_by: userId, reason: reason || 'ledger corrected' });
+  }
+}
+
+function auditLedger(action, before, after, userId, reason) {
+  run(`INSERT INTO ledger_audit (loan_id, ledger_id, action, before_json, after_json, reason, user_id)
+       VALUES (?,?,?,?,?,?,?)`, before.loan_id, before.id, action, JSON.stringify(before),
+    after ? JSON.stringify(after) : null, reason || null, userId || null);
+}
+
+app.put('/api/admin/ledger/:id', adminOnly, (req, res, next) => {
+  const row = ledgerRowFor(req);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (!LEDGER_EDITABLE.includes(row.type)) return res.status(400).json({ error: 'This kind of entry cannot be edited' });
+  const b = req.body || {};
+  const date = b.entry_date ? String(b.entry_date).slice(0, 10) : row.entry_date;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Pick a valid date' });
+  const memo = b.memo === undefined ? row.memo : (String(b.memo).trim() || null);
+  const reason = String(b.reason || '').trim() || null;
+  let method = row.method;
+  if (row.type === 'payment' && b.method !== undefined && b.method !== row.method) {
+    // Card and bank payments came through Stripe and keep their method.
+    if (!MANUAL_METHODS[b.method]) return res.status(400).json({ error: 'Pick a payment method from the list' });
+    if (row.external_id) return res.status(400).json({ error: 'A payment that came through Stripe keeps its method' });
+    method = b.method;
+  }
+  // Amounts are typed as positive numbers. Charges are stored negative.
+  const newAbs = b.amount_cents === undefined ? Math.abs(row.amount_cents) : Math.round(Number(b.amount_cents));
+  if (!Number.isFinite(newAbs) || newAbs < 0) return res.status(400).json({ error: 'Amount cannot be negative' });
+  const amountChanged = ['payment', 'late_fee', 'fee'].includes(row.type) && newAbs !== Math.abs(row.amount_cents);
+  if (amountChanged && row.type === 'payment' && (row.status || 'cleared') !== 'cleared') {
+    return res.status(400).json({ error: 'A payment still clearing cannot change amount. Delete it instead.' });
+  }
+  if (amountChanged && row.type === 'payment' && newAbs <= 0) {
+    return res.status(400).json({ error: 'A payment needs an amount. To remove it, delete it.' });
+  }
+
+  const sp = 'ledged_' + Date.now().toString(36);
+  db.exec(`SAVEPOINT ${sp}`);
+  try {
+    if (row.type === 'payment' && amountChanged) {
+      // Take the old payment out, then put the new amount in against the loan as it
+      // now stands. The row keeps its place, date and id.
+      unapplyPayment(row);
+      const loan = get('SELECT * FROM loans WHERE id=?', row.loan_id);
+      const alloc = loanEngine.allocatePayment(loan, newAbs, date);
+      const newPrincipal = loan.principal_balance_cents - alloc.to_principal_cents;
+      run(`UPDATE ledger SET amount_cents=?, to_interest_cents=?, to_principal_cents=?, to_escrow_cents=?,
+            to_fees_cents=?, principal_balance_after_cents=? WHERE id=?`,
+        newAbs, alloc.to_interest_cents, alloc.to_principal_cents, alloc.to_escrow_cents + alloc.unapplied_cents,
+        alloc.to_fees_cents, newPrincipal, row.id);
+      run(`UPDATE loans SET principal_balance_cents=?, escrow_balance_cents=escrow_balance_cents+?,
+            unapplied_cents=unapplied_cents+?, fees_due_cents=MAX(0, fees_due_cents-?),
+            status=CASE WHEN ?<=0 THEN 'paid_off' ELSE status END WHERE id=?`,
+        newPrincipal, alloc.to_escrow_cents, alloc.unapplied_cents, alloc.to_fees_cents, newPrincipal, row.loan_id);
+      if (alloc.to_principal_cents) {
+        run(`UPDATE ledger SET principal_balance_after_cents=principal_balance_after_cents-?
+          WHERE loan_id=? AND principal_balance_after_cents IS NOT NULL AND (entry_date>? OR (entry_date=? AND id>?))`,
+          alloc.to_principal_cents, row.loan_id, row.entry_date, row.entry_date, row.id);
+      }
+      reverseLedgerJournal(row, req.user.id, reason);
+    } else if (amountChanged) {
+      // A fee: what is owed moves by the difference.
+      const delta = newAbs - Math.abs(row.amount_cents);
+      run('UPDATE ledger SET amount_cents=? WHERE id=?', -newAbs, row.id);
+      run('UPDATE loans SET fees_due_cents=MAX(0, fees_due_cents+?) WHERE id=?', delta, row.loan_id);
+      reverseLedgerJournal(row, req.user.id, reason);
+    }
+    run('UPDATE ledger SET entry_date=?, memo=?, method=? WHERE id=?', date, memo, method, row.id);
+    const after = get('SELECT * FROM ledger WHERE id=?', row.id);
+    auditLedger('edit', row, after, req.user.id, reason);
+    db.exec(`RELEASE ${sp}`);
+    res.json({ ok: true, entry: after });
+  } catch (e) {
+    db.exec(`ROLLBACK TO ${sp}`); db.exec(`RELEASE ${sp}`);
+    next(e);
+  }
+});
+
+app.delete('/api/admin/ledger/:id', adminOnly, (req, res, next) => {
+  const row = ledgerRowFor(req);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (!LEDGER_DELETABLE.includes(row.type)) return res.status(400).json({ error: 'This kind of entry cannot be deleted' });
+  // Monthly charges are written by the schedule, which would just write it again.
+  if (/^charge:\d+:/.test(row.memo || '')) {
+    return res.status(400).json({ error: 'This comes from a monthly charge. Edit its amount, or stop the charge on the loan.' });
+  }
+  const reason = String((req.body && req.body.reason) || '').trim() || null;
+  const sp = 'ledgdel_' + Date.now().toString(36);
+  db.exec(`SAVEPOINT ${sp}`);
+  try {
+    if (row.type === 'payment') unapplyPayment(row);
+    else if (row.type === 'late_fee' || row.type === 'fee') {
+      run('UPDATE loans SET fees_due_cents=MAX(0, fees_due_cents-?) WHERE id=?', Math.abs(row.amount_cents), row.loan_id);
+    }
+    reverseLedgerJournal(row, req.user.id, reason);
+    run('DELETE FROM ledger WHERE id=?', row.id);
+    auditLedger('delete', row, null, req.user.id, reason);
+    db.exec(`RELEASE ${sp}`);
+    res.json({ ok: true });
+  } catch (e) {
+    db.exec(`ROLLBACK TO ${sp}`); db.exec(`RELEASE ${sp}`);
+    next(e);
+  }
+});
+
+app.get('/api/admin/loans/:id/ledger-audit', adminOnly, (req, res) => {
+  if (!ownedLoan(req, req.params.id)) return res.status(404).json({ error: 'Not found' });
+  res.json(all(`SELECT a.*, u.name AS user_name FROM ledger_audit a LEFT JOIN users u ON u.id=a.user_id
+    WHERE a.loan_id=? ORDER BY a.id DESC LIMIT 100`, req.params.id));
+});
+
 app.post('/api/admin/loans/:id/charges', adminOnly, (req, res) => {
   const loan = ownedLoan(req, req.params.id);
   if (!loan) return res.status(404).json({ error: 'Not found' });

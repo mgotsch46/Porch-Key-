@@ -3225,6 +3225,62 @@ async function main() {
       'the web deletion page covers staff accounts and lets an owner file a request');
   }
 
+  console.log('— correcting the ledger');
+  {
+    const p = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '15 Ledger Ln', city: 'Toledo', state: 'OH', zip: '43604' }) });
+    const lr = await req('/api/admin/loans', { method: 'POST', body: JSON.stringify({
+      property_id: p.json.id, loan_type: 'land_contract', sale_price_cents: 6000000, down_payment_cents: 0,
+      principal_cents: 6000000, interest_rate_bps: 900, term_months: 240, first_payment_date: '2026-06-01' }) });
+    const lid = lr.json.loan.id, monthly = lr.json.loan.payment_cents;
+    const loanNow = async () => (await req('/api/admin/loans/' + lid)).json;
+    for (const d of ['2026-06-01', '2026-07-01', '2026-07-02']) {
+      await req(`/api/admin/loans/${lid}/payments`, { method: 'POST', body: JSON.stringify({ amount_cents: monthly, method: 'check', entry_date: d }) });
+    }
+    let f = await loanNow();
+    const pays = f.ledger.filter(e => e.type === 'payment').sort((a, b) => a.id - b.id);
+    const [a, dup, c] = pays;
+    const owedBefore = f.status.owed_now_cents;
+
+    r = await req('/api/admin/ledger/' + dup.id, { method: 'DELETE', body: JSON.stringify({ reason: 'entered twice' }) });
+    ok(r.status === 200, 'a duplicate payment can be deleted');
+    f = await loanNow();
+    ok(!f.ledger.some(e => e.id === dup.id), 'the deleted payment is gone from the ledger');
+    ok(f.loan.principal_balance_cents === 6000000 - a.to_principal_cents - c.to_principal_cents,
+      'deleting a payment puts its principal back on the loan');
+    ok(f.ledger.find(e => e.id === c.id).principal_balance_after_cents === f.loan.principal_balance_cents,
+      'later rows’ balance after moves with it');
+    ok(f.status.owed_now_cents === owedBefore + monthly, 'the buyer owes one more month again');
+    r = await req(`/api/admin/loans/${lid}/payment-history`);
+    const byDue = Object.fromEntries(r.json.rows.map(x => [x.due_date, x.status]));
+    ok(byDue['2026-06-01'] === 'paid' && byDue['2026-07-01'] === 'paid' && byDue['2026-08-01'] === 'due',
+      'the remaining payments fill the oldest months first');
+
+    r = await req('/api/admin/ledger/' + c.id, { method: 'PUT', body: JSON.stringify({ amount_cents: Math.round(monthly / 2), reason: 'wrong amount' }) });
+    ok(r.status === 200 && r.json.entry.amount_cents === Math.round(monthly / 2), 'a payment amount can be edited');
+    f = await loanNow();
+    ok(f.ledger.find(e => e.id === c.id).principal_balance_after_cents === f.loan.principal_balance_cents,
+      'the edited payment’s balance after matches the loan');
+    const principalNow = f.loan.principal_balance_cents;
+    r = await req('/api/admin/ledger/' + c.id, { method: 'PUT', body: JSON.stringify({ entry_date: '2026-07-15', memo: 'moved' }) });
+    f = await loanNow();
+    ok(r.status === 200 && f.loan.principal_balance_cents === principalNow, 'changing only the date and memo leaves balances alone');
+
+    await req(`/api/admin/loans/${lid}/latefee`, { method: 'POST', body: JSON.stringify({ amount_cents: 5000 }) });
+    f = await loanNow();
+    const fee = f.ledger.find(e => e.type === 'late_fee');
+    const feesBefore = f.loan.fees_due_cents;
+    r = await req('/api/admin/ledger/' + fee.id, { method: 'DELETE', body: JSON.stringify({}) });
+    f = await loanNow();
+    ok(r.status === 200 && f.loan.fees_due_cents === feesBefore - 5000, 'deleting a late fee takes it off what is owed');
+
+    r = await req(`/api/admin/loans/${lid}/ledger-audit`);
+    ok(r.json.filter(x => x.action === 'delete').length === 2 && r.json.filter(x => x.action === 'edit').length === 2,
+      'every edit and deletion is in the change history');
+    ok(r.json.some(x => x.reason === 'entered twice'), 'the reason given is kept');
+    r = await req('/api/admin/ledger/999999', { method: 'DELETE', body: '{}' });
+    ok(r.status === 404, 'an entry that is not yours cannot be touched');
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }
