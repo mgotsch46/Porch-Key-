@@ -7402,9 +7402,20 @@ async function doDeleteTB(id){
 }
 async function resetTB(id){
   if(!confirm('Issue a new temporary password?'))return;
-  const r=await api(`/api/admin/tenants/${id}/reset-password`,{method:'POST',body:'{}'});
-  $('tb-temp').innerHTML=`New temporary password: <code>${esc(r.temp_password)}</code> — share it with the buyer.`;
-  $('tb-temp').classList.remove('hidden');
+  let r; try{ r=await api(`/api/admin/tenants/${id}/reset-password`,{method:'POST',body:'{}'}); }
+  catch(e){ alert(e.message); return; }
+  // Shown in its own window. It used to be written onto the Tenant Buyers page, so a
+  // reset started from a loan's Edit buyer window issued a password nobody ever saw.
+  const t=(LOAN_F&&LOAN_F.tenant&&LOAN_F.tenant.id===id)?LOAN_F.tenant:(TBS||[]).find(x=>x.id===id)||{};
+  modal(`<h2>🔑 New temporary password</h2>
+    ${t.name?`<p style="margin-bottom:6px">For <b>${esc(t.name)}</b></p>`:''}
+    <div style="font-size:26px;font-weight:700;letter-spacing:1px;padding:14px;background:var(--bg);border-radius:10px;text-align:center;user-select:all">${esc(r.temp_password)}</div>
+    ${t.email?`<p class="note" style="margin-top:10px">They sign in with the email <b>${esc(t.email)}</b> and this password,
+      then choose their own. Capital letters and the dash count.</p>`:''}
+    <div class="actions" style="margin-top:12px">
+      <button class="primary" onclick="navigator.clipboard.writeText('${esc(r.temp_password)}').then(()=>toast('Copied.'))">Copy password</button>
+      <button class="small" onclick="closeModal()">Done</button>
+    </div>`);
 }
 // Linked bank accounts (Stripe Financial Connections) were removed — the AI link
 // will not be supported. Expenses come in by statement upload instead.
