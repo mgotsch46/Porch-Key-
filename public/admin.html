@@ -4727,8 +4727,9 @@ async function sendContactText(id){
   try{
     await api(`/api/admin/contacts/${id}/messages`,{method:'POST',body:JSON.stringify({
       body, property_id:$('ct-prop')?(Number($('ct-prop').value)||null):null })});
-    contactThread(id, $('ct-prop')?Number($('ct-prop').value)||null:null);
+    closeModal();
     toast('Text sent.');
+    if(currentPropId) loadPropContacts(currentPropId);
   }catch(e){
     // Not connected yet: hand back the exact text so it can go from a phone.
     if(e.data && e.data.text){
@@ -7337,26 +7338,42 @@ async function loadTBs(){
 
 // One little composer for both quick channels. Everything sent here also lands in the
 // message thread, so the record stays whole no matter which channel carried it.
-function tbQuickSend(loanId,name,chan){
+// The conversation so far sits above the box, the way Messages on an iPhone does:
+// oldest at the top, newest at the bottom, opened scrolled to the newest.
+async function tbQuickSend(loanId,name,chan){
   if(!loanId) return;
   const isEmail=chan==='email';
   modal(`<h2>${isEmail?'✉️ Email':'💬 Text'} ${esc(name)}</h2>
-    <p class="note" style="margin-bottom:10px">${isEmail
-      ?'Sent as a branded email from your servicing address, and kept in their message thread.'
-      :'Goes out as a real text from your business number. Their reply lands back in Messages.'}</p>
+    <div id="qs-thread" class="ios-scroll" style="max-height:48vh;margin-bottom:12px"><div class="ios-empty">Loading…</div></div>
     ${isEmail?'<div class="field"><label>Subject</label><input id="qs-subject" placeholder="Subject"></div>':''}
-    <div class="field"><textarea id="qs-body" rows="4" placeholder="Type the message…"></textarea></div>
+    <div class="field"><textarea id="qs-body" rows="3" placeholder="${isEmail?'Type the email…':'Text Message'}"
+      onkeydown="if(event.key==='Enter'&&!event.shiftKey&&${isEmail?'false':'true'}){event.preventDefault();tbQuickSendGo(${loanId},'${chan}')}"></textarea></div>
+    <p class="note" style="margin:-4px 0 10px">${isEmail
+      ?'Sent as a branded email from your servicing address, and kept in their message thread.'
+      :'Goes out as a real text from your business number. Enter sends, Shift+Enter for a new line.'}</p>
     <div id="qs-err" class="err hidden"></div>
-    <button class="primary" onclick="tbQuickSendGo(${loanId},'${chan}')">Send</button>`);
+    <button class="primary" id="qs-send" onclick="tbQuickSendGo(${loanId},'${chan}')">Send</button>`);
+  try{
+    const msgs=await api(`/api/admin/loans/${loanId}/messages`);
+    const el=$('qs-thread'); if(!el) return;
+    el.innerHTML=iosThread(loanMsgItems(msgs),{empty:'No messages yet.'});
+    pinThread(el);
+  }catch(e){ const el=$('qs-thread'); if(el) el.innerHTML=`<div class="ios-empty">${esc(e.message)}</div>`; }
+  if($('qs-body')) $('qs-body').focus();
 }
 async function tbQuickSendGo(loanId,chan){
+  const btn=$('qs-send'); if(btn&&btn.disabled) return;
+  if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
   try{
     const body=$('qs-body').value.trim(); if(!body) throw new Error('Type something first');
     const payload={ body, channels:[chan] };
     if(chan==='email'&&$('qs-subject')&&$('qs-subject').value.trim()) payload.subject=$('qs-subject').value.trim();
     await api(`/api/admin/loans/${loanId}/messages`,{method:'POST',body:JSON.stringify(payload)});
     closeModal(); toast(chan==='email'?'Email sent and filed in the thread.':'Text sent from your business number.');
-  }catch(e){ $('qs-err').textContent=e.message; $('qs-err').classList.remove('hidden'); }
+  }catch(e){
+    $('qs-err').textContent=e.message; $('qs-err').classList.remove('hidden');
+    if(btn){ btn.disabled=false; btn.textContent='Send'; }
+  }
 }
 // Housekeeping, one step away from the row: the rare actions, with room to breathe.
 function tbMoreModal(id,name){
@@ -7475,17 +7492,7 @@ async function openThread(loanId,title){
   $('msg-threads').classList.add('hidden'); $('msg-thread').classList.remove('hidden');
   $('mt-title').textContent=title||'Conversation';
   const msgs=await api(`/api/admin/loans/${loanId}/messages`);
-  $('mt-list').innerHTML=iosThread(msgs.map(m=>{
-    if(m.body_html) return {kind:'html', ts:m.created_at, html:`${m.body_html}
-      <div class="ios-rcpt">Sent by ${esc(m.sender_name)} · <a href="/api/admin/messages/${m.id}/pdf">PDF</a>${deliveryNote(m)}</div>`};
-    const viaSms=(m.channels||'').split(',').includes('sms');
-    // Staff messages sit on the right like your own texts do — owner and admin alike.
-    // (sender_role==='admin' alone put the owner's messages on the wrong side.)
-    const mine=m.sender_role!=='tenant';
-    return {kind:'msg', ts:m.created_at, mine, sms:viaSms, body:m.body, name:m.sender_name,
-      receipt: mine ? `${esc(m.sender_name||'You')} · ${viaSms?'Text Message':'In app'}${deliveryNote(m)}`
-                    : (viaSms?'Text Message':'')};
-  }));
+  $('mt-list').innerHTML=iosThread(loanMsgItems(msgs));
   pinThread($('mt-list'));
   if($('mt-input')){ $('mt-input').style.height=''; growComposer(); }
   loadDash();
@@ -7571,6 +7578,23 @@ function activityItems(events){
         html:`<span class="h">${fee?'⏰':'💵'} ${esc(ev.summary||'')}</span>`};
     }
     return {kind:'event', ts:ev.ts, html:`<span class="h">${esc(ev.summary||ev.channel)}</span> <span class="s">· ${time}</span>`};
+  });
+}
+
+// A buyer's loan thread as bubbles. Used by the Messages page and by the quick
+// text and email windows on the Tenant Buyers list.
+function loanMsgItems(msgs){
+  return msgs.map(m=>{
+    if(m.body_html) return {kind:'html', ts:m.created_at, html:`${m.body_html}
+      <div class="ios-rcpt">Sent by ${esc(m.sender_name)} · <a href="/api/admin/messages/${m.id}/pdf">PDF</a>${deliveryNote(m)}</div>`};
+    const viaSms=(m.channels||'').split(',').includes('sms');
+    const viaEmail=(m.channels||'').split(',').includes('email');
+    // Staff messages sit on the right like your own texts do — owner and admin alike.
+    // (sender_role==='admin' alone put the owner's messages on the wrong side.)
+    const mine=m.sender_role!=='tenant';
+    const via=viaSms?'Text Message':viaEmail?'Email':'In app';
+    return {kind:'msg', ts:m.created_at, mine, sms:viaSms, body:(m.subject&&viaEmail?m.subject+'\n\n':'')+(m.body||''), name:m.sender_name,
+      receipt: mine ? `${esc(m.sender_name||'You')} · ${via}${deliveryNote(m)}` : (viaSms?'Text Message':'')};
   });
 }
 
