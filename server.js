@@ -6738,6 +6738,9 @@ app.post('/api/admin/tenants/:id/reset-password', adminOnly, (req, res) => {
   if (!u) return res.status(404).json({ error: 'Buyer not found' });
   const temp = 'TB-' + crypto.randomInt(100000, 999999) + '!';
   run('UPDATE users SET password_hash=?, must_change_password=1 WHERE id=?', hashPassword(temp), u.id);
+  // The invitation text quotes the password it was created with. Without this, resending
+  // an invitation after a reset handed the buyer a password that no longer worked.
+  run('UPDATE invitations SET temp_password=? WHERE user_id=?', temp, u.id);
   res.json({ temp_password: temp });
 });
 
