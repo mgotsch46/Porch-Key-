@@ -639,7 +639,10 @@ async function enter(){
   setInterval(refreshBadges, 60000);
   // Deep link from a tapped notification.
   const wanted = p.get('tab');
-  if (wanted) setTimeout(()=>go(wanted), 0);
+  // Landing on Home counts as opening it, same as tapping it would.
+  if (wanted) setTimeout(()=>go(wanted), 0); else clearBadgeFor(tab);
+  // Coming back from the background: whatever tab is showing has now been seen.
+  document.addEventListener('visibilitychange', ()=>{ if (!document.hidden) clearBadgeFor(tab); });
   show('v-app');
   render();
   setInterval(pollMsgs, 20000);
@@ -1389,15 +1392,29 @@ async function refreshBadges(){
     if ('setAppBadge' in navigator){
       try{ d.counts.total>0 ? await navigator.setAppBadge(d.counts.total) : await navigator.clearAppBadge(); }catch{}
     }
+    // The store apps have no setAppBadge, so the number on the icon is whatever the last
+    // push said and nothing on this page could ever take it back down. Having the app
+    // open is having seen them: clear the tray and the icon. The tabs keep their own
+    // counts, and the next push carries the true unread total.
+    if (isNativeApp() && !document.hidden) clearNativeTray();
   }catch{}
 }
+async function clearNativeTray(){
+  const Push = window.Capacitor.Plugins && window.Capacitor.Plugins.PushNotifications;
+  // Rejects until this launch has registered with Apple; the next refresh tries again.
+  try{ if (Push) await Push.removeAllDeliveredNotifications(); }catch{}
+}
 function currentTabIs(t){ return tab===t; }
-// Opening a tab clears the badge for that category.
+// Opening a tab clears the badge for that category. Home is where notices, payment
+// receipts and general messages show, and it used to clear nothing, so those stayed
+// unread forever and every push put them back on the icon.
+const TAB_KINDS = {
+  msgs: ['message'], docs: ['document'], pay: ['payment_due','payment_late'],
+  home: ['notice','payment_received','general'],
+};
 async function clearBadgeFor(t){
-  const kind = t==='msgs' ? 'message' : t==='docs' ? 'document' : null;
-  if (kind) { try{ await api('/api/notifications/read',{method:'POST',body:JSON.stringify({kind})}); }catch{} }
-  if (t==='pay') { for (const k of ['payment_due','payment_late'])
-    { try{ await api('/api/notifications/read',{method:'POST',body:JSON.stringify({kind:k})}); }catch{} } }
+  for (const kind of TAB_KINDS[t] || [])
+    { try{ await api('/api/notifications/read',{method:'POST',body:JSON.stringify({kind})}); }catch{} }
   refreshBadges();
 }
 

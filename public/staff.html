@@ -523,6 +523,8 @@ async function boot(){
     await refresh();
     loadThreadList();
     registerPush().catch(()=>{});
+    // Back from the background: refresh now rather than up to 30 seconds from now.
+    document.addEventListener('visibilitychange',()=>{ if(!document.hidden) refresh(); });
     setInterval(()=>{
       refresh();
       if(tab==='comms'||tab==='unknown') loadThreadList();
@@ -1101,6 +1103,7 @@ async function refresh(){
   const today=new Date().toISOString().slice(0,10);
   setBadge('b-money',OV.payments.filter(p=>p.entry_date===today).length);
   try{ navigator.setAppBadge && (OV.total_unread?navigator.setAppBadge(OV.total_unread):navigator.clearAppBadge()); }catch{}
+  if(!document.hidden) clearPushBacklog();
 
   // home list: two square tiles across
   $('home-list').innerHTML=!OV.properties.length?'<div class="card"><p class="note">No properties.</p></div>'
@@ -1135,6 +1138,16 @@ async function refresh(){
         <div class="note">${esc(p.address||'')}</div></span>
       <span class="note">${esc(p.entry_date)}${p.method?'<br>'+esc(String(p.method).replace('stripe_','')):''}</span>
     </div>`).join('')||'<p class="note">No payments yet.</p>';
+}
+// Staff badges come from the overview, but every push carries the count of unread rows
+// in the notification feed, and this app has no feed to read them in. Nothing ever
+// marked them read, so each push put a bigger number on the icon, and the store app has
+// no setAppBadge to take it back down. With the app open, they have been seen.
+async function clearPushBacklog(){
+  try{ await api('/api/notifications/read',{method:'POST',body:'{}'}); }catch{}
+  const Push = isNativeApp() && window.Capacitor.Plugins && window.Capacitor.Plugins.PushNotifications;
+  // Rejects until this launch has registered with Apple; the next refresh tries again.
+  try{ if (Push) await Push.removeAllDeliveredNotifications(); }catch{}
 }
 function setBadge(id,n){ const el=$(id); if(!el) return; el.classList.toggle('hidden',!n); el.textContent=n>99?'99+':n; }
 
