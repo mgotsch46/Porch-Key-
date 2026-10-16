@@ -329,6 +329,128 @@ function twilioWebhook(req, res, next) {
   next();
 }
 
+// ---------- photos and files on messages ----------
+// A picture texted in, a document sent with a reply, an insurance card a buyer uploads:
+// each becomes an ordinary documents row, so it is filed under the house, shows in the
+// document center, and is authorized the same way as every other file. The message
+// carries a small JSON list of what came with it — [{id, filename, mime}].
+const MEDIA_EXT = {
+  'image/jpeg': '.jpg', 'image/jpg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
+  'image/webp': '.webp', 'image/heic': '.heic', 'image/heif': '.heif', 'image/bmp': '.bmp',
+  'application/pdf': '.pdf', 'text/plain': '.txt', 'text/vcard': '.vcf', 'text/x-vcard': '.vcf',
+  'video/mp4': '.mp4', 'video/3gpp': '.3gp', 'video/quicktime': '.mov',
+  'audio/amr': '.amr', 'audio/mpeg': '.mp3', 'audio/mp4': '.m4a',
+};
+const parseAttachments = (s) => {
+  try { const a = JSON.parse(s || '[]'); return Array.isArray(a) ? a : []; } catch { return []; }
+};
+// With the list parsed, so neither the app nor the phone has to.
+const withAttachments = (m) => ({ ...m, attachments: parseAttachments(m.attachments) });
+
+function storeDocument({ companyId, loanId, propertyId, category, title, filename, mime, buffer, visible, uploadedBy }) {
+  const ext = path.extname(filename || '') || MEDIA_EXT[mime] || '';
+  const stored = crypto.randomUUID() + ext.replace(/[^.\w]/g, '');
+  fs.writeFileSync(path.join(UPLOAD_DIR, stored), buffer);
+  const r = run(`INSERT INTO documents (company_id, loan_id, property_id, kind, category, title,
+      filename, stored_name, mime, visible_to_tenant, uploaded_by)
+    VALUES (?,?,?,'other',?,?,?,?,?,?,?)`, companyId, loanId || null, propertyId || null,
+    category || 'correspondence', title || null, filename, stored, mime || null,
+    visible ? 1 : 0, uploadedBy || null);
+  return { id: Number(r.lastInsertRowid), filename, mime: mime || null };
+}
+
+// Pull the photos off an inbound text and file them. Runs after Twilio has had its
+// answer, so a slow download never makes Twilio retry the webhook and double-file the
+// message. A picture that cannot be fetched is still noted on the message, so "they
+// sent a photo" is never silently lost.
+async function saveInboundMedia(reqBody, { table, rowId, companyId, loanId, propertyId, who, visible, uploadedBy }) {
+  const n = Math.min(Number(reqBody.NumMedia) || 0, 10);
+  if (!n || !['messages', 'contact_messages'].includes(table)) return;
+  const co = get('SELECT * FROM companies WHERE id=?', companyId);
+  const stamp = new Date().toISOString().slice(0, 10);
+  const label = String(who || 'unknown').replace(/[^\w]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'unknown';
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const url = reqBody['MediaUrl' + i];
+    const said = String(reqBody['MediaContentType' + i] || '').toLowerCase();
+    if (!url) continue;
+    try {
+      const { buffer, mime: got } = await sms.fetchMedia(url, co, 25 * 1024 * 1024);
+      const mime = said || got || 'application/octet-stream';
+      out.push(storeDocument({
+        companyId, loanId, propertyId, category: 'correspondence',
+        title: `Texted by ${who || 'unknown'} — ${stamp}`,
+        filename: `text-${stamp}-${label}-${i + 1}${MEDIA_EXT[mime] || ''}`,
+        mime, buffer, visible, uploadedBy,
+      }));
+    } catch (e) {
+      console.error('Inbound text media could not be saved:', e.message);
+      out.push({ id: null, failed: true, filename: 'Attachment could not be downloaded', mime: said || null });
+    }
+  }
+  if (out.length) run(`UPDATE ${table} SET attachments=? WHERE id=?`, JSON.stringify(out), rowId);
+}
+
+// Twilio has to fetch a picture message's files itself, with no login. So each file
+// gets a URL that is its own permission slip: the document id and an expiry, signed.
+// The key is derived from the app secret but is not the session key, so one of these
+// can never be passed off as a login token. A week is long enough for Twilio's retries.
+const MEDIA_KEY = crypto.createHmac('sha256', SECRET).update('message-media-v1').digest();
+const mediaSig = (id, exp) => crypto.createHmac('sha256', MEDIA_KEY).update(`${id}.${exp}`).digest('base64url').slice(0, 32);
+function mediaUrlFor(req, doc) {
+  const exp = Math.floor(Date.now() / 1000) + 7 * 86400;
+  const name = encodeURIComponent(String(doc.filename || 'file').replace(/[^\w.\- ]/g, '_'));
+  return `${baseUrlOf(req)}/m/${doc.id}/${exp}/${mediaSig(doc.id, exp)}/${name}`;
+}
+app.get('/m/:id/:exp/:sig/:name?', (req, res) => {
+  const id = Number(req.params.id), exp = Number(req.params.exp);
+  const want = mediaSig(id, exp);
+  const sig = String(req.params.sig || '');
+  if (!id || !exp || exp < Date.now() / 1000 || sig.length !== want.length ||
+      !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want))) return res.status(404).send('Not found');
+  const doc = get('SELECT * FROM documents WHERE id=?', id);
+  if (!doc) return res.status(404).send('Not found');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.setHeader('Content-Type', doc.mime && !/svg|html|xml|javascript/i.test(doc.mime) ? doc.mime : 'application/octet-stream');
+  try { res.send(fs.readFileSync(path.join(UPLOAD_DIR, doc.stored_name))); }
+  catch { res.status(404).send('Not found'); }
+});
+
+// The files chosen to go out with a message, checked: they must belong to this
+// company — and for a buyer, be ones they uploaded themselves on their own loan.
+function outgoingAttachments(req, ids, { tenantLoanId } = {}) {
+  const want = [...new Set((Array.isArray(ids) ? ids : []).map(Number).filter(Boolean))].slice(0, 10);
+  if (!want.length) return [];
+  const docs = all(`SELECT * FROM documents WHERE id IN (${want.map(() => '?').join(',')}) AND company_id=?`,
+    ...want, req.companyId || req.user.company_id);
+  const ok = tenantLoanId
+    ? docs.filter(d => d.uploaded_by === req.user.id && d.loan_id === tenantLoanId)
+    : docs;
+  if (ok.length !== want.length) { const e = new Error('One of those attachments was not found'); e.status = 404; throw e; }
+  return ok;
+}
+const attachmentList = (docs) => docs.map(d => ({ id: d.id, filename: d.filename, mime: d.mime || null }));
+// Carriers cap a picture message at about 5 MB in all.
+function mmsTooBig(docs) {
+  let total = 0;
+  for (const d of docs) { try { total += fs.statSync(path.join(UPLOAD_DIR, d.stored_name)).size; } catch {} }
+  return total > 5 * 1024 * 1024;
+}
+// A text that is only a picture still needs a line saying what it is.
+const mediaOnlyBody = (n) => n ? `📎 ${n === 1 ? 'Attachment' : n + ' attachments'}` : '';
+// A text from an unknown number is filed with no house. When somebody attaches it to
+// one, the photos that came with it follow it into that house's documents.
+function fileLooseMedia(companyId) {
+  for (const m of all(`SELECT property_id, attachments FROM contact_messages
+      WHERE company_id=? AND property_id IS NOT NULL AND attachments IS NOT NULL`, companyId)) {
+    for (const a of parseAttachments(m.attachments)) {
+      if (a.id) run(`UPDATE documents SET property_id=? WHERE id=? AND company_id=?
+        AND property_id IS NULL AND loan_id IS NULL`, m.property_id, a.id, companyId);
+    }
+  }
+}
+
 // Twilio inbound webhook. The invitation number is send-only, so anyone who texts it
 // back gets one automatic answer pointing them into the app rather than silence.
 // Point Twilio's "A message comes in" setting at POST {your domain}/sms/incoming.
@@ -337,6 +459,10 @@ app.post('/sms/incoming', twilioWebhook, (req, res) => {
   const from = sms.normalizePhone(req.body && req.body.From);
   const body = String((req.body && req.body.Body) || '').trim();
   const bare = from ? from.replace(/^\+1/, '') : '';
+  // A picture with no words is still a message. NumMedia counts what came with it.
+  const media = Math.min(Number(req.body && req.body.NumMedia) || 0, 10);
+  const shown = body || mediaOnlyBody(media);
+  const reqBody = { ...(req.body || {}) };
   const digitsOf = (col) => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col},'-',''),' ',''),'(',''),')',''),'+1','')`;
 
   // A vendor writing back. Their reply belongs in the thread, not in an auto-response —
@@ -356,7 +482,7 @@ app.post('/sms/incoming', twilioWebhook, (req, res) => {
           WHERE pc.contact_id=? AND pr.archived_at IS NULL LIMIT 2`, contact.id);
         if (assigned.length === 1) inProp = assigned[0].property_id;
       }
-      run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
+      const ins = run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
            VALUES (?,?,?,'in',?,?,'received')`,
         contact.company_id, contact.id, inProp, from, body);
       // Tell the staff who can act on it.
@@ -365,32 +491,43 @@ app.post('/sms/incoming', twilioWebhook, (req, res) => {
         notify.notify(u.id, {
           kind: 'message',
           title: `💬 ${contact.name}`,
-          body: body.slice(0, 140),
+          body: shown.slice(0, 140),
           url: '/admin#contacts',
         }).catch(() => {});
       }
-      return res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+      res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+      // A BOG's lockout photo is filed under the house; staff-only until somebody shares it.
+      saveInboundMedia(reqBody, { table: 'contact_messages', rowId: ins.lastInsertRowid,
+        companyId: contact.company_id, propertyId: inProp, who: contact.name, visible: false })
+        .catch(e => console.error('Inbound media:', e.message));
+      return;
     }
   }
 
   // A buyer texting back. Their words belong in the message thread on their loan,
   // marked as having arrived by text — not swallowed by an auto-reply.
-  if (bare && body) {
+  if (bare && (body || media)) {
     const buyer = get(`SELECT u.* FROM users u WHERE u.role='tenant' AND u.deleted_at IS NULL
       AND u.phone IS NOT NULL AND ${digitsOf('u.phone')} = ? LIMIT 1`, bare);
     if (buyer) {
       const loan = get("SELECT * FROM loans WHERE tenant_user_id=? AND status='active' ORDER BY id DESC LIMIT 1", buyer.id)
         || get('SELECT * FROM loans WHERE tenant_user_id=? ORDER BY id DESC LIMIT 1', buyer.id);
       if (loan) {
-        run(`INSERT INTO messages (loan_id, sender_user_id, body, read_by_tenant, channels)
+        const ins = run(`INSERT INTO messages (loan_id, sender_user_id, body, read_by_tenant, channels)
              VALUES (?,?,?,1,'sms')`, loan.id, buyer.id, body);
         for (const u of all(`SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL`, loan.company_id)) {
           notify.notify(u.id, {
             kind: 'message', title: `📲 Text from ${buyer.name}`,
-            body: body.slice(0, 140), url: '/admin#msgs',
+            body: shown.slice(0, 140), url: '/admin#msgs',
           }).catch(() => {});
         }
-        return res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+        res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+        // The buyer sent it, so the buyer can see it in their own thread.
+        saveInboundMedia(reqBody, { table: 'messages', rowId: ins.lastInsertRowid,
+          companyId: loan.company_id, loanId: loan.id, propertyId: loan.property_id,
+          who: buyer.name, visible: true, uploadedBy: buyer.id })
+          .catch(e => console.error('Inbound media:', e.message));
+        return;
       }
     }
   }
@@ -415,20 +552,27 @@ app.post('/sms/incoming', twilioWebhook, (req, res) => {
     const owner = toNum ? get('SELECT id FROM companies WHERE twilio_from=?', toNum) : null;
     if (owner) company = owner.id;
   }
-  if (company && bare && body) {
-    run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
+  let loose = null;
+  if (company && bare && (body || media)) {
+    loose = run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
          VALUES (?, NULL, NULL, 'in', ?, ?, 'received')`, company, from, body);
     for (const u of all(`SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin')
         AND deleted_at IS NULL`, company)) {
       notify.notify(u.id, {
         kind: 'message',
         title: `💬 Text from ${from}`,
-        body: body.slice(0, 140),
+        body: shown.slice(0, 140),
         url: '/admin#comms',
       }).catch(() => {});
     }
   }
   res.type('text/xml').send(sms.autoReplyTwiml(companyName));
+  // Filed against no house yet; attaching the text to one later moves its files too.
+  if (loose) {
+    saveInboundMedia(reqBody, { table: 'contact_messages', rowId: loose.lastInsertRowid,
+      companyId: company, who: from, visible: false })
+      .catch(e => console.error('Inbound media:', e.message));
+  }
 });
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -2899,7 +3043,7 @@ app.get('/api/admin/properties/:id/contacts', adminOnly, (req, res) => {
   if (!p) return res.status(404).json({ error: 'Not found' });
   const rows = all(`SELECT c.*, pc.role_note, pc.id AS link_id,
       (SELECT COUNT(*) FROM contact_messages m WHERE m.contact_id=c.id AND m.property_id=?) AS message_count,
-      (SELECT body FROM contact_messages m WHERE m.contact_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_message,
+      (SELECT COALESCE(NULLIF(body,''), CASE WHEN attachments IS NOT NULL THEN '📎 Attachment' END) FROM contact_messages m WHERE m.contact_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_message,
       (SELECT created_at FROM contact_messages m WHERE m.contact_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_message_at,
       (SELECT COUNT(*) FROM contact_messages m WHERE m.contact_id=c.id
          AND m.direction='in' AND m.read_at IS NULL) AS unread_count
@@ -2950,7 +3094,7 @@ app.get('/api/admin/contacts/:id/messages', adminOnly, (req, res) => {
   const properties = all(`SELECT pr.id, pr.address FROM property_contacts pc
     JOIN properties pr ON pr.id=pc.property_id
     WHERE pc.contact_id=? AND pr.archived_at IS NULL ORDER BY pr.address`, c.id);
-  res.json({ contact: contactRow(c), messages: rows, properties,
+  res.json({ contact: contactRow(c), messages: rows.map(withAttachments), properties,
     property_id: propId, sms_enabled: sms.smsEnabled(myCompany(req)) });
 });
 
@@ -2958,41 +3102,54 @@ app.post('/api/admin/contacts/:id/messages', adminOnly, async (req, res, next) =
   const c = get('SELECT * FROM contacts WHERE id=? AND company_id=?', req.params.id, req.companyId);
   if (!c) return res.status(404).json({ error: 'Contact not found' });
   const body = String((req.body && req.body.body) || '').trim();
-  if (!body) return res.status(400).json({ error: 'Nothing to send' });
+  let files;
+  try { files = outgoingAttachments(req, req.body && req.body.attachment_ids); }
+  catch (e) { return res.status(404).json({ error: e.message }); }
+  if (!body && !files.length) return res.status(400).json({ error: 'Nothing to send' });
+  if (files.length && mmsTooBig(files)) {
+    return res.status(400).json({ error: 'Those files are over the 5 MB a picture text can carry. Send fewer or smaller ones.' });
+  }
   const phone = sms.normalizePhone(req.body.phone || c.phone);
   if (!phone) return res.status(400).json({ error: 'No mobile number on this contact' });
   const propertyId = req.body.property_id && ownedProperty(req, req.body.property_id)
     ? req.body.property_id : null;
+  const attachments = files.length ? JSON.stringify(attachmentList(files)) : null;
+  // Sent about a house, the files belong to that house's documents too.
+  if (propertyId) {
+    for (const f of files) {
+      run('UPDATE documents SET property_id=? WHERE id=? AND property_id IS NULL AND loan_id IS NULL', propertyId, f.id);
+    }
+  }
 
   // Sign it, so the vendor knows who is texting before they answer.
   const co = myCompany(req);
   const prop = propertyId ? get('SELECT address FROM properties WHERE id=?', propertyId) : null;
   const text = [
     prop ? `${prop.address}:` : null,
-    body,
+    body || null,
     `— ${tpl.outboundName(co)}, Servicing Department`,
   ].filter(Boolean).join('\n');
 
   if (!sms.smsEnabled(myCompany(req))) {
     // No Twilio yet: record it and hand back the text to send from a phone.
     const r = run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction,
-        phone, body, status, sent_by) VALUES (?,?,?,'out',?,?,'not_sent',?)`,
-      req.companyId, c.id, propertyId, phone, text, req.user.id);
+        phone, body, status, sent_by, attachments) VALUES (?,?,?,'out',?,?,'not_sent',?,?)`,
+      req.companyId, c.id, propertyId, phone, text, req.user.id, attachments);
     return res.status(400).json({
       error: 'Texting is not connected yet — copy this and send it from your phone',
       text, phone, message_id: r.lastInsertRowid, sms_enabled: false,
     });
   }
   try {
-    await sms.sendSms(phone, text, myCompany(req));
+    await sms.sendSms(phone, text, myCompany(req), files.map(f => mediaUrlFor(req, f)));
     const r = run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction,
-        phone, body, status, sent_by) VALUES (?,?,?,'out',?,?,'sent',?)`,
-      req.companyId, c.id, propertyId, phone, text, req.user.id);
-    res.json({ ok: true, message: get('SELECT * FROM contact_messages WHERE id=?', r.lastInsertRowid) });
+        phone, body, status, sent_by, attachments) VALUES (?,?,?,'out',?,?,'sent',?,?)`,
+      req.companyId, c.id, propertyId, phone, text, req.user.id, attachments);
+    res.json({ ok: true, message: withAttachments(get('SELECT * FROM contact_messages WHERE id=?', r.lastInsertRowid)) });
   } catch (e) {
     run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction,
-        phone, body, status, error, sent_by) VALUES (?,?,?,'out',?,?,'failed',?,?)`,
-      req.companyId, c.id, propertyId, phone, text, e.message, req.user.id);
+        phone, body, status, error, sent_by, attachments) VALUES (?,?,?,'out',?,?,'failed',?,?,?)`,
+      req.companyId, c.id, propertyId, phone, text, e.message, req.user.id, attachments);
     next(e);
   }
 });
@@ -4531,7 +4688,8 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
         events.push({ ts: m.created_at, channel: chans.includes('sms') ? 'text' : 'message',
           direction: m.sender_role === 'tenant' ? 'in' : 'out',
           who: m.sender_name, summary: m.subject || null, party: 'buyer',
-          body: String(m.body || '').slice(0, 4000), channels: chans });
+          body: String(m.body || '').slice(0, 4000), channels: chans,
+          attachments: parseAttachments(m.attachments) });
       }
     }
     // Vendor texts, filed against this property.
@@ -4540,7 +4698,8 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
         WHERE cm.company_id=? AND cm.property_id=? ORDER BY cm.id DESC LIMIT ?`, req.companyId, prop.id, limit)) {
       events.push({ ts: t.created_at, channel: 'text', direction: t.direction,
         who: t.contact_name || t.phone, body: String(t.body || '').slice(0, 4000),
-        status: t.status, party: 'contact', contact_id: t.contact_id || null });
+        status: t.status, party: 'contact', contact_id: t.contact_id || null,
+        attachments: parseAttachments(t.attachments) });
     }
     // Email — through the loan, or filed directly against the property.
     for (const e of all(`SELECT * FROM email_log WHERE company_id=? AND
@@ -4668,7 +4827,8 @@ app.get('/api/admin/comms', adminOnly, (req, res, next) => {
         property_id: t.property_id || null, address: t.address || null,
         contact_id: t.contact_id || null, message_id: t.id,
         unmatched: !t.contact_id && !t.property_id,
-        body: String(t.body || '').slice(0, 500), status: t.status });
+        body: String(t.body || '').slice(0, 500), status: t.status,
+        attachments: parseAttachments(t.attachments) });
     }
     for (const m of all(`SELECT m.*, u.name AS sender_name, u.role AS sender_role, l.property_id, p.address
         FROM messages m JOIN loans l ON l.id=m.loan_id JOIN users u ON u.id=m.sender_user_id
@@ -4678,7 +4838,8 @@ app.get('/api/admin/comms', adminOnly, (req, res, next) => {
       push({ ts: m.created_at, channel: chans.includes('sms') ? 'text' : 'message',
         direction: m.sender_role === 'tenant' ? 'in' : 'out',
         who: m.sender_name, property_id: m.property_id || null, address: m.address || null,
-        summary: m.subject || null, body: String(m.body || '').slice(0, 500), channels: chans });
+        summary: m.subject || null, body: String(m.body || '').slice(0, 500), channels: chans,
+        attachments: parseAttachments(m.attachments) });
     }
 
     events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
@@ -4726,18 +4887,18 @@ app.get('/api/admin/comms/threads', adminOnly, (req, res, next) => {
         who: r.who || null, preview: what + (r.duration_sec ? ` · ${Math.floor(r.duration_sec / 60)}:${String(r.duration_sec % 60).padStart(2, '0')}` : '') });
     }
     for (const r of firstPer(`SELECT COALESCE(cm.property_id, 0) AS pid, cm.id AS rid, cm.created_at AS ts,
-        cm.direction, cm.body, COALESCE(c.name, cm.phone) AS who
+        cm.direction, cm.body, cm.attachments, COALESCE(c.name, cm.phone) AS who
       FROM contact_messages cm LEFT JOIN contacts c ON c.id=cm.contact_id WHERE cm.company_id=?`, co)) {
       offer(r, { ts: r.ts, channel: 'text', direction: r.direction, who: r.who || null, party: 'contact',
-        preview: String(r.body || '').replace(/\s+/g, ' ').slice(0, 140) });
+        preview: String(r.body || (r.attachments ? '📎 Attachment' : '')).replace(/\s+/g, ' ').slice(0, 140) });
     }
-    for (const r of firstPer(`SELECT l.property_id AS pid, m.id AS rid, m.created_at AS ts, m.body, m.subject,
+    for (const r of firstPer(`SELECT l.property_id AS pid, m.id AS rid, m.created_at AS ts, m.body, m.subject, m.attachments,
         m.channels, u.name AS who, u.role
       FROM messages m JOIN loans l ON l.id=m.loan_id JOIN users u ON u.id=m.sender_user_id
       WHERE l.company_id=? AND l.property_id IS NOT NULL`, co)) {
       offer(r, { ts: r.ts, channel: String(r.channels || '').includes('sms') ? 'text' : 'message',
         direction: r.role === 'tenant' ? 'in' : 'out', who: r.who || null, party: 'buyer',
-        preview: String(r.body || r.subject || '').replace(/\s+/g, ' ').slice(0, 140) });
+        preview: String(r.body || r.subject || (r.attachments ? '📎 Attachment' : '')).replace(/\s+/g, ' ').slice(0, 140) });
     }
     for (const r of firstPer(`SELECT COALESCE(e.property_id, l.property_id, 0) AS pid, e.id AS rid,
         e.created_at AS ts, e.subject, e.kind, e.to_address AS who
@@ -4887,6 +5048,7 @@ app.post('/api/admin/comms/attach', adminOnly, (req, res, next) => {
         property_id ? (get('SELECT id FROM loans WHERE property_id=? ORDER BY id DESC LIMIT 1', property_id) || {}).id || null : null,
         req.companyId, bare);
     }
+    fileLooseMedia(req.companyId);
     return res.json({ ok: true, contact_id: cid || null });
   }
 
@@ -4922,6 +5084,7 @@ app.post('/api/admin/comms/attach', adminOnly, (req, res, next) => {
   // The clicked text last, so it is filed even when it carries no usable number.
   run('UPDATE contact_messages SET property_id=COALESCE(?, property_id), contact_id=COALESCE(?, contact_id) WHERE id=?',
     property_id || null, cid || null, m.id);
+  fileLooseMedia(req.companyId);
   res.json({ ok: true, contact_id: cid || null });
  } catch (e) { next(e); }
 });
@@ -7358,7 +7521,8 @@ app.post('/api/admin/documents', adminOnly, (req, res) => {
 app.get('/api/admin/loans/:id/documents', adminOnly, (req, res) => {
   const loan = ownedLoan(req, req.params.id);
   if (!loan) return res.status(404).json({ error: 'Not found' });
-  const docs = all(`SELECT id, filename, kind, category, title, effective_date, mime, visible_to_tenant, created_at
+  const docs = all(`SELECT id, filename, kind, category, title, effective_date, mime, visible_to_tenant, created_at,
+      (SELECT u.name FROM users u WHERE u.id=documents.uploaded_by AND u.role='tenant') AS from_buyer
     FROM documents WHERE loan_id=? OR (property_id IS NOT NULL AND property_id=?)
     ORDER BY COALESCE(effective_date, created_at) DESC, id DESC`, loan.id, loan.property_id);
   const folders = {};
@@ -7383,7 +7547,8 @@ app.get('/api/admin/loans/:id/documents', adminOnly, (req, res) => {
 app.get('/api/admin/properties/:id/documents', adminOnly, (req, res) => {
   const p = ownedProperty(req, req.params.id);
   if (!p) return res.status(404).json({ error: 'Not found' });
-  const docs = all(`SELECT id, filename, kind, category, title, effective_date, mime, visible_to_tenant, created_at
+  const docs = all(`SELECT id, filename, kind, category, title, effective_date, mime, visible_to_tenant, created_at,
+      (SELECT u.name FROM users u WHERE u.id=documents.uploaded_by AND u.role='tenant') AS from_buyer
     FROM documents WHERE property_id=? OR loan_id IN (SELECT id FROM loans WHERE property_id=?)
     ORDER BY COALESCE(effective_date, created_at) DESC, id DESC`, p.id, p.id);
   const folders = {};
@@ -7429,6 +7594,43 @@ app.get('/api/tenant/documents', tenantReady, (req, res) => {
   }
   res.json(folders);
 });
+// A buyer sending paperwork in: the new insurance declarations page, a tax bill, a
+// photo of a leak. Filed in the folder they pick, on their loan, visible to them —
+// they sent it, so it stays in their document list — and staff are told it arrived.
+// Only pictures and PDFs: anything a browser might run is refused outright, because
+// staff open these on the same site they are signed in to.
+const BUYER_UPLOAD_FOLDERS = ['insurance', 'taxes', 'utilities', 'correspondence', 'misc_shared'];
+const BUYER_UPLOAD_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif'];
+app.post('/api/tenant/documents', tenantReady, (req, res) => {
+  const loan = tenantLoan(req);
+  if (!loan) return res.status(404).json({ error: 'No loan on your account yet' });
+  const { filename, mime, data_base64, category, title, for_message } = req.body || {};
+  if (!filename || !data_base64) return res.status(400).json({ error: 'Choose a file to send' });
+  const type = String(mime || '').toLowerCase();
+  if (!BUYER_UPLOAD_TYPES.includes(type)) {
+    return res.status(400).json({ error: 'Send a photo or a PDF — that kind of file cannot be uploaded.' });
+  }
+  const buffer = Buffer.from(String(data_base64), 'base64');
+  if (!buffer.length) return res.status(400).json({ error: 'That file is empty' });
+  if (buffer.length > 15 * 1024 * 1024) return res.status(400).json({ error: 'That file is over 15 MB. Try a smaller photo or scan.' });
+  const folder = BUYER_UPLOAD_FOLDERS.includes(category) ? category : 'correspondence';
+  const cleanName = String(filename).replace(/[\/\\]/g, '_').slice(0, 120);
+  const doc = storeDocument({
+    companyId: loan.company_id, loanId: loan.id, propertyId: loan.property_id, category: folder,
+    title: title ? String(title).slice(0, 120) : `From ${req.user.name}`,
+    filename: cleanName, mime: type, buffer, visible: true, uploadedBy: req.user.id,
+  });
+  // A file sent in a message announces itself through the message.
+  if (!for_message) {
+    const property = get('SELECT address FROM properties WHERE id=?', loan.property_id);
+    for (const a of all("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL AND archived_at IS NULL", loan.company_id)) {
+      notify.notify(a.id, { kind: 'document', title: `📎 ${req.user.name} uploaded a document`,
+        body: `${property ? property.address + ' — ' : ''}${CATEGORY_LABELS[folder]}: ${title || cleanName}`,
+        url: '/admin' }).catch(() => {});
+    }
+  }
+  res.json(doc);
+});
 // One authorization for both ways of getting at a file. An admin sees everything in
 // their company; a buyer sees only documents on their own loan that were shared.
 function authorizedDoc(req, res) {
@@ -7456,7 +7658,8 @@ app.get('/api/documents/:id/view', anyUser, (req, res) => {
   if (!doc) return;
   res.setHeader('Content-Disposition', `inline; filename="${doc.filename.replace(/"/g, '')}"`);
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  const safe = /^(application\/pdf|image\/|text\/plain)/.test(doc.mime || '');
+  // SVG is an image that can carry script, so it is never shown in place.
+  const safe = /^(application\/pdf|image\/|text\/plain)/.test(doc.mime || '') && !/svg/i.test(doc.mime || '');
   res.setHeader('Content-Type', safe ? doc.mime : 'application/octet-stream');
   res.send(fs.readFileSync(path.join(UPLOAD_DIR, doc.stored_name)));
 });
@@ -7767,7 +7970,7 @@ app.post('/api/admin/templates/preview', adminOnly, (req, res) => {
 app.get('/api/admin/messages', adminOnly, (req, res) => {
   const threads = all(`
     SELECT l.id AS loan_id, p.address, u.name AS tenant_name,
-      (SELECT body FROM messages WHERE loan_id=l.id ORDER BY id DESC LIMIT 1) AS last_message,
+      (SELECT COALESCE(NULLIF(body,''), CASE WHEN attachments IS NOT NULL THEN '📎 Attachment' END) FROM messages WHERE loan_id=l.id ORDER BY id DESC LIMIT 1) AS last_message,
       (SELECT created_at FROM messages WHERE loan_id=l.id ORDER BY id DESC LIMIT 1) AS last_at,
       (SELECT COUNT(*) FROM messages WHERE loan_id=l.id AND read_by_admin=0) AS unread
     FROM loans l LEFT JOIN properties p ON p.id=l.property_id LEFT JOIN users u ON u.id=l.tenant_user_id
@@ -7777,14 +7980,24 @@ app.get('/api/admin/messages', adminOnly, (req, res) => {
 app.get('/api/admin/loans/:id/messages', adminOnly, (req, res) => {
   if (!ownedLoan(req, req.params.id)) return res.status(404).json({ error: 'Loan not found' });
   run('UPDATE messages SET read_by_admin=1 WHERE loan_id=?', req.params.id);
-  res.json(all('SELECT m.*, u.name AS sender_name, u.role AS sender_role FROM messages m JOIN users u ON u.id=m.sender_user_id WHERE m.loan_id=? ORDER BY m.id', req.params.id));
+  res.json(all('SELECT m.*, u.name AS sender_name, u.role AS sender_role FROM messages m JOIN users u ON u.id=m.sender_user_id WHERE m.loan_id=? ORDER BY m.id', req.params.id).map(withAttachments));
 });
 app.post('/api/admin/loans/:id/messages', adminOnly, async (req, res, next) => {
   try {
     const loan = ownedLoan(req, req.params.id);
     if (!loan) return res.status(404).json({ error: 'Loan not found' });
     const b = req.body || {};
-    if (!b.body && !b.body_html) return res.status(400).json({ error: 'Message required' });
+    let files;
+    try { files = outgoingAttachments(req, b.attachment_ids); }
+    catch (e) { return res.status(404).json({ error: e.message }); }
+    if (!b.body && !b.body_html && !files.length) return res.status(400).json({ error: 'Message required' });
+    // Sent to the buyer means shared with the buyer: filed on their loan, visible to them.
+    for (const f of files) {
+      run(`UPDATE documents SET loan_id=COALESCE(loan_id, ?), property_id=COALESCE(property_id, ?),
+        visible_to_tenant=1, category=CASE WHEN category IN ('unsorted','private','misc_admin','trust_docs',
+          'acquisition','pml_docs','sale_closing','statement') THEN 'correspondence' ELSE category END
+        WHERE id=?`, loan.id, loan.property_id, f.id);
+    }
 
     const co = myCompany(req);
     const ctx = mergeContextForLoan(req, loan.id);
@@ -7805,13 +8018,13 @@ app.post('/api/admin/loans/:id/messages', adminOnly, async (req, res, next) => {
       plain = tpl.htmlToText(merged);
     } else {
       subject = b.subject ? tpl.applyMerge(b.subject, values) : null;
-      plain = tpl.applyMerge(b.body, values);
+      plain = tpl.applyMerge(b.body || '', values);
     }
 
     const ins = run(`INSERT INTO messages (loan_id, sender_user_id, body, body_html, subject,
-      template_id, read_by_admin, channels) VALUES (?,?,?,?,?,?,1,?)`,
+      template_id, read_by_admin, channels, attachments) VALUES (?,?,?,?,?,?,1,?,?)`,
       loan.id, req.user.id, plain, storedHtml, subject || null,
-      b.template_id || null, channels.join(','));
+      b.template_id || null, channels.join(','), files.length ? JSON.stringify(attachmentList(files)) : null);
     const messageId = ins.lastInsertRowid;
 
     const delivery = { app: { ok: true } };
@@ -7821,15 +8034,21 @@ app.post('/api/admin/loans/:id/messages', adminOnly, async (req, res, next) => {
       else if (!email.emailEnabled(co)) delivery.email = { ok: false, error: 'Email is not connected — see Settings → Email' };
       else {
         // The company's own letterhead, built for mail clients rather than the app.
+        // Files are not mailed — they wait in the buyer's portal, where they are on record.
+        const fileNote = files.length
+          ? `${files.length === 1 ? 'A file is' : files.length + ' files are'} attached to this message in your account: ${ctx.baseUrl || ''}/?tab=msgs`
+          : '';
+        const mailText = [plain, fileNote].filter(Boolean).join('\n\n');
         const html = tpl.emailShell({
           company: ctx.company, subject: subject || `A message from ${tpl.outboundName(co)}`,
-          bodyHtml: merged || plain.split('\n\n').map(p => `<p>${tpl.escapeHtml(p)}</p>`).join(''),
+          bodyHtml: merged ? merged + (fileNote ? `<p>${tpl.escapeHtml(fileNote)}</p>` : '')
+            : mailText.split('\n\n').map(p => `<p>${tpl.escapeHtml(p)}</p>`).join(''),
           baseUrl: ctx.baseUrl, preheader: plain.slice(0, 120),
         });
         try {
           const r = await email.sendEmail(buyer.email, {
             subject: subject || `A message from ${tpl.outboundName(co)}`,
-            text: plain, html, kind: 'message', loanId: loan.id, companyId: req.companyId,
+            text: mailText, html, kind: 'message', loanId: loan.id, companyId: req.companyId,
           }, co);
           delivery.email = { ok: true, to: r.to, from: r.from };
         } catch (e) { delivery.email = { ok: false, error: e.message }; }
@@ -7842,11 +8061,16 @@ app.post('/api/admin/loans/:id/messages', adminOnly, async (req, res, next) => {
       else {
         // A text is a nudge, not the message. Long HTML would arrive as a wall of
         // fragments, so it points back at the app where the whole thing lives.
-        const short = plain.length > 300
+        let short = plain.length > 300
           ? `${subject ? subject + '\n\n' : ''}${plain.slice(0, 240).trim()}…\n\nRead it in full: ${ctx.baseUrl || ''}/`
           : `${subject ? subject + '\n\n' : ''}${plain}`;
+        if (!short.trim()) short = mediaOnlyBody(files.length);
+        // The files ride along as a picture text when they fit; when they do not, the
+        // text says where to find them rather than failing outright.
+        const big = files.length && mmsTooBig(files);
+        if (big) short += `\n\nThe ${files.length === 1 ? 'file is' : 'files are'} in your account: ${ctx.baseUrl || ''}/?tab=msgs`;
         try {
-          await sms.sendSms(buyer.phone, short, co);
+          await sms.sendSms(buyer.phone, short, co, big ? [] : files.map(f => mediaUrlFor(req, f)));
           delivery.sms = { ok: true, to: buyer.phone };
         } catch (e) { delivery.sms = { ok: false, error: e.message }; }
       }
@@ -7857,7 +8081,7 @@ app.post('/api/admin/loans/:id/messages', adminOnly, async (req, res, next) => {
     if (loan.tenant_user_id) {
       notify.notify(loan.tenant_user_id, {
         kind: 'message', title: `New message from ${co ? tpl.outboundName(co) : 'your servicer'}`,
-        body: subject || plain.slice(0, 120), url: '/?tab=msgs',
+        body: subject || plain.slice(0, 120) || mediaOnlyBody(files.length), url: '/?tab=msgs',
       }).catch(() => {});
     }
 
@@ -9033,17 +9257,26 @@ app.get('/api/tenant/messages', tenantReady, (req, res) => {
   const loan = tenantLoan(req);
   if (!loan) return res.json([]);
   run('UPDATE messages SET read_by_tenant=1 WHERE loan_id=?', loan.id);
-  res.json(all('SELECT m.*, u.name AS sender_name, u.role AS sender_role FROM messages m JOIN users u ON u.id=m.sender_user_id WHERE m.loan_id=? ORDER BY m.id', loan.id));
+  // A file the servicer later un-shared stays listed but is no longer offered to open.
+  const visible = new Set(all('SELECT id FROM documents WHERE loan_id=? AND visible_to_tenant=1', loan.id).map(d => d.id));
+  res.json(all('SELECT m.*, u.name AS sender_name, u.role AS sender_role FROM messages m JOIN users u ON u.id=m.sender_user_id WHERE m.loan_id=? ORDER BY m.id', loan.id)
+    .map(withAttachments)
+    .map(m => ({ ...m, attachments: m.attachments.filter(a => a.id && visible.has(a.id)) })));
 });
 app.post('/api/tenant/messages', tenantReady, (req, res) => {
   const loan = tenantLoan(req);
   if (!loan) return res.status(404).json({ error: 'No loan' });
-  if (!req.body.body) return res.status(400).json({ error: 'Message required' });
-  run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_tenant) VALUES (?,?,?,1)', loan.id, req.user.id, req.body.body);
+  const body = String(req.body.body || '').trim();
+  let files;
+  try { files = outgoingAttachments(req, req.body.attachment_ids, { tenantLoanId: loan.id }); }
+  catch (e) { return res.status(404).json({ error: e.message }); }
+  if (!body && !files.length) return res.status(400).json({ error: 'Message required' });
+  run('INSERT INTO messages (loan_id, sender_user_id, body, read_by_tenant, attachments) VALUES (?,?,?,1,?)',
+    loan.id, req.user.id, body, files.length ? JSON.stringify(attachmentList(files)) : null);
   const property = get('SELECT address FROM properties WHERE id=?', loan.property_id);
   for (const a of all("SELECT id FROM users WHERE company_id=? AND role IN ('owner','admin') AND deleted_at IS NULL AND archived_at IS NULL", loan.company_id)) {
     notify.notify(a.id, { kind: 'message', title: `${req.user.name} sent a message`,
-      body: `${property ? property.address + ' — ' : ''}${String(req.body.body).slice(0, 120)}`,
+      body: `${property ? property.address + ' — ' : ''}${(body || mediaOnlyBody(files.length)).slice(0, 120)}`,
       url: '/admin' }).catch(() => {});
   }
   res.json({ ok: true });

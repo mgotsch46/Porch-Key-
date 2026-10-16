@@ -183,6 +183,18 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
 .b-row.them.tail .bubble{border-bottom-left-radius:5px}
 .b-row.bad .bubble,.b-row.me.sms.bad .bubble{background:#fff;color:#D70015;border:1px solid #FFB3B8}
 .b-meta{font-size:11px;color:#8E8E93;margin:3px 8px 0}
+/* Photos and files that came with a message. */
+.b-att{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+.b-row.me .b-att{justify-content:flex-end}
+.b-att img{display:block;max-width:220px;max-height:240px;border-radius:16px;object-fit:cover;background:#F2F2F7}
+.b-att a.file{display:inline-flex;gap:6px;align-items:center;padding:8px 12px;border-radius:16px;background:#F2F2F7;
+  color:#1C1C1E;font-size:14px;text-decoration:none;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.b-att .file.bad{color:#D70015;background:#fff;border:1px solid #FFB3B8}
+.att-pending{display:flex;flex-wrap:wrap;gap:6px;padding:0 6px 6px}
+.att-pending:empty{display:none}
+.att-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 6px 5px 11px;border-radius:12px;background:#F2F2F7;font-size:13px}
+.att-chip button{border:0;background:none;font-size:15px;padding:0 4px;color:#8E8E93}
+.attbtn{border:0;background:none;font-size:20px;padding:0 6px;align-self:center;cursor:pointer}
 .ev{align-self:center;width:min(100%,340px);display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:12px 0 2px;
   padding:8px 11px;background:#F2F2F7;border-radius:14px}
 .ev .ei{width:32px;height:32px;border-radius:50%;background:var(--pale);color:var(--brand);display:flex;
@@ -427,7 +439,10 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
         </div>
         <span class="mfixed hidden" id="t-mfixed">Text</span>
       </div>
+      <div id="t-att" class="att-pending"></div>
       <div class="cbox" id="t-cbox">
+        <button class="attbtn hidden" id="t-attach" onclick="$('t-file').click()" aria-label="Attach a photo or PDF">📎</button>
+        <input id="t-file" type="file" multiple accept="image/*,application/pdf" class="hidden" onchange="pickStaffFiles(this)">
         <textarea id="t-input" rows="1" placeholder="Message" oninput="growBox(this)"></textarea>
         <button class="sendbtn" id="t-send" onclick="threadSend()" aria-label="Send"><i data-ico="send"></i></button>
       </div>
@@ -791,6 +806,7 @@ async function openThread(pid,opts={}){
   const firstTo=prop.buyer&&prop.loan_id?'buyer':(people[0]?people[0].key:null);
   let mode=opts.mode&&MODE_OK[opts.mode](prop)?opts.mode:['sms','app','email'].find(m=>MODE_OK[m](prop))||'sms';
   TH={pid,prop,people,filter:'',mode,to:opts.to||firstTo,from:opts.from||'comms',events:[]};
+  if(T_ATT.length){ T_ATT=[]; renderStaffAtt(); }
   go('thread');
   $('t-back').textContent=TH.from==='prop'?'House':'Comms';
   $('t-av').outerHTML=avatarHtml(pid,prop.buyer&&prop.buyer.name,'').replace('class="avatar ','id="t-av" class="avatar ');
@@ -908,9 +924,54 @@ function renderThread(){
     const subj=e.summary&&e.channel==='message'?`<span class="subj">${esc(e.summary)}</span>`:'';
     const sms=e.channel==='text';
     html+=`<div class="b-row ${mine?'me':'them'} ${cont?'cont':''} ${contNext?'':'tail'} ${sms?'sms':''} ${e.status==='failed'?'bad':''}">
-      ${whoLbl}<div class="bubble ${long?'long':''}">${subj}${esc(e.body||'')}${long?`<button class="more-btn" onclick="this.parentNode.classList.remove('long');this.remove()">Show all</button>`:''}</div>${meta}</div>`;
+      ${whoLbl}${e.body||subj||!(e.attachments&&e.attachments.length)?`<div class="bubble ${long?'long':''}">${subj}${esc(e.body||'')}${long?`<button class="more-btn" onclick="this.parentNode.classList.remove('long');this.remove()">Show all</button>`:''}</div>`:''}${attBlock(e.attachments)}${meta}</div>`;
   });
   el.innerHTML=html;
+  const ab=$('t-attach'); if(ab) ab.classList.toggle('hidden', isNativeApp());
+}
+// Pictures inline, anything else a chip. Inside the store app a file opens in the
+// document viewer with a Done button, never by navigating the whole app to it.
+function attBlock(list){
+  if(!list||!list.length) return '';
+  return `<div class="b-att">${list.map(a=>{
+    if(!a.id) return `<span class="file bad">⚠️ ${esc(a.filename||'Attachment missing')}</span>`;
+    const path='/api/documents/'+a.id+'/view';
+    const link=isNativeApp()?'/doc-view?src='+encodeURIComponent(path)+'&title='+encodeURIComponent(a.filename||'File'):path;
+    const tgt=isNativeApp()?'':'target="_blank" rel="noopener"';
+    if(/^image\/(jpeg|jpg|png|gif|webp|bmp)$/i.test(a.mime||''))
+      return `<a href="${link}" ${tgt}><img loading="lazy" src="${path}" alt="${esc(a.filename||'Photo')}"></a>`;
+    return `<a class="file" href="${link}" ${tgt}>${/pdf/i.test(a.mime||'')?'📄':'📎'} ${esc(a.filename||'File')}</a>`;
+  }).join('')}</div>`;
+}
+// Files picked for the next message go up at once and wait as chips. Offered in a
+// browser only: the store app declares no photo or file access.
+let T_ATT=[];
+async function pickStaffFiles(input){
+  const files=[...(input.files||[])]; input.value='';
+  for(const f of files){
+    if(T_ATT.length>=10){ toast('Up to 10 files per message.'); break; }
+    if(f.size>15*1024*1024){ toast(f.name+' is over 15 MB.'); continue; }
+    const box=$('t-att'); const tmp=document.createElement('span');
+    tmp.className='att-chip'; tmp.textContent='Uploading '+f.name+'…'; box.appendChild(tmp);
+    try{
+      const b64=await new Promise((ok,err)=>{ const r=new FileReader(); r.onload=()=>ok(String(r.result).split(',')[1]); r.onerror=err; r.readAsDataURL(f); });
+      const d=await api('/api/admin/documents',{method:'POST',body:JSON.stringify({
+        filename:f.name, mime:f.type, data_base64:b64, category:'correspondence',
+        title:'Sent in a message — '+f.name, visible_to_tenant:false, property_id:TH?TH.pid:null })});
+      T_ATT.push({id:d.id, filename:f.name, mime:f.type});
+    }catch(e){ toast('Could not attach '+f.name+': '+e.message); }
+    tmp.remove();
+  }
+  renderStaffAtt();
+}
+function renderStaffAtt(){
+  const box=$('t-att'); if(!box) return;
+  box.innerHTML=T_ATT.map(a=>`<span class="att-chip">${/^image\//.test(a.mime||'')?'🖼️':'📄'} ${esc(a.filename)}
+    <button aria-label="Remove" onclick="dropStaffAtt(${a.id})">✕</button></span>`).join('');
+}
+async function dropStaffAtt(id){
+  T_ATT=T_ATT.filter(a=>a.id!==id); renderStaffAtt();
+  try{ await api('/api/admin/documents/'+id,{method:'DELETE'}); }catch{}
 }
 function eventCard(e){
   const t=clock(e.ts);
@@ -958,13 +1019,14 @@ function playRec(id,btn){
   AUD.play().catch(()=>{});
 }
 async function threadSend(){
-  const t=$('t-input'); const body=t.value.trim(); if(!body||!TH) return;
+  const t=$('t-input'); const body=t.value.trim(); if((!body&&!T_ATT.length)||!TH) return;
+  const attachment_ids=T_ATT.map(a=>a.id);
   const r=recipient(); if(!r){ toast('Nobody to send to on this house yet.'); return; }
   const btn=$('t-send'); btn.disabled=true;
   try{
     if(r.kind==='buyer'){
       const res=await api(`/api/admin/loans/${TH.prop.loan_id}/messages`,{method:'POST',
-        body:JSON.stringify({body,channels:TH.mode==='app'?[]:[TH.mode]})});
+        body:JSON.stringify({body,channels:TH.mode==='app'?[]:[TH.mode],attachment_ids})});
       const f=(res.failures||[]).filter(x=>!/^app:/.test(x));
       toast(f.length?'Saved in the app, but '+f[0].replace(/^\w+: /,'').replace(/^./,c=>c.toLowerCase())
         :TH.mode==='sms'?'Text sent.':TH.mode==='email'?'Email sent.':'Sent to their app.');
@@ -975,10 +1037,10 @@ async function threadSend(){
         cid=x.contact_id; r.person.contact_id=cid;
       }
       if(!cid) throw new Error('No contact card for this person yet.');
-      await api(`/api/admin/contacts/${cid}/messages`,{method:'POST',body:JSON.stringify({body,property_id:TH.pid})});
+      await api(`/api/admin/contacts/${cid}/messages`,{method:'POST',body:JSON.stringify({body,property_id:TH.pid,attachment_ids})});
       toast('Text sent.');
     }
-    t.value=''; growBox(t);
+    t.value=''; growBox(t); T_ATT=[]; renderStaffAtt();
     await loadThread(true);
   }catch(e){ toast(e.message); }
   finally{ btn.disabled=false; }
@@ -1254,7 +1316,7 @@ async function loadVendorThread(){
         !CURV.property_id&&m.property_address?' · '+esc(m.property_address):''}${
         failed?' · <b style="color:var(--red)">not delivered</b>':m.status==='not_sent'?' · not sent':''}</div>`;
       html+=`<div class="b-row ${mine?'me':'them'} sms ${near(ms[i-1],m)?'cont':''} ${contNext?'':'tail'} ${failed?'bad':''}">
-        <div class="bubble">${esc(m.body)}</div>${meta}</div>`;
+        ${m.body||!(m.attachments&&m.attachments.length)?`<div class="bubble">${esc(m.body)}</div>`:''}${attBlock(m.attachments)}${meta}</div>`;
     });
     el.innerHTML=html?`<div class="tbody" style="min-height:0;padding:4px 2px 10px">${html}</div>`
       :`<p class="note">${CURV.property_id?'No texts about this house yet.':'No texts yet.'}</p>`;
