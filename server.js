@@ -402,7 +402,7 @@ function mediaUrlFor(req, doc) {
   const name = encodeURIComponent(String(doc.filename || 'file').replace(/[^\w.\- ]/g, '_'));
   return `${baseUrlOf(req)}/m/${doc.id}/${exp}/${mediaSig(doc.id, exp)}/${name}`;
 }
-app.get('/m/:id/:exp/:sig/:name?', (req, res) => {
+app.get('/m/:id/:exp/:sig/:name?', async (req, res) => {
   const id = Number(req.params.id), exp = Number(req.params.exp);
   const want = mediaSig(id, exp);
   const sig = String(req.params.sig || '');
@@ -410,11 +410,13 @@ app.get('/m/:id/:exp/:sig/:name?', (req, res) => {
       !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want))) return res.status(404).send('Not found');
   const doc = get('SELECT * FROM documents WHERE id=?', id);
   if (!doc) return res.status(404).send('Not found');
+  // Carriers do not take HEIC either, so a texted iPhone photo goes out as its JPEG.
+  let file;
+  try { file = await viewableFile(doc); } catch { return res.status(404).send('Not found'); }
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'private, max-age=3600');
-  res.setHeader('Content-Type', doc.mime && !/svg|html|xml|javascript/i.test(doc.mime) ? doc.mime : 'application/octet-stream');
-  try { res.send(fs.readFileSync(path.join(UPLOAD_DIR, doc.stored_name))); }
-  catch { res.status(404).send('Not found'); }
+  res.setHeader('Content-Type', file.mime);
+  res.sendFile(file.path, (err) => { if (err && !res.headersSent) res.status(404).end(); });
 });
 
 // The files chosen to go out with a message, checked: they must belong to this
@@ -7576,6 +7578,7 @@ app.delete('/api/admin/documents/:id', adminOnly, (req, res) => {
   const doc = get('SELECT * FROM documents WHERE id=? AND company_id=?', req.params.id, req.companyId);
   if (!doc) return res.status(404).json({ error: 'Not found' });
   try { fs.unlinkSync(path.join(UPLOAD_DIR, doc.stored_name)); } catch {}
+  try { fs.unlinkSync(path.join(UPLOAD_DIR, doc.stored_name + '.view.jpg')); } catch {}
   run('DELETE FROM documents WHERE id=?', doc.id);
   res.json({ ok: true });
 });
@@ -7631,6 +7634,27 @@ app.post('/api/tenant/documents', tenantReady, (req, res) => {
   }
   res.json(doc);
 });
+// What a browser is given to show in place. SVG is an image that can carry script, so
+// it is never shown in place; nor is anything else a browser might run. iPhone photos
+// arrive as HEIC, which only Safari can draw, so they are shown as a JPEG made the
+// first time somebody looks — kept next to the original, which is never altered.
+const VIEWABLE = /^(application\/pdf|image\/(jpeg|jpg|png|gif|webp|bmp)|text\/plain|video\/(mp4|webm|quicktime|3gpp)|audio\/(mpeg|mp4|amr|aac|ogg|wav|x-wav|3gpp))$/i;
+const isHeic = (doc) => /^image\/hei[cf]$/i.test(doc.mime || '') || /\.hei[cf]$/i.test(doc.filename || '');
+async function viewableFile(doc) {
+  const original = path.resolve(UPLOAD_DIR, doc.stored_name);   // sendFile needs an absolute path
+  if (isHeic(doc)) {
+    const jpg = original + '.view.jpg';
+    if (!fs.existsSync(jpg)) {
+      const convert = require('heic-convert');
+      const out = await convert({ buffer: fs.readFileSync(original), format: 'JPEG', quality: 0.85 });
+      fs.writeFileSync(jpg, Buffer.from(out));
+    }
+    return { path: jpg, mime: 'image/jpeg' };
+  }
+  if (!fs.existsSync(original)) throw new Error('File missing from storage');
+  return { path: original, mime: VIEWABLE.test(doc.mime || '') ? doc.mime : 'application/octet-stream' };
+}
+
 // One authorization for both ways of getting at a file. An admin sees everything in
 // their company; a buyer sees only documents on their own loan that were shared.
 function authorizedDoc(req, res) {
@@ -7653,15 +7677,17 @@ app.get('/api/documents/:id/download', anyUser, (req, res) => {
 // The same file, shown rather than saved. `inline` lets the browser render PDFs and
 // images in place; nosniff stops it guessing its way into treating an upload as HTML,
 // which is what would turn a hostile upload into script running on this origin.
-app.get('/api/documents/:id/view', anyUser, (req, res) => {
+app.get('/api/documents/:id/view', anyUser, async (req, res) => {
   const doc = authorizedDoc(req, res);
   if (!doc) return;
+  let file;
+  try { file = await viewableFile(doc); }
+  catch (e) { console.error('Document view:', e.message); return res.status(404).json({ error: 'That file could not be opened' }); }
   res.setHeader('Content-Disposition', `inline; filename="${doc.filename.replace(/"/g, '')}"`);
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  // SVG is an image that can carry script, so it is never shown in place.
-  const safe = /^(application\/pdf|image\/|text\/plain)/.test(doc.mime || '') && !/svg/i.test(doc.mime || '');
-  res.setHeader('Content-Type', safe ? doc.mime : 'application/octet-stream');
-  res.send(fs.readFileSync(path.join(UPLOAD_DIR, doc.stored_name)));
+  res.setHeader('Content-Type', file.mime);
+  // sendFile answers Range requests, which iPhones insist on before playing a video.
+  res.sendFile(file.path, (err) => { if (err && !res.headersSent) res.status(404).end(); });
 });
 // AI: extract loan terms from one or more closing docs
 app.post('/api/admin/ai/extract-loan', adminOnly, async (req, res) => {

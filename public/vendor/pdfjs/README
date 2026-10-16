@@ -1,0 +1,1 @@
+pdf.js 6.4.299 (pdfjs-dist legacy build), Apache-2.0. Renamed .mjs -> .js so the server sends a JavaScript MIME type.

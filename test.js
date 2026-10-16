@@ -2291,6 +2291,41 @@ async function main() {
     ok(last.body === 'Water heater' && last.attachments.length === 1, 'a photo a buyer texts in shows in their own thread');
     dbm.prepare('UPDATE users SET phone=? WHERE id=?').run(tbPhone, tbId);
 
+    // Every format a phone sends can be seen. iPhone photos are HEIC; the viewer gets a JPEG.
+    const fx = (n) => require('fs').readFileSync(require('path').join(__dirname, 'assets', 'test-fixtures', n));
+    const HEIC = fx('sample.heic');
+    smsM.fetchMedia = async () => ({ buffer: HEIC, mime: 'image/heic' });
+    await signedForm('/sms/incoming', { From: '+15135551234', Body: 'from my iPhone', NumMedia: '1',
+      MediaUrl0: mediaUrl, MediaContentType0: 'image/heic' });
+    await settle();
+    r = await req(`/api/admin/contacts/${rayId}/messages`);
+    const heicAtt = r.json.messages[r.json.messages.length - 1].attachments[0];
+    ok(heicAtt && heicAtt.mime === 'image/heic', 'an iPhone HEIC photo is kept as it came');
+    raw = await fetch(`${BASE}/api/documents/${heicAtt.id}/view`, { headers: { Cookie: adminCookie } });
+    let bytes = Buffer.from(await raw.arrayBuffer());
+    ok(raw.status === 200 && raw.headers.get('content-type') === 'image/jpeg' && bytes[0] === 0xFF && bytes[1] === 0xD8,
+      'and is shown as a JPEG any browser can draw');
+    raw = await fetch(`${BASE}/api/documents/${heicAtt.id}/download`, { headers: { Cookie: adminCookie } });
+    ok(Buffer.from(await raw.arrayBuffer()).equals(HEIC), 'the download is still the untouched original');
+    r = await req(`/api/admin/contacts/${rayId}/messages`, { method: 'POST', body: JSON.stringify({
+      body: 'forwarding', attachment_ids: [heicAtt.id] }) });
+    raw = await fetch(sent.media[0].replace(/^https?:\/\/[^/]+/, BASE));
+    ok(raw.headers.get('content-type') === 'image/jpeg', 'a HEIC photo texted back out goes as a JPEG carriers accept');
+
+    const PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF');
+    const pdfDoc = await up('lease.pdf', 'application/pdf', PDF);
+    raw = await fetch(`${BASE}/api/documents/${pdfDoc.id}/view`, { headers: { Cookie: adminCookie } });
+    ok(raw.status === 200 && raw.headers.get('content-type') === 'application/pdf' &&
+      Buffer.from(await raw.arrayBuffer()).equals(PDF), 'a PDF is served for viewing as a PDF');
+    raw = await fetch(`${BASE}/api/documents/${pdfDoc.id}/view`, { headers: { Cookie: adminCookie, Range: 'bytes=0-7' } });
+    ok(raw.status === 206 && (await raw.text()) === '%PDF-1.4', 'PDFs can be read a piece at a time');
+    const vidDoc = await up('walkthrough.mp4', 'video/mp4', fx('sample.mp4'));
+    raw = await fetch(`${BASE}/api/documents/${vidDoc.id}/view`, { headers: { Cookie: adminCookie, Range: 'bytes=0-99' } });
+    ok(raw.status === 206 && raw.headers.get('content-type') === 'video/mp4',
+      'videos answer the partial requests an iPhone needs before it will play one');
+    raw = await fetch(`${BASE}/vendor/pdfjs/pdf.min.js`);
+    ok(raw.status === 200 && /javascript/.test(raw.headers.get('content-type') || ''), 'the PDF viewer is served by the app itself');
+
     smsM.fetchMedia = realFetchMedia; smsM.sendSms = realSend;
     dbm.prepare('UPDATE companies SET twilio_sid=?, twilio_token=?, twilio_from=? WHERE id=?')
       .run(coRow.twilio_sid, coRow.twilio_token, coRow.twilio_from, coRow.id);
