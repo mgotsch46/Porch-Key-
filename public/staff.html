@@ -508,6 +508,7 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
 <div id="sheet-bg" class="sheet-bg hidden" onclick="dismissSheet()"></div>
 <div id="sheet" class="sheet hidden" role="dialog"><div class="grab"></div><div id="sheet-body"></div></div>
 
+<script src="/attach-view.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -929,19 +930,10 @@ function renderThread(){
   el.innerHTML=html;
   const ab=$('t-attach'); if(ab) ab.classList.toggle('hidden', isNativeApp());
 }
-// Pictures inline, anything else a chip. Inside the store app a file opens in the
-// document viewer with a Done button, never by navigating the whole app to it.
+// Photos, PDFs and videos on a message, as thumbnails that open in the full-screen
+// viewer — the same on every screen. See public/attach-view.js.
 function attBlock(list){
-  if(!list||!list.length) return '';
-  return `<div class="b-att">${list.map(a=>{
-    if(!a.id) return `<span class="file bad">⚠️ ${esc(a.filename||'Attachment missing')}</span>`;
-    const path='/api/documents/'+a.id+'/view';
-    const link=isNativeApp()?'/doc-view?src='+encodeURIComponent(path)+'&title='+encodeURIComponent(a.filename||'File'):path;
-    const tgt=isNativeApp()?'':'target="_blank" rel="noopener"';
-    if(/^image\/(jpeg|jpg|png|gif|webp|bmp)$/i.test(a.mime||''))
-      return `<a href="${link}" ${tgt}><img loading="lazy" src="${path}" alt="${esc(a.filename||'Photo')}"></a>`;
-    return `<a class="file" href="${link}" ${tgt}>${/pdf/i.test(a.mime||'')?'📄':'📎'} ${esc(a.filename||'File')}</a>`;
-  }).join('')}</div>`;
+  return list&&list.length ? `<div class="b-att">${AttView.html(list)}</div>` : '';   // public/attach-view.js
 }
 // Files picked for the next message go up at once and wait as chips. Offered in a
 // browser only: the store app declares no photo or file access.

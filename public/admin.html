@@ -1331,6 +1331,7 @@ a{color:var(--brand);font-weight:600}
   <div class="modal" id="modal-content"></div>
 </div>
 
+<script src="/attach-view.js"></script>
 <script>
 // The platform account is deliberately NOT in this list. It has company_id NULL, so
 // every /api/admin route answers it 403 — letting it into this shell produced a fully
@@ -7546,19 +7547,9 @@ function iosStamp(ms){
   return `<b>${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',
     ...(d.getFullYear()!==now.getFullYear()?{year:'numeric'}:{})})}</b> at ${time}`;
 }
-// What came with a message, drawn small. A picture opens full size in a new tab;
-// anything else (a PDF, a contact card) is a chip that opens the file. HEIC is left as a
-// chip because most desktop browsers cannot draw it.
-function attHtml(list){
-  return (list||[]).map(a=>{
-    if(!a.id) return `<span class="att-file bad">⚠️ ${esc(a.filename||'Attachment missing')}</span>`;
-    const href=`/api/documents/${a.id}/view`;
-    if(/^image\/(jpeg|jpg|png|gif|webp|bmp)$/i.test(a.mime||''))
-      return `<a href="${href}" target="_blank" rel="noopener"><img class="att-img" loading="lazy" src="${href}" alt="${esc(a.filename||'Photo')}"></a>`;
-    const icon=/pdf/i.test(a.mime||'')?'📄':/^image\//i.test(a.mime||'')?'🖼️':/^video\//i.test(a.mime||'')?'🎬':'📎';
-    return `<a class="att-file" href="${href}" target="_blank" rel="noopener" title="${esc(a.filename||'')}">${icon} ${esc(a.filename||'File')}</a>`;
-  }).join('');
-}
+// Photos, PDFs and videos on a message, as thumbnails that open in the full-screen
+// viewer — the same on every screen. See public/attach-view.js.
+function attHtml(list){ return AttView.html(list); }   // public/attach-view.js
 
 // ---------- attaching files to an outgoing message ----------
 // Files go up as soon as they are picked, into the document center like any upload,

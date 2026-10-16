@@ -561,6 +561,7 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
   </nav>
 </div>
 
+<script src="/attach-view.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const fmt = c => '$' + ((c||0)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -1118,18 +1119,10 @@ async function pollMsgs(){
   }catch{}
 }
 
-// Pictures show in the bubble; anything else is a tap-to-open chip. In the store apps
-// the link goes through the document viewer so the app is never stranded on a file.
+// Photos, PDFs and videos on a message, as thumbnails that open in the full-screen
+// viewer — the same on every screen. See public/attach-view.js.
 function msgAtt(list){
-  if(!list||!list.length) return '';
-  return `<div class="att">${list.map(a=>{
-    const path='/api/documents/'+a.id+'/view';
-    const link=docLink(path, a.filename);
-    const tgt=isNativeApp()?'':'target="_blank" rel="noopener"';
-    if(/^image\/(jpeg|jpg|png|gif|webp)$/i.test(a.mime||''))
-      return `<a href="${link}" ${tgt}><img loading="lazy" src="${path}" alt="${esc(a.filename||'Photo')}"></a>`;
-    return `<a class="file" href="${link}" ${tgt}>${/pdf/i.test(a.mime||'')?'📄':'📎'} ${esc(a.filename||'File')}</a>`;
-  }).join('')}</div>`;
+  return list&&list.length ? `<div class="att">${AttView.html(list)}</div>` : '';   // public/attach-view.js
 }
 // Files picked for the next message go up straight away and wait as chips.
 let MSG_ATT=[];
