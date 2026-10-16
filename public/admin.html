@@ -409,6 +409,18 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand)}
 .ios-b a{color:inherit;text-decoration:underline}
 .ios-rcpt{font-size:10.5px;color:#8E8E93;margin:3px 6px 2px;align-self:flex-end;text-align:right}
 .ios-rcpt.in{align-self:flex-start;text-align:left;margin-left:12px}
+/* Photos and files that came with a message: pictures as thumbnails, the rest as chips. */
+.ios-att{display:flex;flex-wrap:wrap;gap:4px;max-width:72%;margin-top:3px}
+.ios-att.in{align-self:flex-start}
+.ios-att.out{align-self:flex-end;justify-content:flex-end}
+.att-img{display:block;max-width:220px;max-height:220px;border-radius:14px;border:1px solid var(--line);object-fit:cover;background:#F2F2F7}
+.att-file{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:14px;background:#F2F2F7;
+  border:1px solid var(--line);color:#1C1C1E;font-size:13px;text-decoration:none;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att-file.bad{color:#D70015;border-color:#FFB3B8;background:#fff}
+.att-pending{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.att-pending:empty{display:none}
+.att-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 6px 4px 10px;border-radius:12px;background:var(--brand-pale);font-size:12.5px}
+.att-chip button{border:0;background:none;cursor:pointer;font-size:14px;padding:0 4px;color:var(--mut)}
 .ios-rcpt .bad{color:#D70015;font-weight:600}
 /* Everything that is not a message — calls, email, notices, payments — sits centered
    between the bubbles as a quiet event line, so the conversation still reads as one. */
@@ -1086,11 +1098,15 @@ a{color:var(--brand);font-weight:600}
               <button class="ctool" onclick="toggleEmoji()" title="Insert emoji">&#128578;</button>
               <button class="ctool" onclick="sendTemplateModal()" title="Insert a saved template">&#128221; Template</button>
               <button class="ctool" onclick="remindModal(msgLoanId)" title="Send a payment reminder">&#128276; Reminder</button>
+              <button class="ctool" onclick="$('mt-file').click()" title="Attach a photo or PDF">&#128206; Attach</button>
+              <input id="mt-file" type="file" multiple accept="image/*,.pdf" class="hidden"
+                onchange="pickAttachments('mt', this, {loan_id: msgLoanId})">
               <span style="flex:1"></span>
               <span class="chint" id="mt-hint">Enter to send · Shift+Enter for a new line</span>
             </div>
             <textarea id="mt-input" rows="3" placeholder="Write a message to your buyer…"
               oninput="growComposer()" onkeydown="composerKey(event)"></textarea>
+            <div id="mt-att" class="att-pending" style="padding:0 10px"></div>
             <div class="cfoot" style="flex-wrap:wrap;gap:10px">
               <label class="note" style="display:flex;align-items:center;gap:5px;cursor:pointer">
                 <input type="checkbox" id="ch-sms"> also text it</label>
@@ -1656,6 +1672,7 @@ async function loadComms(ch){
         <span class="note">${where}${attach}</span>
       </div>
       ${ev.body?`<div style="font-size:13.5px;margin-top:3px;white-space:pre-wrap">${esc(String(ev.body).slice(0,300))}</div>`:''}
+      ${ev.attachments&&ev.attachments.length?`<div class="ios-att in" style="max-width:100%">${attHtml(ev.attachments)}</div>`:''}
       ${ev.summary&&!ev.body?`<div class="note" style="margin-top:3px">${esc(ev.summary)}</div>`:''}
       ${ev.transcript?`<div class="note" style="margin-top:3px">“${esc(String(ev.transcript).slice(0,200))}”</div>`:''}
       ${ev.recording_id?`<audio controls preload="none" style="width:100%;max-width:380px;height:30px;margin-top:5px" src="/api/admin/recordings/${ev.recording_id}/audio"></audio>`:''}
@@ -4704,6 +4721,7 @@ async function contactThread(id, propertyId){
     <div id="ct-thread" class="ios-scroll" style="max-height:380px;margin-bottom:12px">
       ${iosThread(r.messages.map(m=>({kind:'msg', ts:m.created_at, mine:m.direction==='out', sms:true,
         failed:m.status==='failed'||m.status==='not_sent', body:m.body, name:m.direction==='out'?(m.sent_by_name||''):c.name,
+        attachments:m.attachments||[],
         receipt: m.status==='failed' ? `<span class="bad">Not delivered</span>${m.error?' · '+esc(m.error):''}`
           : m.status==='not_sent' ? '<span class="bad">Not sent</span>'
           : [m.direction==='out'?esc(m.sent_by_name||'Sent'):'', m.property_address?esc(m.property_address):''].filter(Boolean).join(' · ')
@@ -4715,18 +4733,27 @@ async function contactThread(id, propertyId){
       </select></div>`:''}
     <div class="field"><label>Message</label>
       <textarea id="ct-body" rows="3" placeholder="Can you swing by and check the back door lock?"></textarea></div>
+    <div id="ct-att" class="att-pending"></div>
+    <input id="ct-file" type="file" multiple accept="image/*,.pdf" class="hidden"
+      onchange="pickAttachments('ct', this, {property_id: $('ct-prop')?(Number($('ct-prop').value)||null):null})">
     <div id="ct-err" class="err hidden"></div>
     <div id="ct-ok" class="okmsg hidden"></div>
-    <button class="primary" onclick="sendContactText(${id})">Send text</button>`);
+    <div class="actions" style="margin:0">
+      <button class="primary" onclick="sendContactText(${id})">Send text</button>
+      <button class="small" onclick="$('ct-file').click()" title="Attach a photo or PDF — it goes as a picture text">📎 Attach photo or file</button>
+    </div>`);
+  PENDING_ATT.ct=[];
   pinThread($('ct-thread'));
 }
 
 async function sendContactText(id){
   const body=$('ct-body').value.trim();
-  if(!body) return;
+  if(!body && !pendingIds('ct').length) return;
   try{
     await api(`/api/admin/contacts/${id}/messages`,{method:'POST',body:JSON.stringify({
-      body, property_id:$('ct-prop')?(Number($('ct-prop').value)||null):null })});
+      body, property_id:$('ct-prop')?(Number($('ct-prop').value)||null):null,
+      attachment_ids: pendingIds('ct') })});
+    PENDING_ATT.ct=[];
     closeModal();
     toast('Text sent.');
     if(currentPropId) loadPropContacts(currentPropId);
@@ -7220,6 +7247,7 @@ function docRow(d,folderShared){
   return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f2f4f7;font-size:13.5px">
     <span style="min-width:0;overflow:hidden;text-overflow:ellipsis">📎 <a href="#" onclick="viewDoc(${d.id},'${esc(d.mime||'')}');return false">${esc(d.title||d.filename)}</a>
       ${d.title?`<span class="note"> — ${esc(d.filename)}</span>`:''}
+      ${d.from_buyer?`<span class="pill amber" title="Uploaded by ${esc(d.from_buyer)}">from buyer</span>`:''}
       ${shareable?(d.visible_to_tenant?'<span class="pill ok">buyer sees this</span>':'<span class="pill gray">admin only</span>'):''}</span>
     <span class="note" style="white-space:nowrap">${fdate((d.effective_date||d.created_at||'').slice(0,10))}
       ${shareable?`<button class="small" onclick="shareDoc(${d.id},${d.visible_to_tenant?0:1})">${d.visible_to_tenant?'Unshare':'Share with buyer'}</button>`:''}
@@ -7488,6 +7516,7 @@ async function openMsgsFor(loanId){
   setTimeout(()=>openThread(loanId, name?`${name} — ${addr}`:addr), 150);
 }
 async function openThread(loanId,title){
+  if(msgLoanId!==loanId){ PENDING_ATT.mt=[]; renderPendingAtt('mt'); }
   msgLoanId=loanId;
   $('msg-threads').classList.add('hidden'); $('msg-thread').classList.remove('hidden');
   $('mt-title').textContent=title||'Conversation';
@@ -7517,6 +7546,59 @@ function iosStamp(ms){
   return `<b>${d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',
     ...(d.getFullYear()!==now.getFullYear()?{year:'numeric'}:{})})}</b> at ${time}`;
 }
+// What came with a message, drawn small. A picture opens full size in a new tab;
+// anything else (a PDF, a contact card) is a chip that opens the file. HEIC is left as a
+// chip because most desktop browsers cannot draw it.
+function attHtml(list){
+  return (list||[]).map(a=>{
+    if(!a.id) return `<span class="att-file bad">⚠️ ${esc(a.filename||'Attachment missing')}</span>`;
+    const href=`/api/documents/${a.id}/view`;
+    if(/^image\/(jpeg|jpg|png|gif|webp|bmp)$/i.test(a.mime||''))
+      return `<a href="${href}" target="_blank" rel="noopener"><img class="att-img" loading="lazy" src="${href}" alt="${esc(a.filename||'Photo')}"></a>`;
+    const icon=/pdf/i.test(a.mime||'')?'📄':/^image\//i.test(a.mime||'')?'🖼️':/^video\//i.test(a.mime||'')?'🎬':'📎';
+    return `<a class="att-file" href="${href}" target="_blank" rel="noopener" title="${esc(a.filename||'')}">${icon} ${esc(a.filename||'File')}</a>`;
+  }).join('');
+}
+
+// ---------- attaching files to an outgoing message ----------
+// Files go up as soon as they are picked, into the document center like any upload,
+// and wait as chips above the Send button. Sending hands their ids to the message;
+// removing a chip deletes the file it just uploaded, so nothing is left behind.
+const PENDING_ATT={};
+async function pickAttachments(key, input, opts){
+  const files=[...(input.files||[])]; input.value='';
+  if(!files.length) return;
+  PENDING_ATT[key]=PENDING_ATT[key]||[];
+  const box=$(key+'-att');
+  for(const f of files){
+    if(PENDING_ATT[key].length>=10){ alert('Up to 10 files per message.'); break; }
+    if(f.size>15*1024*1024){ alert(`${f.name} is over 15 MB.`); continue; }
+    const tmp=document.createElement('span'); tmp.className='att-chip'; tmp.textContent='Uploading '+f.name+'…';
+    if(box) box.appendChild(tmp);
+    try{
+      const d=await api('/api/admin/documents',{method:'POST',body:JSON.stringify({
+        filename:f.name, mime:f.type, data_base64:await fileToB64(f), category:'correspondence',
+        title:'Sent in a message — '+f.name, visible_to_tenant:false,
+        property_id:(opts&&opts.property_id)||null, loan_id:(opts&&opts.loan_id)||null })});
+      PENDING_ATT[key].push({id:d.id, filename:f.name, mime:f.type});
+    }catch(e){ alert(`Could not attach ${f.name}: ${e.message}`); }
+    tmp.remove();
+  }
+  renderPendingAtt(key);
+}
+function renderPendingAtt(key){
+  const box=$(key+'-att'); if(!box) return;
+  box.innerHTML=(PENDING_ATT[key]||[]).map(a=>`<span class="att-chip">${/^image\//.test(a.mime||'')?'🖼️':'📄'} ${esc(a.filename)}
+    <button title="Remove" onclick="dropAttachment('${key}',${a.id})">✕</button></span>`).join('');
+  if(key==='mt') growComposer();
+}
+async function dropAttachment(key, id){
+  PENDING_ATT[key]=(PENDING_ATT[key]||[]).filter(a=>a.id!==id);
+  renderPendingAtt(key);
+  try{ await api('/api/admin/documents/'+id,{method:'DELETE'}); }catch{}
+}
+const pendingIds=(key)=>(PENDING_ATT[key]||[]).map(a=>a.id);
+
 function iosThread(items, opts={}){
   if(!items.length) return `<div class="ios-empty">${opts.empty||'No messages yet.'}</div>`;
   let out='', lastMs=0;
@@ -7533,8 +7615,10 @@ function iosThread(items, opts={}){
     const nextStamp=next&&(tsMs(next.ts)-ms>=60*60000||new Date(tsMs(next.ts)).toDateString()!==new Date(ms).toDateString());
     const endsRun=!next||nextStamp||!same(it,next)||tsMs(next.ts)-ms>5*60000;
     if(startsRun && !it.mine && opts.names && it.name) out+=`<div class="ios-name">${esc(it.name)}</div>`;
-    out+=`<div class="ios-b ${it.mine?'out':'in'}${it.sms?' sms':''}${it.failed?' failed':''}${endsRun?' tail':''}${startsRun&&!stamp?' gap':''}"
+    const hasAtt=it.attachments&&it.attachments.length;
+    if(it.body||!hasAtt) out+=`<div class="ios-b ${it.mine?'out':'in'}${it.sms?' sms':''}${it.failed?' failed':''}${endsRun?' tail':''}${startsRun&&!stamp?' gap':''}"
       title="${esc(new Date(ms).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}))}">${esc(it.body||'')}</div>`;
+    if(hasAtt) out+=`<div class="ios-att ${it.mine?'out':'in'}">${attHtml(it.attachments)}</div>`;
     if(endsRun && it.receipt) out+=`<div class="ios-rcpt ${it.mine?'':'in'}">${it.receipt}</div>`;
   });
   return `<div class="ios">${out}</div>`;
@@ -7549,7 +7633,7 @@ function activityItems(events){
       const failed=ev.status==='failed'||ev.status==='not_sent';
       const via=sms?'Text Message':'In app';
       return {kind:'msg', ts:ev.ts, mine, sms, failed, body:ev.body||ev.summary||'',
-        name: ev.who||'',
+        name: ev.who||'', attachments: ev.attachments||[],
         receipt: failed ? '<span class="bad">Not delivered</span>'
           : mine ? `${esc(ev.who||'You')} · ${via}` : via};
     }
@@ -7594,6 +7678,7 @@ function loanMsgItems(msgs){
     const mine=m.sender_role!=='tenant';
     const via=viaSms?'Text Message':viaEmail?'Email':'In app';
     return {kind:'msg', ts:m.created_at, mine, sms:viaSms, body:(m.subject&&viaEmail?m.subject+'\n\n':'')+(m.body||''), name:m.sender_name,
+      attachments:m.attachments||[],
       receipt: mine ? `${esc(m.sender_name||'You')} · ${via}${deliveryNote(m)}` : (viaSms?'Text Message':'')};
   });
 }
@@ -7620,7 +7705,7 @@ function growComposer(){
   t.style.height=Math.min(t.scrollHeight, 260)+'px';
   const n=t.value.length;
   if($('mt-count')) $('mt-count').textContent = n ? `${n} character${n===1?'':'s'}` : '';
-  if($('mt-send')) $('mt-send').disabled = !t.value.trim();
+  if($('mt-send')) $('mt-send').disabled = !t.value.trim() && !pendingIds('mt').length;
 }
 // Enter sends. Shift+Enter is a new line — the usual arrangement, and the hint says so.
 function composerKey(e){
@@ -7643,7 +7728,7 @@ function deliveryNote(m){
 
 async function sendAdminMsg(){
   const t=$('mt-input');
-  const v=t.value.trim(); if(!v)return;
+  const v=t.value.trim(); if(!v && !pendingIds('mt').length)return;
   const btn=$('mt-send');
   const channels=['app'];
   if($('ch-sms')&&$('ch-sms').checked) channels.push('sms');
@@ -7651,8 +7736,8 @@ async function sendAdminMsg(){
   if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
   try{
     const r=await api(`/api/admin/loans/${msgLoanId}/messages`,{method:'POST',
-      body:JSON.stringify({body:v, channels})});
-    t.value=''; growComposer();
+      body:JSON.stringify({body:v, channels, attachment_ids:pendingIds('mt')})});
+    t.value=''; PENDING_ATT.mt=[]; renderPendingAtt('mt'); growComposer();
     // The message is in the app either way; say plainly if a channel did not make it.
     if(r.failures && r.failures.length){
       alert('Message posted in the app, but:\n\n' + r.failures.join('\n'));

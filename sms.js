@@ -39,12 +39,16 @@ function normalizePhone(raw) {
   return d ? '+' + d : null;
 }
 
-async function sendSms(to, body, company) {
+// mediaUrls turns the text into a picture message (MMS). Twilio fetches each URL itself
+// when it sends, so they must be reachable from the internet without a login — see
+// mediaUrlFor in server.js. Up to 10, and about 5 MB in all; carriers do the rest.
+async function sendSms(to, body, company, mediaUrls) {
   const number = normalizePhone(to);
   if (!number) throw new Error('That phone number does not look valid');
   const c = creds(company);
   if (!c) throw new Error('Texting is not connected yet — add your Twilio details under Settings → Texting');
   const params = new URLSearchParams({ To: number, From: c.from, Body: body });
+  for (const u of (mediaUrls || []).slice(0, 10)) params.append('MediaUrl', u);
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.sid}/Messages.json`, {
     method: 'POST',
     headers: {
@@ -56,6 +60,22 @@ async function sendSms(to, body, company) {
   const json = await res.json();
   if (!res.ok) throw new Error(twilioError(json, res.status));
   return json;
+}
+
+// A photo or file somebody texted in. Twilio hands the webhook a URL per item; newer
+// accounts require the account's own credentials to read it. The URL redirects to
+// Twilio's storage, and fetch drops the Authorization header on that cross-site hop.
+async function fetchMedia(url, company, maxBytes) {
+  const c = creds(company);
+  if (!/^https:\/\/([a-z0-9-]+\.)*twilio\.com\//i.test(String(url || ''))) {
+    throw new Error('Not a Twilio media URL');
+  }
+  const headers = c ? { Authorization: 'Basic ' + Buffer.from(`${c.sid}:${c.token}`).toString('base64') } : {};
+  const res = await fetch(url, { headers, redirect: 'follow' });
+  if (!res.ok) throw new Error(`Twilio media ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (maxBytes && buf.length > maxBytes) throw new Error('Media too large');
+  return { buffer: buf, mime: (res.headers.get('content-type') || '').split(';')[0].trim() };
 }
 
 // The in-app dialer, done as a call bridge: Twilio rings the admin's own phone first,
@@ -202,5 +222,5 @@ function autoReplyTwiml(companyName) {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${esc(body)}</Message></Response>`;
 }
 
-module.exports = { smsEnabled, sendSms, placeCall, voiceToken, normalizePhone, inviteMessage, autoReplyTwiml, creds, verifyCreds,
+module.exports = { smsEnabled, sendSms, fetchMedia, placeCall, voiceToken, normalizePhone, inviteMessage, autoReplyTwiml, creds, verifyCreds,
                    validateWebhook, expectedSignature };

@@ -149,6 +149,18 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--brand)}
 .msg.me{background:var(--brand);color:#fff;margin-left:auto;border-bottom-right-radius:6px}
 .msg.them{background:#fff;border:1px solid var(--line);border-bottom-left-radius:6px}
 .msg .t{font-size:11px;opacity:.72;margin-top:5px}
+/* Photos and files on a message. */
+.msg .att{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.msg .att:first-child{margin-top:0}
+.msg .att img{display:block;max-width:220px;max-height:220px;border-radius:12px;object-fit:cover;background:#eee}
+.msg .att a.file{display:inline-flex;gap:6px;align-items:center;padding:7px 11px;border-radius:12px;font-size:13.5px;
+  background:rgba(255,255,255,.18);color:inherit;text-decoration:none;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msg.them .att a.file{background:var(--brand-pale);color:var(--ink)}
+.att-pending{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}
+.att-pending:empty{display:none}
+.att-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 6px 5px 11px;border-radius:12px;background:var(--brand-pale);font-size:13px}
+.att-chip button{border:0;background:none;font-size:15px;padding:0 4px;color:var(--mut);cursor:pointer}
+.composer button.attach{background:var(--brand-pale);color:var(--brand)}
 .composer{position:sticky;bottom:calc(88px + env(safe-area-inset-bottom));
   background:var(--card);border:2px solid var(--line);border-radius:18px;padding:10px;
   display:flex;gap:9px;align-items:flex-end;box-shadow:0 4px 16px rgba(0,0,0,.07)}
@@ -455,6 +467,7 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
     <!-- ───── DOCS ───── -->
     <section id="tab-docs" class="hidden">
       <p class="note" style="margin-bottom:14px">Your insurance, tax, utility and loan paperwork.</p>
+      <div id="docs-upload"></div>
       <div id="docs-folders"></div>
     </section>
 
@@ -473,7 +486,10 @@ details .body{margin-top:12px;font-size:14.5px;white-space:pre-wrap;color:var(--
     <!-- ───── MESSAGES ───── -->
     <section id="tab-msgs" class="hidden">
       <div id="m-list"></div>
+      <div id="m-att" class="att-pending"></div>
       <div class="composer">
+        <button id="m-attach" class="attach hidden" onclick="$('m-file').click()" aria-label="Attach a photo or PDF" title="Attach a photo or PDF">📎</button>
+        <input id="m-file" type="file" multiple accept="image/*,application/pdf" class="hidden" onchange="pickMsgFiles(this)">
         <textarea id="m-input" rows="1" placeholder="Write a message…"
           oninput="growMsgBox()" onkeydown="msgKey(event)"></textarea>
         <button id="m-send" onclick="sendMsg()" aria-label="Send" disabled>➤</button>
@@ -1007,7 +1023,49 @@ async function markRead(id){
 
 // ---------- docs ----------
 const DICO={loan_docs:'📄',closing_receipts:'🧾',insurance:'🛡️',taxes:'🏛️',utilities:'💡',correspondence:'✉️',misc_shared:'🗂️'};
+// Sending paperwork in — a new insurance declarations page, a tax bill, a photo of a
+// leak. Not offered inside the store apps yet: those builds declare no photo or file
+// access to Apple and Google, so the apps point at the website and texting instead.
+function renderDocsUpload(){
+  const el=$('docs-upload'); if(!el) return;
+  if(!canUpload()){
+    el.innerHTML=`<div class="card"><h2>📤 Send us a document</h2>
+      <p class="note">Text a photo of it to our number, or sign in on the website from a phone or computer to upload it.</p></div>`;
+    return;
+  }
+  el.innerHTML=`<div class="card"><h2>📤 Send us a document</h2>
+    <p class="note" style="margin-bottom:10px">A photo or PDF — your new insurance policy, a tax bill, a picture of something that needs fixing.</p>
+    <div class="field"><label>What is it?</label><select id="du-cat">
+      <option value="insurance">🛡️ Insurance</option><option value="taxes">🏛️ Taxes</option>
+      <option value="utilities">💡 Utilities</option><option value="correspondence">✉️ Something else</option>
+    </select></div>
+    <div class="field"><label>Short description <span class="note">— optional</span></label>
+      <input id="du-title" placeholder="2027 homeowners policy"></div>
+    <input id="du-file" type="file" accept="image/*,application/pdf" class="hidden" onchange="uploadTenantDoc(this)">
+    <button class="btn primary" id="du-btn" onclick="$('du-file').click()">📎 Choose a photo or PDF</button>
+    <p id="du-msg" class="note" style="margin-top:8px"></p></div>`;
+}
+async function uploadTenantDoc(input){
+  const f=input.files&&input.files[0]; input.value='';
+  if(!f) return;
+  const msg=$('du-msg'), btn=$('du-btn');
+  if(f.size>15*1024*1024){ msg.textContent='That file is over 15 MB. Try a smaller photo or scan.'; return; }
+  btn.disabled=true; msg.textContent='Sending '+f.name+'…';
+  try{
+    await api('/api/tenant/documents',{method:'POST',body:JSON.stringify({
+      filename:f.name, mime:f.type, data_base64:await fileToB64(f),
+      category:$('du-cat').value, title:$('du-title').value.trim()||null })});
+    $('du-title').value='';
+    msg.textContent='✓ Sent. Your servicer has been told, and it is in your documents below.';
+    loadDocs();
+  }catch(e){ msg.textContent=e.message||'Could not send that just now — try again in a moment.'; }
+  finally{ btn.disabled=false; }
+}
+function fileToB64(file){ return new Promise((ok,err)=>{ const r=new FileReader(); r.onload=()=>ok(String(r.result).split(',')[1]); r.onerror=err; r.readAsDataURL(file); }); }
+const canUpload=()=>!isNativeApp();
+
 async function loadDocs(){
+  if(!$('du-cat')) renderDocsUpload();
   let folders=[]; try{ folders=await api('/api/tenant/documents'); }catch{}
   $('docs-folders').innerHTML=folders.map(f=>`
     <div class="card"><h2>${DICO[f.category]||'📁'} ${esc(f.label)}</h2>
@@ -1048,15 +1106,54 @@ async function pollMsgs(){
     // (A missing element here once threw and silently blanked the whole thread.)
     const dot=$('nav-dot'); if(dot) dot.classList.toggle('hidden',!unread||tab==='msgs');
     const list=$('m-list'); if(!list) return;
+    const att=$('m-attach'); if(att) att.classList.toggle('hidden', !canUpload());
     list.innerHTML=msgs.length?msgs.map(m=>{
       const when=new Date(m.created_at+'Z').toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
       if(m.body_html) return `${m.body_html}<div class="note" style="margin:-6px 0 14px 4px">${when}
         · <a href="${docLink('/api/tenant/messages/'+m.id+'/pdf','Notice')}" style="color:var(--brand);font-weight:600">⬇️ PDF</a></div>`;
-      return `<div class="msg ${m.sender_role==='tenant'?'me':'them'}">${esc(m.body)}
+      return `<div class="msg ${m.sender_role==='tenant'?'me':'them'}">${esc(m.body||'')}${msgAtt(m.attachments)}
        <div class="t">${m.sender_role==='tenant'?'You':esc(m.sender_name)} · ${when}</div></div>`;
     }).join(''):'<div class="card"><p class="note">No messages yet. Say hello — your servicer sees it right away.</p></div>';
     if(tab==='msgs' && msgStick) settleToBottom();
   }catch{}
+}
+
+// Pictures show in the bubble; anything else is a tap-to-open chip. In the store apps
+// the link goes through the document viewer so the app is never stranded on a file.
+function msgAtt(list){
+  if(!list||!list.length) return '';
+  return `<div class="att">${list.map(a=>{
+    const path='/api/documents/'+a.id+'/view';
+    const link=docLink(path, a.filename);
+    const tgt=isNativeApp()?'':'target="_blank" rel="noopener"';
+    if(/^image\/(jpeg|jpg|png|gif|webp)$/i.test(a.mime||''))
+      return `<a href="${link}" ${tgt}><img loading="lazy" src="${path}" alt="${esc(a.filename||'Photo')}"></a>`;
+    return `<a class="file" href="${link}" ${tgt}>${/pdf/i.test(a.mime||'')?'📄':'📎'} ${esc(a.filename||'File')}</a>`;
+  }).join('')}</div>`;
+}
+// Files picked for the next message go up straight away and wait as chips.
+let MSG_ATT=[];
+async function pickMsgFiles(input){
+  const files=[...(input.files||[])]; input.value='';
+  for(const f of files){
+    if(MSG_ATT.length>=10){ alert('Up to 10 files per message.'); break; }
+    if(f.size>15*1024*1024){ alert(f.name+' is over 15 MB. Try a smaller photo or scan.'); continue; }
+    const box=$('m-att'); const tmp=document.createElement('span');
+    tmp.className='att-chip'; tmp.textContent='Uploading '+f.name+'…'; box.appendChild(tmp);
+    try{
+      const d=await api('/api/tenant/documents',{method:'POST',body:JSON.stringify({
+        filename:f.name, mime:f.type, data_base64:await fileToB64(f), category:'correspondence', for_message:true })});
+      MSG_ATT.push({id:d.id, filename:f.name, mime:f.type});
+    }catch(e){ alert(e.message||('Could not attach '+f.name)); }
+    tmp.remove();
+  }
+  renderMsgAtt();
+}
+function renderMsgAtt(){
+  const box=$('m-att'); if(!box) return;
+  box.innerHTML=MSG_ATT.map(a=>`<span class="att-chip">${/^image\//.test(a.mime||'')?'🖼️':'📄'} ${esc(a.filename)}
+    <button aria-label="Remove" onclick="MSG_ATT=MSG_ATT.filter(x=>x.id!==${a.id});renderMsgAtt()">✕</button></span>`).join('');
+  growMsgBox();
 }
 
 // ---------- thread scrolling ----------
@@ -1091,7 +1188,8 @@ function growMsgBox(){
   const t=$('m-input'); if(!t) return;
   t.style.height='auto';
   t.style.height=Math.min(t.scrollHeight, 180)+'px';
-  if($('m-send')) $('m-send').disabled = !t.value.trim();
+  if($('m-send')) $('m-send').disabled = !t.value.trim() && !MSG_ATT.length;
+  const a=$('m-attach'); if(a) a.classList.toggle('hidden', !canUpload());
 }
 // Enter sends, Shift+Enter starts a new line.
 function msgKey(e){
@@ -1099,11 +1197,11 @@ function msgKey(e){
 }
 async function sendMsg(){
   const t=$('m-input');
-  const v=t.value.trim(); if(!v) return;
+  const v=t.value.trim(); if(!v && !MSG_ATT.length) return;
   try{
-    await api('/api/tenant/messages',{method:'POST',body:JSON.stringify({body:v})});
+    await api('/api/tenant/messages',{method:'POST',body:JSON.stringify({body:v, attachment_ids:MSG_ATT.map(a=>a.id)})});
     // Sending always takes you to the bottom, even if you were reading history.
-    t.value=''; growMsgBox(); msgStick=true; pollMsgs();
+    t.value=''; MSG_ATT=[]; renderMsgAtt(); growMsgBox(); msgStick=true; pollMsgs();
   }catch(e){
     alert('Could not send that just now. Your message is still here — try again in a moment.');
   }

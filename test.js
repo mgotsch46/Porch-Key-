@@ -2162,6 +2162,140 @@ async function main() {
     contact_ids: [], body: 'nobody' }) });
   ok(r.status === 400, 'broadcast needs at least one recipient');
 
+  console.log('— photos and files: texted in, sent out, uploaded by the buyer');
+  {
+    const smsM = require('./sms.js');
+    const dbm = require('./db.js').db;
+    const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4d60000000049454e44ae426082', 'hex');
+    const realFetchMedia = smsM.fetchMedia, realSend = smsM.sendSms;
+    const settle = () => new Promise(res => setTimeout(res, 150));
+    const mediaUrl = 'https://api.twilio.com/2010-04-01/Accounts/AC1/Messages/MM1/Media/ME1';
+    smsM.fetchMedia = async () => ({ buffer: PNG, mime: 'image/png' });
+
+    // A BOG texts a lockout photo with no words.
+    let res = await signedForm('/sms/incoming', { From: '+15135551234', Body: '', NumMedia: '1',
+      MediaUrl0: mediaUrl, MediaContentType0: 'image/png' });
+    ok(res.status === 200, 'a picture text from a vendor is accepted');
+    await settle();
+    r = await req(`/api/admin/contacts/${rayId}/messages`);
+    let last = r.json.messages[r.json.messages.length - 1];
+    ok(last.direction === 'in' && last.attachments.length === 1 && last.attachments[0].id,
+      'a photo with no words still lands in the vendor thread, with the photo on it');
+    const photoId = last.attachments[0].id;
+    let raw = await fetch(`${BASE}/api/documents/${photoId}/view`, { headers: { Cookie: adminCookie } });
+    ok(raw.status === 200 && raw.headers.get('content-type') === 'image/png' &&
+      Buffer.from(await raw.arrayBuffer()).equals(PNG), 'the photo itself is saved and opens');
+    r = await req(`/api/admin/properties/${propId}/documents`);
+    const filed = (r.json.correspondence || { documents: [] }).documents.find(d => d.id === photoId);
+    ok(filed && !filed.visible_to_tenant, 'the vendor photo is filed under the house, staff-only');
+    r = await req(`/api/admin/properties/${propId}/comms`);
+    ok(r.json.events.some(e => (e.attachments || []).some(a => a.id === photoId)), 'the photo shows on the house communication log');
+
+    // A photo Twilio will not hand over is noted, not lost.
+    smsM.fetchMedia = async () => { throw new Error('404'); };
+    await signedForm('/sms/incoming', { From: '+15135551234', Body: 'second try', NumMedia: '1',
+      MediaUrl0: mediaUrl, MediaContentType0: 'image/jpeg' });
+    await settle();
+    r = await req(`/api/admin/contacts/${rayId}/messages`);
+    last = r.json.messages[r.json.messages.length - 1];
+    ok(last.body === 'second try' && last.attachments[0] && last.attachments[0].failed,
+      'a photo that could not be downloaded is still marked on the message');
+    smsM.fetchMedia = async () => ({ buffer: PNG, mime: 'image/png' });
+
+    // Texting on, with a stand-in for Twilio: an unknown number is matched to the
+    // company by the number it was sent to.
+    const coRow = dbm.prepare('SELECT id, twilio_sid, twilio_token, twilio_from FROM companies WHERE id=(SELECT MIN(id) FROM companies)').get();
+    dbm.prepare("UPDATE companies SET twilio_sid=?, twilio_from='+15550009999' WHERE id=?").run('AC' + '0'.repeat(32), coRow.id);
+    // A stranger's photo, then filed against a house — the photo follows.
+    await signedForm('/sms/incoming', { From: '+19995550123', To: '+15550009999', Body: '', NumMedia: '1',
+      MediaUrl0: mediaUrl, MediaContentType0: 'image/png' });
+    await settle();
+    r = await req('/api/admin/comms');
+    const stray = r.json.events.find(e => e.phone === '+19995550123' && e.unmatched);
+    ok(stray && stray.attachments.length === 1, 'a picture from an unknown number is kept, not thrown away');
+    r = await req('/api/admin/comms/attach', { method: 'POST', body: JSON.stringify({ message_id: stray.message_id, property_id: propId }) });
+    const strayDoc = dbm.prepare('SELECT property_id FROM documents WHERE id=?').get(stray.attachments[0].id);
+    ok(r.status === 200 && strayDoc.property_id === propId, 'filing the stray text moves its photo into that house');
+
+    // Staff send a photo out.
+    let sent = null;
+    smsM.sendSms = async (to, body, co, media) => { sent = { to, body, media: media || [] }; return { sid: 'SMtest' }; };
+    const up = async (name, mime, buf, extra = {}) => (await req('/api/admin/documents', { method: 'POST', body: JSON.stringify({
+      filename: name, mime, data_base64: buf.toString('base64'), category: 'correspondence', ...extra }) })).json;
+    const outDoc = await up('lockbox.png', 'image/png', PNG);
+    r = await req(`/api/admin/contacts/${rayId}/messages`, { method: 'POST', body: JSON.stringify({
+      body: 'Code is on the box', property_id: propId, attachment_ids: [outDoc.id] }) });
+    ok(r.status === 200 && r.json.message.attachments.length === 1, 'a text to a vendor can carry a photo');
+    ok(sent && sent.media.length === 1 && /\/m\/\d+\/\d+\/[\w-]+\//.test(sent.media[0]), 'it goes to Twilio as a picture message');
+    const pub = sent.media[0].replace(/^https?:\/\/[^/]+/, BASE);
+    raw = await fetch(pub);
+    ok(raw.status === 200 && Buffer.from(await raw.arrayBuffer()).equals(PNG), 'Twilio can fetch the file without a login');
+    raw = await fetch(pub.replace(/\/m\/(\d+)\/(\d+)\/([\w-]{4})/, '/m/$1/$2/AAAA'));
+    ok(raw.status === 404, 'a tampered media link is refused');
+    raw = await fetch(pub.replace(/\/m\/\d+\//, `/m/${photoId}/`));
+    ok(raw.status === 404, 'a media link cannot be repointed at a different file');
+    r = await req(`/api/admin/contacts/${rayId}/messages`, { method: 'POST', body: JSON.stringify({
+      body: 'x', attachment_ids: [999999] }) });
+    ok(r.status === 404, 'a file that is not yours cannot be attached');
+    const bigDoc = await up('huge.pdf', 'application/pdf', Buffer.alloc(6 * 1024 * 1024, 1));
+    r = await req(`/api/admin/contacts/${rayId}/messages`, { method: 'POST', body: JSON.stringify({
+      body: 'big', attachment_ids: [bigDoc.id] }) });
+    ok(r.status === 400 && /5 MB/.test(r.json.error), 'a text too big for a picture message says so');
+
+    // Buyer side.
+    const tl = (await req('/api/tenant/loan', {}, tbCookie)).json.loan;
+    r = await req('/api/tenant/documents', { method: 'POST', body: JSON.stringify({
+      filename: 'policy.png', mime: 'image/png', data_base64: PNG.toString('base64'), category: 'insurance', title: '2027 policy' }) }, tbCookie);
+    ok(r.status === 200 && r.json.id, 'a buyer can upload a document');
+    const buyerDoc = r.json.id;
+    r = await req('/api/tenant/documents', { method: 'POST', body: JSON.stringify({
+      filename: 'x.html', mime: 'text/html', data_base64: Buffer.from('<script>1</script>').toString('base64') }) }, tbCookie);
+    ok(r.status === 400, 'a buyer cannot upload a web page');
+    r = await req('/api/tenant/documents', { method: 'POST', body: JSON.stringify({
+      filename: 'x.svg', mime: 'image/svg+xml', data_base64: Buffer.from('<svg/>').toString('base64') }) }, tbCookie);
+    ok(r.status === 400, 'a buyer cannot upload an SVG');
+    r = await req('/api/tenant/documents', {}, tbCookie);
+    ok(r.json.find(f => f.category === 'insurance').documents.some(d => d.id === buyerDoc), 'the upload is in the buyer’s own insurance folder');
+    r = await req(`/api/admin/loans/${tl.id}/documents`);
+    ok(r.json.insurance.documents.find(d => d.id === buyerDoc).from_buyer, 'staff see it marked as from the buyer');
+
+    r = await req('/api/tenant/documents', { method: 'POST', body: JSON.stringify({
+      filename: 'leak.png', mime: 'image/png', data_base64: PNG.toString('base64'), for_message: true }) }, tbCookie);
+    const leakId = r.json.id;
+    r = await req('/api/tenant/messages', { method: 'POST', body: JSON.stringify({ body: '', attachment_ids: [leakId] }) }, tbCookie);
+    ok(r.status === 200, 'a buyer can send a photo in a message with no words');
+    r = await req('/api/tenant/messages', { method: 'POST', body: JSON.stringify({ body: 'hi', attachment_ids: [outDoc.id] }) }, tbCookie);
+    ok(r.status === 404, 'a buyer cannot attach a file they did not upload');
+    r = await req(`/api/admin/loans/${tl.id}/messages`);
+    ok(r.json.some(m => m.attachments.some(a => a.id === leakId)), 'staff see the buyer’s photo in the thread');
+
+    const toBuyer = await up('receipt.png', 'image/png', PNG, { loan_id: tl.id });
+    r = await req(`/api/admin/loans/${tl.id}/messages`, { method: 'POST', body: JSON.stringify({
+      body: 'Here is the receipt', channels: ['sms'], attachment_ids: [toBuyer.id] }) });
+    ok(r.status === 200, 'staff can send a buyer a file');
+    r = await req('/api/tenant/messages', {}, tbCookie);
+    ok(r.json.some(m => m.attachments.some(a => a.id === toBuyer.id)), 'the buyer sees the file in their thread');
+    raw = await fetch(`${BASE}/api/documents/${toBuyer.id}/view`, { headers: { Cookie: tbCookie } });
+    ok(raw.status === 200, 'and can open it — sending it shared it');
+    raw = await fetch(`${BASE}/api/documents/${photoId}/view`, { headers: { Cookie: tbCookie } });
+    ok(raw.status === 403, 'a vendor’s photo is still not the buyer’s to open');
+
+    // The buyer texts a photo from their phone.
+    const tbPhone = dbm.prepare('SELECT phone FROM users WHERE id=?').get(tbId).phone;
+    dbm.prepare("UPDATE users SET phone='614-555-0177' WHERE id=?").run(tbId);
+    await signedForm('/sms/incoming', { From: '+16145550177', Body: 'Water heater', NumMedia: '1',
+      MediaUrl0: mediaUrl, MediaContentType0: 'image/png' });
+    await settle();
+    r = await req('/api/tenant/messages', {}, tbCookie);
+    last = r.json[r.json.length - 1];
+    ok(last.body === 'Water heater' && last.attachments.length === 1, 'a photo a buyer texts in shows in their own thread');
+    dbm.prepare('UPDATE users SET phone=? WHERE id=?').run(tbPhone, tbId);
+
+    smsM.fetchMedia = realFetchMedia; smsM.sendSms = realSend;
+    dbm.prepare('UPDATE companies SET twilio_sid=?, twilio_token=?, twilio_from=? WHERE id=?')
+      .run(coRow.twilio_sid, coRow.twilio_token, coRow.twilio_from, coRow.id);
+  }
+
   console.log('— notes');
   r = await req('/api/admin/notes', { method: 'POST', body: JSON.stringify({
     property_id: propId, body: 'Seller left the shed key under the mat.' }) });

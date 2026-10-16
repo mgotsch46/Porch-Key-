@@ -799,6 +799,10 @@ addColumnIfMissing('messages', 'template_id', 'INTEGER');
 // swallowed — "I never got it" is a conversation worth having evidence for.
 addColumnIfMissing('messages', 'channels', 'TEXT');        // csv: app,sms,email
 addColumnIfMissing('messages', 'delivery_json', 'TEXT');   // per-channel result
+// Photos and files that travelled with a message — a picture texted in, or a document
+// sent with a reply. JSON array of {id, filename, mime}; each id is a documents row, so
+// the file lives in the document center like everything else and is authorized the same way.
+addColumnIfMissing('messages', 'attachments', 'TEXT');
 addColumnIfMissing('notices', 'body_html', 'TEXT');
 addColumnIfMissing('properties', 'phase_updated_at', 'TEXT');
 // Where the house was advertised, and on what terms. The link alone is not enough —
@@ -1205,6 +1209,7 @@ CREATE TABLE IF NOT EXISTS contact_messages (
 CREATE INDEX IF NOT EXISTS idx_cmsg_contact ON contact_messages(contact_id, id);
 CREATE INDEX IF NOT EXISTS idx_cmsg_company ON contact_messages(company_id, id);
 `);
+addColumnIfMissing('contact_messages', 'attachments', 'TEXT');   // see messages.attachments
 
 // ---------- the call log ----------
 // Every call leaves a row the moment it happens — placed from the browser, bridged to a
