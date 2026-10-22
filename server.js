@@ -2026,8 +2026,7 @@ app.get('/api/admin/summary', adminOnly, (req, res) => {
     unread_vendor_texts: get(`SELECT COUNT(*) c FROM contact_messages
       WHERE company_id=? AND direction='in' AND read_at IS NULL`, req.companyId).c,
     // Everything inbound this person has not looked at yet, across every house.
-    unread_comms: Object.values(commsUnreadByProperty(req.companyId, req.user.id))
-      .reduce((a, b) => a + b, 0),
+    unread_comms: commsUnread(req.companyId, req.user.id).total,
   });
 });
 
@@ -3092,6 +3091,13 @@ app.get('/api/admin/contacts/:id/messages', adminOnly, (req, res) => {
       WHERE contact_id=? AND property_id=? AND direction='in' AND read_at IS NULL`, c.id, propId);
   } else {
     run("UPDATE contact_messages SET read_at=datetime('now') WHERE contact_id=? AND direction='in' AND read_at IS NULL", c.id);
+  }
+  // Same conversation as the Comms tab's: reading it here clears it there too.
+  const nowMs = `strftime('%Y-%m-%d %H:%M:%f','now')`;
+  const pids = propId ? [propId] : [...new Set(rows.map(r => Number(r.property_id) || 0))];
+  for (const p of pids) {
+    run(`INSERT INTO comms_seen_person (user_id, property_id, person, last_seen_at) VALUES (?,?,?,${nowMs})
+      ON CONFLICT(user_id, property_id, person) DO UPDATE SET last_seen_at=${nowMs}`, req.user.id, p, 'c' + c.id);
   }
   const properties = all(`SELECT pr.id, pr.address FROM property_contacts pc
     JOIN properties pr ON pr.id=pc.property_id
@@ -4435,7 +4441,7 @@ app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
     let totalUnread = 0;
     // Calls and voicemails have no read flag of their own — "new" is anything that
     // landed since this person last opened the house. Same measure the inbox uses.
-    const commsUnread = commsUnreadByProperty(req.companyId, req.user.id);
+    const cu = commsUnread(req.companyId, req.user.id);
     for (const p of props) {
       const loan = get(`SELECT l.id, l.tenant_user_id, l.payment_cents, l.escrow_cents FROM loans l
         WHERE l.property_id=? AND l.status='active' ORDER BY l.id DESC LIMIT 1`, p.id);
@@ -4453,10 +4459,10 @@ app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
         const st = loanEngine.loanStatus(full, all('SELECT * FROM ledger WHERE loan_id=?', loan.id), today());
         owed = st.owed_now_cents; pastDue = !!st.is_past_due;
       }
-      // Two measures of the same inbound items: the read flags (shared by everyone) and
-      // what this person has not seen since they last opened the house. They overlap —
-      // a new buyer text is in both — so adding them showed one message as a "2".
-      const unread = Math.max(unreadBuyer + unreadVendor, commsUnread[p.id] || 0);
+      // Everything new on the house: its buyer plus each person working it. Each
+      // conversation takes the larger of its read flags and its seen mark, never the
+      // sum, so one message never shows as a "2" (see commsUnread).
+      const unread = cu.byProperty[p.id] || 0;
       totalUnread += unread;
       // Everyone reachable on this house besides the buyer: co-buyers, seller
       // contacts, attached vendors — and the PML lenders straight off their loans,
@@ -4479,7 +4485,7 @@ app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
         people,
         unread,
         unread_buyer: unreadBuyer, unread_vendor: unreadVendor,
-        unread_comms: commsUnread[p.id] || 0,
+        unread_comms: unread, unread_buyer_thread: cu.byBuyer[p.id] || 0,
         owed_now_cents: owed, past_due: pastDue,
         last_payment: lastPay || null,
       });
@@ -4502,7 +4508,7 @@ app.get('/api/admin/staff/overview', adminOnly, (req, res, next) => {
     // The Comms tab counts everything inbound this person has not seen, including the
     // unmatched bucket (property 0), which belongs to no house and so to no tile.
     // Same sum the Comms tab's own list adds up, so its badge and the rows beneath it agree.
-    const commsTotal = totalUnread + (commsUnread[0] || 0);
+    const commsTotal = cu.total;
     res.json({ properties: out, vendors, payments,
       total_unread: commsTotal, unread_comms_total: commsTotal });
   } catch (e) { next(e); }
@@ -4659,6 +4665,9 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
     const tenantIds = loans.map(l => l.tenant_user_id).filter(Boolean);
     const inList = (ids) => ids.length ? `(${ids.map(() => '?').join(',')})` : '(NULL)';
     const events = [];
+    // Who each item was with (see personOf). ?who=b keeps only the buyer's conversation,
+    // ?who=c12 only that contact's part of it on this house.
+    const ix = commsPeopleIndex(req.companyId);
 
     // Calls — matched to the property directly, or through any of its loans.
     for (const c of all(`SELECT cl.*, r.id AS recording_id, r.transcript_status
@@ -4667,6 +4676,7 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
         ORDER BY cl.id DESC LIMIT ?`, req.companyId, prop.id, ...loanIds, limit)) {
       events.push({ ts: c.created_at, channel: 'call', direction: c.direction,
         who: c.counterpart_name || c.counterpart_phone || 'unknown',
+        person: personOf(ix, { pid: prop.id, contact_id: c.contact_id, loan_id: c.loan_id, phone: c.counterpart_phone }),
         call_sid: c.call_sid || null, contact_id: c.contact_id || null,
         summary: (c.direction === 'in' ? 'Incoming call' : `Called${c.mode === 'cell' ? ' (from your cell)' : ''}`) +
           (c.status === 'voicemail' ? ' — went to voicemail' : c.status === 'missed' ? ' — not answered' : ''),
@@ -4676,7 +4686,9 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
     // Voicemails land without a call_log match when the caller is unknown — show them too.
     for (const v of all(`SELECT * FROM call_recordings WHERE company_id=? AND kind='voicemail'
         AND loan_id IN ${inList(loanIds)} ORDER BY id DESC LIMIT ?`, req.companyId, ...loanIds, limit)) {
+      const vp = personOf(ix, { pid: prop.id, phone: v.from_number });
       events.push({ ts: v.created_at, channel: 'voicemail', direction: 'in',
+        person: vp[0] === 'n' ? 'b' : vp,
         who: v.from_number || 'unknown', summary: 'Voicemail' + (v.duration_sec ? ` — ${v.duration_sec}s` : ''),
         call_sid: v.call_sid || null, duration_sec: v.duration_sec || null,
         recording_id: v.id, transcript_status: v.transcript_status || null, transcript: v.transcript || null });
@@ -4689,7 +4701,7 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
         const chans = String(m.channels || 'app');
         events.push({ ts: m.created_at, channel: chans.includes('sms') ? 'text' : 'message',
           direction: m.sender_role === 'tenant' ? 'in' : 'out',
-          who: m.sender_name, summary: m.subject || null, party: 'buyer',
+          who: m.sender_name, summary: m.subject || null, party: 'buyer', person: 'b',
           body: String(m.body || '').slice(0, 4000), channels: chans,
           attachments: parseAttachments(m.attachments) });
       }
@@ -4700,6 +4712,7 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
         WHERE cm.company_id=? AND cm.property_id=? ORDER BY cm.id DESC LIMIT ?`, req.companyId, prop.id, limit)) {
       events.push({ ts: t.created_at, channel: 'text', direction: t.direction,
         who: t.contact_name || t.phone, body: String(t.body || '').slice(0, 4000),
+        person: personOf(ix, { pid: prop.id, contact_id: t.contact_id, phone: t.phone }),
         status: t.status, party: 'contact', contact_id: t.contact_id || null,
         attachments: parseAttachments(t.attachments) });
     }
@@ -4708,6 +4721,7 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
         (property_id=? OR loan_id IN ${inList(loanIds)}) ORDER BY id DESC LIMIT ?`,
         req.companyId, prop.id, ...loanIds, limit)) {
       events.push({ ts: e.created_at, channel: 'email', direction: 'out',
+        person: e.contact_id ? 'c' + e.contact_id : 'b',
         who: e.to_address, summary: e.subject || e.kind || 'Email',
         status: e.status === 'failed' ? 'failed' : (e.bounced_at ? 'bounced' : e.status),
         identity: e.identity });
@@ -4718,14 +4732,14 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
           ORDER BY id DESC LIMIT ?`, ...loanIds, limit)) {
         let skipped = false; try { skipped = !!JSON.parse(n.delivery_json || '{}').skipped; } catch {}
         if (skipped) continue;
-        events.push({ ts: n.sent_at || n.created_at, channel: 'notice', direction: 'out',
+        events.push({ ts: n.sent_at || n.created_at, channel: 'notice', direction: 'out', person: 'b',
           who: null, summary: n.subject, stage: n.stage || null,
           served: !!n.served_at, tracking: n.lob_tracking || null });
       }
       // Payments — money is activity too.
       for (const l of all(`SELECT * FROM ledger WHERE loan_id IN ${inList(loanIds)}
           AND type IN ('payment','late_fee') ORDER BY id DESC LIMIT ?`, ...loanIds, limit)) {
-        events.push({ ts: l.created_at || (l.entry_date + ' 00:00:00'), channel: 'payment', direction: 'in',
+        events.push({ ts: l.created_at || (l.entry_date + ' 00:00:00'), channel: 'payment', direction: 'in', person: 'b',
           who: null, summary: l.type === 'late_fee'
             ? `Late fee charged — $${(Math.abs(l.amount_cents) / 100).toFixed(2)}`
             : `Payment received — $${(l.amount_cents / 100).toFixed(2)}${l.method ? ' (' + String(l.method).replace('stripe_', '') + ')' : ''}`,
@@ -4735,11 +4749,24 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
 
     events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
     const want = String(req.query.channel || '');
-    const filtered = want ? events.filter(ev =>
-      want === 'call' ? (ev.channel === 'call' || ev.channel === 'voicemail')
+    const who = String(req.query.who || '');
+    const filtered = events.filter(ev => (!who || ev.person === who) && (!want ||
+      (want === 'call' ? (ev.channel === 'call' || ev.channel === 'voicemail')
       : want === 'text' ? (ev.channel === 'text' || ev.channel === 'message')
-      : ev.channel === want) : events;   // 'notice' and 'payment' filter by their own names
-    res.json({ property_id: prop.id, address: prop.address, events: filtered.slice(0, limit) });
+      : ev.channel === want)));   // 'notice' and 'payment' filter by their own names
+    // Everyone this house has a conversation with, for a person picker.
+    const people = {};
+    for (const ev of events) if (ev.person && ev.person !== 'b' && ev.person !== '*' && !people[ev.person]) {
+      const c = ev.person[0] === 'c' ? ix.contacts[Number(ev.person.slice(1))] : null;
+      people[ev.person] = { person: ev.person, name: c ? c.name : null, role: c ? c.role : 'unnamed',
+        phone: c ? c.phone : '+1' + ev.person.slice(1) };
+    }
+    for (const c of all(`SELECT c.id, c.name, c.role, c.phone FROM property_contacts pc JOIN contacts c ON c.id=pc.contact_id
+        WHERE pc.property_id=? AND c.archived_at IS NULL`, prop.id)) {
+      if (!people['c' + c.id]) people['c' + c.id] = { person: 'c' + c.id, name: c.name, role: c.role, phone: c.phone };
+    }
+    res.json({ property_id: prop.id, address: prop.address, events: filtered.slice(0, limit),
+      people: Object.values(people) });
   } catch (e) { next(e); }
 });
 
@@ -4751,40 +4778,108 @@ app.get('/api/admin/properties/:id/comms', adminOnly, (req, res, next) => {
 //
 // Grouped by house, newest first, with a bucket (property_id 0) for inbound that
 // matched nobody. Unread is per staff member, measured against comms_seen.
-function commsUnreadByProperty(companyId, userId) {
-  const seen = {};
-  for (const s of all('SELECT property_id, last_seen_at FROM comms_seen WHERE user_id=?', userId)) {
-    seen[s.property_id] = s.last_seen_at;
+// ---------- who each call, text and email was with ----------
+// Since October 2026 every person keeps a conversation of their own: the buyer of a
+// house, each BOG, each co-buyer, each lender. A message is filed to a person by a key:
+//   'b'        the buyer on that house (the tenant on its loan)
+//   'c<id>'    a contact card (BOG, co-buyer, lender, seller, vendor)
+//   'n<10 dig>' a number filed to a house that nobody has named yet
+//   '*'        inbound that matched no house and nobody (the "not filed yet" bucket)
+// The key is worked out when the item is read, not stored, so a number that gets a
+// contact card later moves into that person's conversation on its own.
+const bare10 = (n) => String(n || '').replace(/\D/g, '').slice(-10);
+const PERSON_KEY = /^(b|c\d+|n\d{10})$/;
+function commsPeopleIndex(companyId) {
+  const buyer = {}, contactByBare = {}, contacts = {};
+  for (const r of all(`SELECT l.property_id AS pid, u.phone, u.email, u.name FROM loans l
+      JOIN users u ON u.id=l.tenant_user_id
+      WHERE l.company_id=? AND l.property_id IS NOT NULL ORDER BY l.id`, companyId)) {
+    buyer[r.pid] = { bare: bare10(r.phone), email: String(r.email || '').toLowerCase(), name: r.name };
   }
-  const counts = {};
-  const bump = (pid, n) => { if (n) counts[pid] = (counts[pid] || 0) + n; };
-  // Timestamps on messages come from SQLite's datetime('now'), which truncates to the
-  // second: a text stamped 10:00:05 actually arrived somewhere in that whole second.
-  // The seen mark is written with milliseconds, so compare against the END of the
-  // item's second. A text that landed at 10:00:05.9 is still counted after an inbox
-  // opened at 10:00:05.1 — nothing is lost to a sub-second race — and everything
-  // clears the moment the inbox is opened in any later second.
-  const ms = (s) => { const t = Date.parse(String(s || '').replace(' ', 'T') + 'Z'); return Number.isNaN(t) ? 0 : t; };
-  const since = (pid) => (pid in seen ? ms(seen[pid]) : 0);
-  const isNew = (ts, pid) => ms(ts) + 1000 > since(pid);
-
-  // Inbound calls, by the property they were matched to (0 when they matched none).
-  for (const r of all(`SELECT COALESCE(cl.property_id, l.property_id, 0) AS pid, cl.created_at
-      FROM call_log cl LEFT JOIN loans l ON l.id=cl.loan_id
+  for (const c of all(`SELECT id, name, role, phone FROM contacts WHERE company_id=? ORDER BY archived_at IS NOT NULL, id`, companyId)) {
+    contacts[c.id] = c;
+    const b = bare10(c.phone);
+    if (b.length === 10 && !contactByBare[b]) contactByBare[b] = c;
+  }
+  return { buyer, contactByBare, contacts };
+}
+function personOf(ix, { pid, contact_id, loan_id, phone }) {
+  if (contact_id) return 'c' + contact_id;
+  if (loan_id) return 'b';
+  const b = bare10(phone);
+  if (b.length === 10 && pid && ix.buyer[pid] && ix.buyer[pid].bare === b) return 'b';
+  if (b.length === 10 && ix.contactByBare[b]) return 'c' + ix.contactByBare[b].id;
+  if (!pid) return '*';
+  return b.length === 10 ? 'n' + b : 'b';
+}
+// Everything that came IN, with the house and the person it belongs to. Read flags
+// travel along: a buyer message or a text can also be cleared by reading it elsewhere.
+function commsInbound(companyId, ix) {
+  const items = [];
+  for (const r of all(`SELECT COALESCE(cl.property_id, l.property_id, 0) AS pid, cl.contact_id, cl.loan_id,
+      cl.counterpart_phone AS phone, cl.created_at FROM call_log cl LEFT JOIN loans l ON l.id=cl.loan_id
       WHERE cl.company_id=? AND cl.direction='in'`, companyId)) {
-    if (isNew(r.created_at, r.pid)) bump(r.pid, 1);
+    items.push({ pid: Number(r.pid) || 0, person: personOf(ix, r), ts: r.created_at, flagged: false });
   }
-  // Inbound texts: vendor threads, unmatched strangers, and buyer texts on a loan.
-  for (const r of all(`SELECT COALESCE(property_id, 0) AS pid, created_at FROM contact_messages
-      WHERE company_id=? AND direction='in'`, companyId)) {
-    if (isNew(r.created_at, r.pid)) bump(r.pid, 1);
+  for (const r of all(`SELECT COALESCE(property_id, 0) AS pid, contact_id, phone, created_at, read_at
+      FROM contact_messages WHERE company_id=? AND direction='in'`, companyId)) {
+    const pid = Number(r.pid) || 0;
+    items.push({ pid, person: personOf(ix, { pid, contact_id: r.contact_id, phone: r.phone }),
+      ts: r.created_at, flagged: !r.read_at });
   }
-  for (const r of all(`SELECT l.property_id AS pid, m.created_at FROM messages m
+  for (const r of all(`SELECT COALESCE(l.property_id, 0) AS pid, m.created_at, m.read_by_admin FROM messages m
       JOIN loans l ON l.id=m.loan_id JOIN users u ON u.id=m.sender_user_id
       WHERE l.company_id=? AND u.role='tenant'`, companyId)) {
-    if (isNew(r.created_at, r.pid)) bump(r.pid, 1);
+    items.push({ pid: Number(r.pid) || 0, person: 'b', ts: r.created_at, flagged: !r.read_by_admin });
   }
-  return counts;
+  return items;
+}
+
+// Unread, per staff member, per person per house. Two measures of the same items, as
+// before: the read flags (shared by everyone) and what this person has not seen since
+// they last opened that conversation. They overlap, so each cell takes the larger,
+// never the sum.
+//
+// Timestamps on messages come from SQLite's datetime('now'), which truncates to the
+// second: a text stamped 10:00:05 actually arrived somewhere in that whole second. The
+// seen mark is written with milliseconds, so compare against the END of the item's
+// second. Nothing is lost to a sub-second race, and everything clears the moment the
+// conversation is opened in any later second.
+function commsUnread(companyId, userId, ix = commsPeopleIndex(companyId)) {
+  const ms = (s) => { const t = Date.parse(String(s || '').replace(' ', 'T') + 'Z'); return Number.isNaN(t) ? 0 : t; };
+  const house = {}, pers = {};
+  for (const s of all('SELECT property_id, last_seen_at FROM comms_seen WHERE user_id=?', userId)) house[s.property_id] = ms(s.last_seen_at);
+  for (const s of all('SELECT property_id, person, last_seen_at FROM comms_seen_person WHERE user_id=?', userId)) {
+    pers[s.property_id + '|' + s.person] = ms(s.last_seen_at);
+  }
+  // No per-person mark yet falls back to the old per-house one.
+  const seenOf = (pid, person) => { const k = pid + '|' + person; return k in pers ? pers[k] : (house[pid] || 0); };
+  const cells = {};
+  for (const it of commsInbound(companyId, ix)) {
+    const k = it.pid + '|' + it.person;
+    const c = cells[k] || (cells[k] = { pid: it.pid, person: it.person, flagged: 0, fresh: 0 });
+    if (it.flagged) c.flagged++;
+    if (ms(it.ts) + 1000 > seenOf(it.pid, it.person)) c.fresh++;
+  }
+  const out = { cell: {}, byProperty: {}, byBuyer: {}, byPerson: {}, byPersonHouse: {}, unknown: 0, total: 0 };
+  for (const [k, c] of Object.entries(cells)) {
+    // The unfiled bucket has no read flags anyone can clear from a phone; seen only.
+    const n = c.person === '*' ? c.fresh : Math.max(c.flagged, c.fresh);
+    if (!n) continue;
+    out.cell[k] = n; out.total += n;
+    if (c.person === '*') { out.unknown += n; continue; }
+    if (c.pid) out.byProperty[c.pid] = (out.byProperty[c.pid] || 0) + n;
+    if (c.person === 'b') { out.byBuyer[c.pid] = (out.byBuyer[c.pid] || 0) + n; continue; }
+    out.byPerson[c.person] = (out.byPerson[c.person] || 0) + n;
+    (out.byPersonHouse[c.person] || (out.byPersonHouse[c.person] = {}))[c.pid] = n;
+  }
+  return out;
+}
+// The older per-house shape, still what the desktop reads: every house's unread, with
+// the unfiled bucket under 0.
+function commsUnreadByProperty(companyId, userId) {
+  const u = commsUnread(companyId, userId);
+  return { ...u.byProperty, ...(u.unknown ? { 0: u.unknown } : {}) };
 }
 
 app.get('/api/admin/comms', adminOnly, (req, res, next) => {
@@ -4859,85 +4954,115 @@ app.get('/api/admin/comms', adminOnly, (req, res, next) => {
     });
   } catch (e) { next(e); }
 });
-// The phone's Comms tab: one row per house, the way a phone lists conversations —
-// the latest thing that happened on it, when, and how much of it is new. Plus the
-// numbers that matched no house at all, grouped by number, because filing one item
-// from a number files every item from it.
-//
-// Latest-per-house is picked in SQL (a window per source) rather than by pulling every
-// call and text the company has ever had into memory to throw most of it away.
+// The phone's Comms tab: one row per PERSON, the way a phone lists conversations.
+// Buyers on one side, BOGs and crew on the other, and never mixed in one thread:
+// Casey's lockbox text does not sit in the middle of the buyer's payment questions.
+//   threads  one row per house for its buyer (keyed by house, as before)
+//   people   one row per contact or unnamed number, across every house they work
+//   unknown  numbers that matched nobody, grouped by number
+function commsRecentEvents(co, ix) {
+  const ev = [];
+  for (const r of all(`SELECT COALESCE(cl.property_id, l.property_id, 0) AS pid, cl.id, cl.created_at AS ts,
+      cl.direction, cl.status, cl.duration_sec, cl.contact_id, cl.loan_id, cl.counterpart_phone AS phone,
+      COALESCE(cl.counterpart_name, cl.counterpart_phone) AS who
+    FROM call_log cl LEFT JOIN loans l ON l.id=cl.loan_id WHERE cl.company_id=? ORDER BY cl.id DESC LIMIT 4000`, co)) {
+    const pid = Number(r.pid) || 0;
+    const what = r.status === 'voicemail' ? 'Voicemail' : r.status === 'missed' ? 'Missed call'
+      : r.direction === 'in' ? 'Incoming call' : 'Outgoing call';
+    ev.push({ pid, person: personOf(ix, { pid, contact_id: r.contact_id, loan_id: r.loan_id, phone: r.phone }), phone: r.phone,
+      ts: r.ts, channel: r.status === 'voicemail' ? 'voicemail' : 'call', direction: r.direction, who: r.who || null,
+      preview: what + (r.duration_sec ? ` · ${Math.floor(r.duration_sec / 60)}:${String(r.duration_sec % 60).padStart(2, '0')}` : '') });
+  }
+  for (const r of all(`SELECT COALESCE(cm.property_id, 0) AS pid, cm.contact_id, cm.phone, cm.created_at AS ts,
+      cm.direction, cm.body, cm.attachments, COALESCE(c.name, cm.phone) AS who
+    FROM contact_messages cm LEFT JOIN contacts c ON c.id=cm.contact_id
+    WHERE cm.company_id=? ORDER BY cm.id DESC LIMIT 4000`, co)) {
+    const pid = Number(r.pid) || 0;
+    ev.push({ pid, person: personOf(ix, { pid, contact_id: r.contact_id, phone: r.phone }), phone: r.phone,
+      ts: r.ts, channel: 'text', direction: r.direction, who: r.who || null, party: 'contact',
+      preview: String(r.body || (r.attachments ? '📎 Attachment' : '')).replace(/\s+/g, ' ').slice(0, 140) });
+  }
+  for (const r of all(`SELECT l.property_id AS pid, m.created_at AS ts, m.body, m.subject, m.attachments,
+      m.channels, u.name AS who, u.role
+    FROM messages m JOIN loans l ON l.id=m.loan_id JOIN users u ON u.id=m.sender_user_id
+    WHERE l.company_id=? AND l.property_id IS NOT NULL ORDER BY m.id DESC LIMIT 4000`, co)) {
+    ev.push({ pid: r.pid, person: 'b', ts: r.ts, channel: String(r.channels || '').includes('sms') ? 'text' : 'message',
+      direction: r.role === 'tenant' ? 'in' : 'out', who: r.who || null, party: 'buyer',
+      preview: String(r.body || r.subject || (r.attachments ? '📎 Attachment' : '')).replace(/\s+/g, ' ').slice(0, 140) });
+  }
+  for (const r of all(`SELECT COALESCE(e.property_id, l.property_id, 0) AS pid, e.contact_id,
+      e.created_at AS ts, e.subject, e.kind, e.to_address AS who
+    FROM email_log e LEFT JOIN loans l ON l.id=e.loan_id WHERE e.company_id=? ORDER BY e.id DESC LIMIT 4000`, co)) {
+    ev.push({ pid: Number(r.pid) || 0, person: r.contact_id ? 'c' + r.contact_id : (Number(r.pid) ? 'b' : '*'),
+      ts: r.ts, channel: 'email', direction: 'out', who: r.who || null,
+      preview: String(r.subject || r.kind || 'Email').slice(0, 140) });
+  }
+  return ev;
+}
+const newer = (a, b) => !a || String(b.ts) > String(a.ts);
+const strip = ({ pid, person, phone, ...e }) => e;
+
 app.get('/api/admin/comms/threads', adminOnly, (req, res, next) => {
   try {
     const co = req.companyId;
-    const latest = {};
-    const offer = (row, ev) => {
-      const pid = Number(row.pid) || 0;
-      if (!latest[pid] || String(ev.ts) > String(latest[pid].ts)) latest[pid] = ev;
-    };
-    const firstPer = (inner, ...args) => all(`SELECT * FROM (SELECT x.*,
-        ROW_NUMBER() OVER (PARTITION BY x.pid ORDER BY x.ts DESC, x.rid DESC) AS rn
-      FROM (${inner}) x) WHERE rn=1`, ...args);
-
-    for (const r of firstPer(`SELECT COALESCE(cl.property_id, l.property_id, 0) AS pid, cl.id AS rid,
-        cl.created_at AS ts, cl.direction, cl.status, cl.duration_sec,
-        COALESCE(cl.counterpart_name, cl.counterpart_phone) AS who
-      FROM call_log cl LEFT JOIN loans l ON l.id=cl.loan_id WHERE cl.company_id=?`, co)) {
-      const what = r.status === 'voicemail' ? 'Voicemail'
-        : r.status === 'missed' ? 'Missed call'
-        : r.direction === 'in' ? 'Incoming call' : 'Outgoing call';
-      offer(r, { ts: r.ts, channel: r.status === 'voicemail' ? 'voicemail' : 'call', direction: r.direction,
-        who: r.who || null, preview: what + (r.duration_sec ? ` · ${Math.floor(r.duration_sec / 60)}:${String(r.duration_sec % 60).padStart(2, '0')}` : '') });
-    }
-    for (const r of firstPer(`SELECT COALESCE(cm.property_id, 0) AS pid, cm.id AS rid, cm.created_at AS ts,
-        cm.direction, cm.body, cm.attachments, COALESCE(c.name, cm.phone) AS who
-      FROM contact_messages cm LEFT JOIN contacts c ON c.id=cm.contact_id WHERE cm.company_id=?`, co)) {
-      offer(r, { ts: r.ts, channel: 'text', direction: r.direction, who: r.who || null, party: 'contact',
-        preview: String(r.body || (r.attachments ? '📎 Attachment' : '')).replace(/\s+/g, ' ').slice(0, 140) });
-    }
-    for (const r of firstPer(`SELECT l.property_id AS pid, m.id AS rid, m.created_at AS ts, m.body, m.subject, m.attachments,
-        m.channels, u.name AS who, u.role
-      FROM messages m JOIN loans l ON l.id=m.loan_id JOIN users u ON u.id=m.sender_user_id
-      WHERE l.company_id=? AND l.property_id IS NOT NULL`, co)) {
-      offer(r, { ts: r.ts, channel: String(r.channels || '').includes('sms') ? 'text' : 'message',
-        direction: r.role === 'tenant' ? 'in' : 'out', who: r.who || null, party: 'buyer',
-        preview: String(r.body || r.subject || (r.attachments ? '📎 Attachment' : '')).replace(/\s+/g, ' ').slice(0, 140) });
-    }
-    for (const r of firstPer(`SELECT COALESCE(e.property_id, l.property_id, 0) AS pid, e.id AS rid,
-        e.created_at AS ts, e.subject, e.kind, e.to_address AS who
-      FROM email_log e LEFT JOIN loans l ON l.id=e.loan_id WHERE e.company_id=?`, co)) {
-      offer(r, { ts: r.ts, channel: 'email', direction: 'out', who: r.who || null,
-        preview: String(r.subject || r.kind || 'Email').slice(0, 140) });
-    }
-
-    const unread = commsUnreadByProperty(co, req.user.id);
+    const ix = commsPeopleIndex(co);
+    const u = commsUnread(co, req.user.id, ix);
+    const events = commsRecentEvents(co, ix);
     const props = all(`SELECT p.id, p.address, p.city, p.state, p.zip FROM properties p
       WHERE p.company_id=? AND p.archived_at IS NULL`, co);
+    const propById = {}; for (const p of props) propById[p.id] = p;
+
+    const lastBuyer = {}, lastPerson = {}, personHouses = {};
+    for (const e of events) {
+      if (e.person === 'b') { if (newer(lastBuyer[e.pid], e)) lastBuyer[e.pid] = e; continue; }
+      if (e.person === '*') continue;
+      if (newer(lastPerson[e.person], e)) lastPerson[e.person] = e;
+      if (e.pid) (personHouses[e.person] || (personHouses[e.person] = new Set())).add(e.pid);
+    }
+
+    // One buyer conversation per house.
     const threads = props.map(p => {
       const loan = get(`SELECT l.id, l.tenant_user_id FROM loans l WHERE l.property_id=? AND l.status='active'
         ORDER BY l.id DESC LIMIT 1`, p.id);
-      const buyer = loan && loan.tenant_user_id ? get('SELECT id, name FROM users WHERE id=?', loan.tenant_user_id) : null;
-      // Same measure the house tile uses, so the two badges always agree.
-      const flagged = (loan ? get(`SELECT COUNT(*) c FROM messages m JOIN users u ON u.id=m.sender_user_id
-          WHERE m.loan_id=? AND u.role='tenant' AND m.read_by_admin=0`, loan.id).c : 0)
-        + get(`SELECT COUNT(*) c FROM contact_messages WHERE company_id=? AND property_id=?
-          AND direction='in' AND read_at IS NULL`, co, p.id).c;
-      return { property_id: p.id, address: p.address, city: p.city, state: p.state, zip: p.zip,
+      const buyer = loan && loan.tenant_user_id ? get('SELECT id, name, phone FROM users WHERE id=?', loan.tenant_user_id) : null;
+      return { kind: 'buyer', person: 'b', property_id: p.id, address: p.address, city: p.city, state: p.state, zip: p.zip,
         loan_id: loan ? loan.id : null, buyer_name: buyer ? buyer.name : null,
-        last: latest[p.id] || null, unread: Math.max(flagged, unread[p.id] || 0) };
+        last: lastBuyer[p.id] ? strip(lastBuyer[p.id]) : null, unread: u.byBuyer[p.id] || 0 };
     });
-    // Busiest first; houses with no history at all sink to the bottom, by address.
-    threads.sort((a, b) => {
+    const byTime = (a, b) => {
       if (a.last && b.last) return String(b.last.ts).localeCompare(String(a.last.ts));
       if (a.last || b.last) return a.last ? -1 : 1;
-      return String(a.address).localeCompare(String(b.address));
-    });
+      return String(a.address || a.name).localeCompare(String(b.address || b.name));
+    };
+    threads.sort(byTime);
+
+    // One conversation per person: everyone attached to a house, plus anyone with history.
+    const keys = new Set(Object.keys(lastPerson));
+    for (const r of all(`SELECT pc.contact_id, pc.property_id FROM property_contacts pc
+        JOIN contacts c ON c.id=pc.contact_id JOIN properties p ON p.id=pc.property_id
+        WHERE c.company_id=? AND c.archived_at IS NULL AND p.archived_at IS NULL AND c.phone IS NOT NULL`, co)) {
+      const k = 'c' + r.contact_id; keys.add(k);
+      (personHouses[k] || (personHouses[k] = new Set())).add(r.property_id);
+    }
+    const people = [];
+    for (const k of keys) {
+      const c = k[0] === 'c' ? ix.contacts[Number(k.slice(1))] : null;
+      if (k[0] === 'c' && (!c || c.archived_at)) continue;
+      const houses = [...(personHouses[k] || [])].filter(id => propById[id])
+        .map(id => ({ id, address: propById[id].address }));
+      const phone = c ? c.phone : '+1' + k.slice(1);
+      people.push({ kind: 'person', person: k, contact_id: c ? c.id : null,
+        name: c ? c.name : null, role: c ? c.role : 'unnamed', phone,
+        side: c && c.role === 'cobuyer' ? 'buyers' : 'crew',
+        houses, last: lastPerson[k] ? strip(lastPerson[k]) : null, unread: u.byPerson[k] || 0 });
+    }
+    people.sort(byTime);
 
     // Numbers that matched nobody: inbound calls and texts with no house, no contact,
     // no loan. Grouped by the bare ten digits so a caller who also texted is one row.
-    const bareOf = (n) => String(n || '').replace(/\D/g, '').slice(-10);
     const groups = {};
     const add = (phone, item) => {
-      const k = bareOf(phone) || 'unknown';
+      const k = bare10(phone) || 'unknown';
       const g = groups[k] || (groups[k] = { phone: phone || null, items: [], count: 0 });
       g.count++;
       if (g.items.length < 5) g.items.push(item);
@@ -4960,35 +5085,155 @@ app.get('/api/admin/comms/threads', adminOnly, (req, res, next) => {
         recording_id: c.vm_id || c.recording_id || null, transcript: c.vm_transcript || null } })),
       ...orphanTexts.map(t => ({ ts: t.created_at, phone: t.phone, item: {
         ts: t.created_at, channel: 'text', message_id: t.id, body: String(t.body || '').slice(0, 500) } })),
-    ].sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
+    ].filter(m => personOf(ix, { pid: 0, phone: m.phone }) === '*')
+      .sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
     for (const m of merged) add(m.phone, m.item);
     const unknown = Object.values(groups).map(g => ({
       phone: g.phone, count: g.count, last_ts: g.items[0] ? g.items[0].ts : null, items: g.items,
     }));
 
-    res.json({ threads, unknown,
-      unknown_unread: unread[0] || 0,
-      unread_total: threads.reduce((t, x) => t + x.unread, 0) + (unread[0] || 0) });
+    const sum = (rows) => rows.reduce((t, x) => t + x.unread, 0);
+    const buyerPeople = people.filter(p => p.side === 'buyers'), crew = people.filter(p => p.side === 'crew');
+    res.json({ threads, people, unknown,
+      unknown_unread: u.unknown,
+      unread_buyers: sum(threads) + sum(buyerPeople),
+      unread_crew: sum(crew),
+      unread_total: u.total });
   } catch (e) { next(e); }
 });
 
-// Opening a thread marks it seen for this person only.
+// One person's conversation: every text, call, voicemail and email with them, across
+// every house they work, each item tagged with its house. ?property_id narrows it to one.
+app.get('/api/admin/comms/person', adminOnly, (req, res, next) => {
+  try {
+    const co = req.companyId;
+    const key = String(req.query.who || '');
+    if (!/^(c\d+|n\d{10})$/.test(key)) return res.status(400).json({ error: 'Say whose conversation' });
+    const ix = commsPeopleIndex(co);
+    const c = key[0] === 'c' ? get('SELECT * FROM contacts WHERE id=? AND company_id=?', Number(key.slice(1)), co) : null;
+    if (key[0] === 'c' && !c) return res.status(404).json({ error: 'Not found' });
+    const bare = c ? bare10(c.phone) : key.slice(1);
+    const onlyPid = req.query.property_id && ownedProperty(req, req.query.property_id) ? Number(req.query.property_id) : null;
+    const limit = Math.min(500, Number(req.query.limit) || 300);
+    const digitsOf = (col) => `SUBSTR(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col},'-',''),' ',''),'(',''),')',''),'+',''),'.',''),-10)`;
+    const addr = {};
+    for (const p of all('SELECT id, address FROM properties WHERE company_id=?', co)) addr[p.id] = p.address;
+    const mine = (pid, row) => personOf(ix, { pid, ...row }) === key;
+    const events = [];
+
+    for (const t of all(`SELECT cm.*, u.name AS sent_by_name FROM contact_messages cm
+        LEFT JOIN users u ON u.id=cm.sent_by
+        WHERE cm.company_id=? AND (cm.contact_id=? OR (cm.contact_id IS NULL AND ? <> '' AND ${digitsOf('cm.phone')}=?))
+        ORDER BY cm.id DESC LIMIT ?`, co, c ? c.id : -1, bare, bare, limit)) {
+      const pid = Number(t.property_id) || 0;
+      if (!mine(pid, { contact_id: t.contact_id, phone: t.phone })) continue;
+      events.push({ ts: t.created_at, channel: 'text', direction: t.direction, person: key,
+        who: c ? c.name : t.phone, property_id: pid || null, address: addr[pid] || null,
+        body: String(t.body || '').slice(0, 4000), status: t.status, party: 'contact',
+        contact_id: t.contact_id || null, sent_by: t.sent_by_name || null,
+        attachments: parseAttachments(t.attachments) });
+    }
+    for (const cl of all(`SELECT cl.*, l.property_id AS loan_pid, r.id AS recording_id, r.transcript_status
+        FROM call_log cl LEFT JOIN loans l ON l.id=cl.loan_id
+        LEFT JOIN call_recordings r ON r.call_sid=cl.call_sid AND r.kind='call'
+        WHERE cl.company_id=? AND (cl.contact_id=? OR (cl.contact_id IS NULL AND ? <> '' AND ${digitsOf('cl.counterpart_phone')}=?))
+        ORDER BY cl.id DESC LIMIT ?`, co, c ? c.id : -1, bare, bare, limit)) {
+      const pid = Number(cl.property_id || cl.loan_pid) || 0;
+      if (!mine(pid, { contact_id: cl.contact_id, loan_id: cl.loan_id, phone: cl.counterpart_phone })) continue;
+      events.push({ ts: cl.created_at, channel: 'call', direction: cl.direction, person: key,
+        who: c ? c.name : cl.counterpart_phone, property_id: pid || null, address: addr[pid] || null,
+        call_sid: cl.call_sid || null, contact_id: cl.contact_id || null,
+        duration_sec: cl.duration_sec, status: cl.status,
+        recording_id: cl.recording_id || null, transcript_status: cl.transcript_status || null });
+    }
+    if (bare) {
+      for (const v of all(`SELECT * FROM call_recordings WHERE company_id=? AND kind='voicemail'
+          AND ${digitsOf('from_number')}=? ORDER BY id DESC LIMIT ?`, co, bare, limit)) {
+        events.push({ ts: v.created_at, channel: 'voicemail', direction: 'in', person: key,
+          who: c ? c.name : v.from_number, call_sid: v.call_sid || null, duration_sec: v.duration_sec || null,
+          recording_id: v.id, transcript_status: v.transcript_status || null, transcript: v.transcript || null });
+      }
+    }
+    if (c) {
+      for (const e of all(`SELECT * FROM email_log WHERE company_id=? AND contact_id=? ORDER BY id DESC LIMIT ?`, co, c.id, limit)) {
+        const pid = Number(e.property_id) || 0;
+        events.push({ ts: e.created_at, channel: 'email', direction: 'out', person: key,
+          who: e.to_address, property_id: pid || null, address: addr[pid] || null,
+          summary: e.subject || e.kind || 'Email',
+          status: e.status === 'failed' ? 'failed' : (e.bounced_at ? 'bounced' : e.status) });
+      }
+    }
+    events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+    const shown = onlyPid ? events.filter(e => !e.property_id || e.property_id === onlyPid) : events;
+
+    // The houses this person works: attached on a contact card, or talked about.
+    const houseIds = new Set(events.map(e => e.property_id).filter(Boolean));
+    if (c) for (const r of all('SELECT property_id FROM property_contacts WHERE contact_id=?', c.id)) houseIds.add(r.property_id);
+    const houses = all(`SELECT id, address, city, state FROM properties WHERE company_id=? AND archived_at IS NULL`, co)
+      .filter(p => houseIds.has(p.id));
+    res.json({
+      person: { person: key, contact_id: c ? c.id : null, name: c ? c.name : null, role: c ? c.role : 'unnamed',
+        phone: c ? c.phone : '+1' + bare, email: c ? c.email : null, houses },
+      property_id: onlyPid, events: shown.slice(0, limit),
+      sms_enabled: sms.smsEnabled(myCompany(req)),
+    });
+  } catch (e) { next(e); }
+});
+
+// Opening a conversation marks it seen for this staff member only.
+//   { property_id }                 the whole house, everyone on it (the desktop's view)
+//   { property_id, person: 'b' }    that house's buyer only
+//   { person: 'c12' | 'n…' }        that person, on every house (or just property_id)
+//   { property_id: 0 }              the not-filed-yet bucket
 app.post('/api/admin/comms/seen', adminOnly, (req, res) => {
+  const co = req.companyId;
   const pid = Number(req.body && req.body.property_id) || 0;
-  // Millisecond precision on purpose — see commsUnreadByProperty.
+  const person = String((req.body && req.body.person) || '');
+  // Millisecond precision on purpose — see commsUnread.
   const nowMs = `strftime('%Y-%m-%d %H:%M:%f','now')`;
-  run(`INSERT INTO comms_seen (user_id, property_id, last_seen_at) VALUES (?,?,${nowMs})
-       ON CONFLICT(user_id, property_id) DO UPDATE SET last_seen_at=${nowMs}`, req.user.id, pid);
-  // The house tile's badge also counts the buyer's in-app messages and vendor texts,
-  // and those carry their own read flags. Setting only the seen mark left them unread
-  // until someone opened the same thread on the desktop, so on the phone the red dot
-  // on a house could never be cleared. Reading a house's thread now reads all of it.
-  if (pid && ownedProperty(req, pid)) {
-    run(`UPDATE messages SET read_by_admin=1 WHERE read_by_admin=0
-         AND loan_id IN (SELECT id FROM loans WHERE property_id=? AND company_id=?)
-         AND sender_user_id IN (SELECT id FROM users WHERE role='tenant')`, pid, req.companyId);
-    run(`UPDATE contact_messages SET read_at=datetime('now')
-         WHERE company_id=? AND property_id=? AND direction='in' AND read_at IS NULL`, req.companyId, pid);
+  const markPerson = (p, who) => run(`INSERT INTO comms_seen_person (user_id, property_id, person, last_seen_at)
+    VALUES (?,?,?,${nowMs}) ON CONFLICT(user_id, property_id, person) DO UPDATE SET last_seen_at=${nowMs}`,
+    req.user.id, p, who);
+  const readBuyer = (p) => run(`UPDATE messages SET read_by_admin=1 WHERE read_by_admin=0
+      AND loan_id IN (SELECT id FROM loans WHERE property_id=? AND company_id=?)
+      AND sender_user_id IN (SELECT id FROM users WHERE role='tenant')`, p, co);
+
+  if (!person) {
+    run(`INSERT INTO comms_seen (user_id, property_id, last_seen_at) VALUES (?,?,${nowMs})
+         ON CONFLICT(user_id, property_id) DO UPDATE SET last_seen_at=${nowMs}`, req.user.id, pid);
+    if (pid && ownedProperty(req, pid)) {
+      // Everyone on the house: the per-person marks move too, or they would outrank it.
+      run(`UPDATE comms_seen_person SET last_seen_at=${nowMs} WHERE user_id=? AND property_id=?`, req.user.id, pid);
+      readBuyer(pid);
+      run(`UPDATE contact_messages SET read_at=datetime('now')
+           WHERE company_id=? AND property_id=? AND direction='in' AND read_at IS NULL`, co, pid);
+    }
+    return res.json({ ok: true });
+  }
+  if (!PERSON_KEY.test(person)) return res.status(400).json({ error: 'Unknown conversation' });
+
+  if (person === 'b') {
+    if (!pid || !ownedProperty(req, pid)) return res.status(404).json({ error: 'Not found' });
+    markPerson(pid, 'b');
+    readBuyer(pid);
+    return res.json({ ok: true });
+  }
+
+  const ix = commsPeopleIndex(co);
+  if (person[0] === 'c' && !get('SELECT id FROM contacts WHERE id=? AND company_id=?', Number(person.slice(1)), co)) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const only = pid && ownedProperty(req, pid) ? pid : null;
+  const houses = new Set(commsInbound(co, ix).filter(i => i.person === person).map(i => i.pid));
+  if (only) houses.add(only);
+  for (const h of houses) if (!only || h === only) markPerson(h, person);
+  // Their texts carry read flags of their own; clear the ones this conversation shows.
+  for (const t of all(`SELECT id, property_id, contact_id, phone FROM contact_messages
+      WHERE company_id=? AND direction='in' AND read_at IS NULL`, co)) {
+    const tp = Number(t.property_id) || 0;
+    if (only && tp !== only) continue;
+    if (personOf(ix, { pid: tp, contact_id: t.contact_id, phone: t.phone }) !== person) continue;
+    run(`UPDATE contact_messages SET read_at=datetime('now') WHERE id=?`, t.id);
   }
   res.json({ ok: true });
 });

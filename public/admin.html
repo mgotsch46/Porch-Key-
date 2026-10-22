@@ -1953,8 +1953,9 @@ async function openProp(id){
     </div>
   </div>
   <div class="card"><h2>📡 Communications</h2>
-    <p class="note" style="margin-bottom:10px">Every call, text, and email that touched this house — buyer and
-      vendors alike, as one conversation with the newest at the bottom.</p>
+    <p class="note" style="margin-bottom:10px">One conversation per person: the buyer's, and each BOG,
+      co-buyer and lender's on their own. Newest at the bottom.</p>
+    <div class="segbtn" id="cx-who" style="margin-bottom:8px"></div>
     <div class="segbtn" style="margin-bottom:12px">
       <button id="cx-all" class="active" onclick="loadPropComms('')">All</button>
       <button id="cx-call" onclick="loadPropComms('call')">📞 Calls</button>
@@ -1971,19 +1972,30 @@ async function openProp(id){
   <div id="prop-books"></div>`;
   loadPropContacts(p.id);
   loadPropTasks(p.id);
+  PROP_WHO='b'; PROP_CH='';
   loadPropComms('');
   loadNotes({elId:'prop-notes', property_id:p.id});
   loadPropBooks(p.id);
 }
 
-// The unified timeline. One request, one list; the filter chips just re-ask.
+// One person's conversation on this house at a time: the buyer ('b') by default, or
+// one contact ('c12') or unnamed number ('n…'). The chips just re-ask.
+let PROP_WHO='b', PROP_CH='';
+function propWho(who){ PROP_WHO=who; loadPropComms(PROP_CH); }
 async function loadPropComms(channel){
   const el=$('prop-comms'); if(!el||!currentPropId) return;
+  PROP_CH=channel||'';
   for(const id of ['cx-all','cx-call','cx-text','cx-email'])
     if($(id)) $(id).classList.toggle('active', id==='cx-'+(channel||'all'));
   let d;
-  try{ d=await api(`/api/admin/properties/${currentPropId}/comms${channel?'?channel='+channel:''}`); }
+  const q=new URLSearchParams({who:PROP_WHO}); if(channel) q.set('channel',channel);
+  try{ d=await api(`/api/admin/properties/${currentPropId}/comms?${q}`); }
   catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
+  const ROLE={cobuyer:'co-buyer',bog:'BOG',unnamed:'no name yet'};
+  const whoEl=$('cx-who');
+  if(whoEl) whoEl.innerHTML=[{person:'b',label:'🏠 Buyer'},...(d.people||[]).map(x=>({person:x.person,
+      label:`${x.name||x.phone} · ${ROLE[x.role]||x.role||'contact'}`}))]
+    .map(x=>`<button class="${x.person===PROP_WHO?'active':''}" onclick="propWho('${x.person}')">${esc(x.label)}</button>`).join('');
   el.innerHTML=`<div class="ios-scroll" id="prop-comms-scroll">${iosThread(activityItems(d.events),
     {names:true, empty:'Nothing yet — calls, texts, and emails will appear here as they happen.'})}</div>`;
   pinThread($('prop-comms-scroll'));

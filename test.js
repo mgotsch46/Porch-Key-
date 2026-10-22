@@ -811,43 +811,94 @@ async function main() {
     ok(!r.json.properties.some(x => x.id === pB), 'and an archived house leaves the staff overview');
   }
 
-  console.log('— Comms on the phone: one conversation per house, and its badge clears');
+  console.log('— Comms: one conversation per person, buyers and crew never mixed');
   {
     const dbc = require('./db.js');
     const loanRow = dbc.get('SELECT property_id, tenant_user_id FROM loans WHERE id=?', loanId);
     const pid = loanRow.property_id;
     const co = dbc.get('SELECT company_id FROM properties WHERE id=?', pid).company_id;
+    // Start from a quiet house, so the counts below are exact. (Seen marks count anything
+    // in their own second as new, so let the earlier tests' last second pass first.)
+    await new Promise(res => setTimeout(res, 1100));
+    await req('/api/admin/comms/seen', { method: 'POST', body: JSON.stringify({ property_id: pid }) });
+    await new Promise(res => setTimeout(res, 1100));
     // A new buyer message and a crew text on this house, both unread.
     dbc.run(`INSERT INTO messages (loan_id, sender_user_id, body, read_by_admin, channels)
       VALUES (?,?,?,0,'app')`, loanId, loanRow.tenant_user_id, 'Is my payment due Friday?');
     const crew = dbc.run(`INSERT INTO contacts (company_id, name, role, phone) VALUES (?,?,?,?)`,
       co, 'Casey Crew', 'bog', '555-313-2121').lastInsertRowid;
+    dbc.run('INSERT INTO property_contacts (property_id, contact_id) VALUES (?,?)', pid, crew);
     dbc.run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
       VALUES (?,?,?,'in',?,?,'received')`, co, crew, pid, '+15553132121', 'Lockbox code changed');
+    // An inbound call from Casey's number, filed to the house but not to her card.
+    dbc.run(`INSERT INTO call_log (company_id, direction, mode, counterpart_phone, property_id, status)
+      VALUES (?,'in','inbound','+15553132121',?,'completed')`, co, pid);
+    // A second co-buyer, on the buyer side of the list.
+    const cob = dbc.run(`INSERT INTO contacts (company_id, name, role, phone) VALUES (?,?,?,?)`,
+      co, 'Robin Cobuyer', 'cobuyer', '555-313-4545').lastInsertRowid;
+    dbc.run('INSERT INTO property_contacts (property_id, contact_id) VALUES (?,?)', pid, cob);
 
     r = await req('/api/admin/comms/threads');
-    ok(r.status === 200 && Array.isArray(r.json.threads) && Array.isArray(r.json.unknown), 'the conversation list answers');
+    ok(r.status === 200 && Array.isArray(r.json.threads) && Array.isArray(r.json.people) && Array.isArray(r.json.unknown),
+      'the conversation list answers with buyers, people and unknown numbers');
     const row = r.json.threads.find(t => t.property_id === pid);
-    ok(row && row.last && row.last.ts, 'each house carries its latest activity');
-    ok(row.unread >= 2, 'and counts what is new on it');
-    ok(r.json.threads[0].last, 'busiest houses come first');
+    ok(row && row.last && row.last.ts, 'each house\'s buyer carries their latest activity');
+    ok(row.unread === 1, 'the buyer row counts only the buyer\'s new message');
+    ok(row.last.party === 'buyer', 'and its preview is the buyer\'s, not the crew\'s');
+    const cRow = r.json.people.find(x => x.person === 'c' + crew);
+    ok(cRow && cRow.side === 'crew' && cRow.unread === 2, 'the BOG is a row of her own, with her text and her call');
+    ok(cRow.houses.some(h => h.id === pid), 'and says which house she works');
+    const bRow = r.json.people.find(x => x.person === 'c' + cob);
+    ok(bRow && bRow.side === 'buyers', 'a co-buyer sits on the buyer side, in a row of their own');
+    ok(r.json.unread_crew >= 2 && r.json.unread_buyers >= 1, 'each side reports its own unread');
     ok((await req('/api/admin/comms/threads', {}, tbCookie)).status !== 200, 'a buyer cannot read the conversation list');
 
-    // The tile and the list agree, and one message is not counted twice.
+    // The buyer's conversation holds nothing of Casey's, and Casey's nothing of the buyer's.
+    r = await req(`/api/admin/properties/${pid}/comms?limit=300&who=b`);
+    ok(r.json.events.some(e => e.party === 'buyer') && !r.json.events.some(e => e.person !== 'b'),
+      'the buyer conversation is the buyer\'s alone');
+    ok(r.json.people.some(x => x.person === 'c' + crew), 'and the house lists who else it talks to');
+    r = await req(`/api/admin/comms/person?who=c${crew}`);
+    ok(r.status === 200 && r.json.person.name === 'Casey Crew', 'a person\'s conversation opens');
+    ok(r.json.events.length === 2 && r.json.events.every(e => e.person === 'c' + crew),
+      'and holds her text and the call from her number, nothing else');
+    ok(r.json.events.every(e => e.address), 'each item says which house it was about');
+    ok((await req('/api/admin/comms/person?who=x1')).status === 400, 'a nonsense person is refused');
+    ok((await req(`/api/admin/comms/person?who=c${crew}`, {}, tbCookie)).status !== 200, 'a buyer cannot read a crew conversation');
+
+    // The house tile is the sum of its conversations.
     let ov = (await req('/api/admin/staff/overview')).json;
     const tile = ov.properties.find(p => p.id === pid);
-    ok(tile.unread === row.unread, 'the house tile and the conversation row show the same number');
-    ok(tile.unread < tile.unread_buyer + tile.unread_vendor + tile.unread_comms, 'a new message is no longer counted twice');
+    ok(tile.unread === 3, 'the house tile counts the buyer and the BOG together');
+    ok(tile.unread_buyer_thread === 1, 'and knows how much of it is the buyer\'s');
 
-    // Opening the conversation on the phone clears every part of the badge. (Seen marks
-    // compare against the end of an item's second, so open it in a later second.)
+    // Reading the buyer's conversation clears the buyer's badge and not Casey's.
     await new Promise(res => setTimeout(res, 1100));
-    r = await req('/api/admin/comms/seen', { method: 'POST', body: JSON.stringify({ property_id: pid }) });
-    ok(r.status === 200, 'the conversation is marked read');
+    r = await req('/api/admin/comms/seen', { method: 'POST', body: JSON.stringify({ property_id: pid, person: 'b' }) });
+    ok(r.status === 200, 'the buyer conversation is marked read');
+    r = await req('/api/admin/comms/threads');
+    ok(r.json.threads.find(t => t.property_id === pid).unread === 0, 'the buyer row is cleared');
+    ok(r.json.people.find(x => x.person === 'c' + crew).unread === 2, 'but the BOG\'s badge stays until her conversation is read');
+    ok(dbc.get('SELECT read_at FROM contact_messages WHERE contact_id=?', crew).read_at === null, 'her text is still unread');
+
+    r = await req('/api/admin/comms/seen', { method: 'POST', body: JSON.stringify({ person: 'c' + crew }) });
+    ok(r.status === 200, 'her conversation is marked read');
     ov = (await req('/api/admin/staff/overview')).json;
     const after = ov.properties.find(p => p.id === pid);
     ok(after.unread === 0, 'and the red dot on the house is gone');
-    ok(after.unread_buyer === 0 && after.unread_vendor === 0, 'buyer messages and crew texts on it are read too');
+    ok(after.unread_buyer === 0 && after.unread_vendor === 0, 'buyer messages and crew texts on it are read');
+    ok((await req('/api/admin/comms/seen', { method: 'POST', body: JSON.stringify({ person: 'zz' }) })).status === 400,
+      'a nonsense conversation cannot be marked');
+
+    // The desktop's whole-house mark still clears everyone on the house.
+    dbc.run(`INSERT INTO contact_messages (company_id, contact_id, property_id, direction, phone, body, status)
+      VALUES (?,?,?,'in',?,?,'received')`, co, crew, pid, '+15553132121', 'Back door sticks');
+    await new Promise(res => setTimeout(res, 1100));
+    await req('/api/admin/comms/seen', { method: 'POST', body: JSON.stringify({ property_id: pid }) });
+    ov = (await req('/api/admin/staff/overview')).json;
+    ok(ov.properties.find(p => p.id === pid).unread === 0, 'opening the whole house on the desktop clears every conversation on it');
+    // Leave the house's contact list as the later tests expect to find it.
+    dbc.run('DELETE FROM property_contacts WHERE contact_id IN (?,?)', crew, cob);
 
     // Unknown numbers group by number; filing one text files its siblings.
     for (const body of ['Hi, is the house on Elm still available?', 'Following up on Elm']) {
@@ -872,12 +923,14 @@ async function main() {
 
     // The per-house feed says who each text was with.
     r = await req(`/api/admin/properties/${pid}/comms?limit=300`);
-    ok(r.json.events.some(e => e.party === 'contact' && e.contact_id === crew), 'crew texts carry who they were with');
-    ok(r.json.events.some(e => e.party === 'buyer'), 'buyer messages are marked as the buyer\'s');
+    ok(r.json.events.some(e => e.party === 'contact' && e.contact_id === crew && e.person === 'c' + crew), 'crew texts carry who they were with');
+    ok(r.json.events.some(e => e.party === 'buyer' && e.person === 'b'), 'buyer messages are marked as the buyer\'s');
 
     // The phone app itself has the new screens.
     const html = await (await fetch(BASE + '/staff')).text();
     ok(/id="tab-thread"/.test(html) && /id="tab-unknown"/.test(html), 'the staff app has the conversation and unfiled screens');
+    ok(/id="cf-buyers"/.test(html) && /id="cf-crew"/.test(html) && /function openPerson/.test(html),
+      'and the Comms tab splits buyers from BOGs and crew, one conversation per person');
     ok(!/class="pill amber"/.test(html), 'and the old unstyled inbox rows are gone');
   }
 

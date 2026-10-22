@@ -1299,6 +1299,19 @@ CREATE TABLE IF NOT EXISTS comms_seen (
   last_seen_at TEXT NOT NULL,
   PRIMARY KEY (user_id, property_id)
 );
+
+-- Seen marks per person, Oct 2026. Comms split into one conversation per person: the
+-- buyer of a house is person 'b', a contact is 'c<id>', a number filed to a house with
+-- no name is 'n<ten digits>'. Reading Casey's texts must not clear the buyer's badge, so
+-- each person on each house keeps its own mark. A missing row falls back to the old
+-- per-house mark in comms_seen, so the switch does not light up every old message.
+CREATE TABLE IF NOT EXISTS comms_seen_person (
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  property_id INTEGER NOT NULL,
+  person TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, property_id, person)
+);
 `);
 
 // A request to close an account that cannot close itself. Company owners hold the loan

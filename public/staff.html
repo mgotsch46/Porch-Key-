@@ -222,6 +222,7 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
 .tochip .to{color:var(--mut)}
 .tochip b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tochip svg{width:14px;height:14px;color:var(--mut);flex:none}
+.tochev{display:inline-flex}
 .mseg{display:flex;background:#EEF3E8;border-radius:10px;padding:2px;flex:none}
 .mseg button{font-size:12.5px;padding:5px 11px;border-radius:8px;background:none;color:var(--mut);font-weight:600}
 .mseg button.active{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(22,34,13,.14)}
@@ -233,6 +234,9 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
   align-items:center;justify-content:center;flex:none}
 .sendbtn svg{width:18px;height:18px}
 .cnote{font-size:12.5px;color:var(--mut);text-align:center;padding:8px 0 2px}
+.cnote .small{font-size:12.5px;padding:4px 10px;margin-left:4px;border-radius:8px;background:var(--brand);color:#fff;font-weight:700}
+.tochip:disabled{opacity:1;color:inherit;cursor:default}
+.convo .list{margin:0 -14px}
 
 /* bottom sheet */
 .sheet-bg{position:fixed;inset:0;background:rgba(22,34,13,.38);z-index:20}
@@ -350,15 +354,15 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
       <button id="p-msg" onclick="openThread(CUR.id,{mode:'app',from:'prop'})"><i data-ico="app"></i>In-app</button>
       <button id="p-email" onclick="openThread(CUR.id,{mode:'email',from:'prop'})"><i data-ico="mail"></i>Email</button>
     </div>
-    <div class="card click convo" onclick="openThread(CUR.id,{from:'prop'})">
-      <div class="ch"><h2>Conversation</h2><span id="p-unread" class="cnt hidden"></span></div>
-      <div id="p-last" class="last"><span class="note">Loading…</span></div>
-      <div class="more"><span>Open the conversation</span><i data-ico="chevR"></i></div>
+    <div class="card convo">
+      <div class="ch"><h2>Conversations</h2><span id="p-unread" class="cnt hidden"></span></div>
+      <p class="note" style="margin:-2px 0 4px">One conversation per person. The buyer's never mixes with the crew's.</p>
+      <div id="p-convos"><p class="note">Loading…</p></div>
     </div>
     <div class="card">
       <h2>👥 People on this house</h2>
-      <p class="note" style="margin-bottom:6px">Co-buyers, sellers, lenders and crew. Texts to them file
-        into this house's conversation.</p>
+      <p class="note" style="margin-bottom:6px">Co-buyers, sellers, lenders and crew. Each one has a
+        conversation of their own.</p>
       <div id="p-people"><p class="note">Loading…</p></div>
     </div>
     <div class="card">
@@ -392,17 +396,18 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
     <div class="signout"><a onclick="openAccount()">Account &amp; privacy</a><span class="dot">·</span><a onclick="logout()">Sign out</a></div>
   </section>
 
-  <!-- COMMS: one conversation per house, newest first -->
+  <!-- COMMS: one conversation per person. Buyers on one side, BOGs and crew on the other. -->
   <section id="tab-comms" class="hidden">
     <div class="top">
       <h1>Comms</h1>
       <button class="iconbtn" onclick="toggleKeypad()" aria-label="Open the keypad"><i data-ico="keypad"></i></button>
     </div>
     <div class="searchbar"><i data-ico="search"></i>
-      <input id="cm-q" type="search" placeholder="Search houses or buyers" autocomplete="off" oninput="renderThreads()">
+      <input id="cm-q" type="search" placeholder="Search people or houses" autocomplete="off" oninput="renderThreads()">
     </div>
     <div class="seg2">
-      <button id="cf-all" class="active" onclick="setThreadFilter('all')">All houses</button>
+      <button id="cf-buyers" class="active" onclick="setThreadFilter('buyers')">Buyers</button>
+      <button id="cf-crew" onclick="setThreadFilter('crew')">BOGs &amp; crew</button>
       <button id="cf-unread" onclick="setThreadFilter('unread')">Unread</button>
     </div>
     <div id="cm-unknown"></div>
@@ -410,7 +415,7 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
     <div class="signout"><a onclick="openAccount()">Account &amp; privacy</a><span class="dot">·</span><a onclick="logout()">Sign out</a></div>
   </section>
 
-  <!-- ONE HOUSE'S CONVERSATION: buyer, crew, calls, email, notices, in one thread -->
+  <!-- ONE PERSON'S CONVERSATION: a house's buyer, or one BOG / co-buyer / lender -->
   <section id="tab-thread" class="hidden">
     <header class="thead">
       <button class="backbtn" onclick="threadBack()"><i data-ico="chevL"></i><span id="t-back">Comms</span></button>
@@ -418,20 +423,20 @@ body.in-thread .toast{bottom:calc(122px + env(safe-area-inset-bottom))}
         <div class="avatar" id="t-av"></div>
         <div class="thtxt"><div class="th1" id="t-title"></div><div class="th2" id="t-sub"></div></div>
         <button class="iconbtn" id="t-call" onclick="threadCall()" aria-label="Call"><i data-ico="phone"></i></button>
-        <button class="iconbtn" onclick="openProp(TH.pid)" aria-label="House details"><i data-ico="house"></i></button>
+        <button class="iconbtn" id="t-house" onclick="threadHouse()" aria-label="House details"><i data-ico="house"></i></button>
       </div>
       <div class="fchips" id="t-chips">
         <button data-f="" class="active" onclick="threadFilter('')">Everything</button>
         <button data-f="text" onclick="threadFilter('text')">Texts</button>
         <button data-f="call" onclick="threadFilter('call')">Calls</button>
         <button data-f="email" onclick="threadFilter('email')">Email</button>
-        <button data-f="notice" onclick="threadFilter('notice')">Notices</button>
+        <button data-f="notice" id="t-fnotice" onclick="threadFilter('notice')">Notices</button>
       </div>
     </header>
     <div id="t-body" class="tbody"></div>
     <div class="composer2" id="t-comp">
       <div class="crow">
-        <button class="tochip" id="t-tochip" onclick="openRecipients()"><span class="to">To</span><b id="t-to"></b><i data-ico="chevD"></i></button>
+        <button class="tochip" id="t-tochip" onclick="openAbout()"><span class="to" id="t-tolbl">To</span><b id="t-to"></b><span id="t-tochev" class="tochev"><i data-ico="chevD"></i></span></button>
         <div class="mseg" id="t-modes">
           <button data-m="sms" onclick="setMode('sms')">Text</button>
           <button data-m="app" onclick="setMode('app')">In-app</button>
@@ -726,8 +731,10 @@ function chanIcon(ch,status){
   return {voicemail:ICON.vm,text:ICON.msg,message:ICON.app,email:ICON.mail,notice:ICON.doc,payment:ICON.money}[ch]||ICON.msg;
 }
 
-// ---------- the conversation list: one row per house ----------
-let THREADS=null, TFILTER='all';
+// ---------- the conversation list: one row per person ----------
+// Buyers on one side (each house's buyer, and co-buyers), BOGs and crew on the other.
+// Every row is one person, and opening it shows only what passed between us and them.
+let THREADS=null, TFILTER='buyers';
 async function loadThreadList(){
   try{ THREADS=await api('/api/admin/comms/threads'); }
   catch(e){ if(!THREADS) $('cm-list').innerHTML=`<div class="list"><div class="empty">${esc(e.message)}</div></div>`; return; }
@@ -738,37 +745,58 @@ async function loadThreadList(){
 }
 function setThreadFilter(f){
   TFILTER=f;
-  $('cf-all').classList.toggle('active',f==='all');
-  $('cf-unread').classList.toggle('active',f==='unread');
+  for(const k of ['buyers','crew','unread']) $('cf-'+k).classList.toggle('active',f===k);
   renderThreads();
 }
 function previewOf(last){
   if(!last) return '';
-  const who=last.who?String(last.who).split(/\s+/)[0]:'';
   if(last.channel==='call'||last.channel==='voicemail') return last.preview;
   if(last.channel==='email') return 'Email: '+last.preview;
   if(last.direction==='out') return 'You: '+last.preview;
-  return (last.party==='contact'&&who?who+': ':'')+last.preview;
+  return last.preview;
+}
+// Contacts get their own tint, so a BOG keeps one colour across every house they work.
+const personTint=(r)=>r.kind==='person'?1000+Number(r.contact_id||String(r.person).slice(-4)):r.property_id;
+function personName(r){ return r.name||fmtPhone(r.phone); }
+function personSub(r){
+  const role=r.role==='unnamed'?'No name yet':roleLabel(r.role);
+  const hs=(r.houses||[]).map(h=>h.address);
+  return [role,hs.length>2?hs.slice(0,2).join(' · ')+` +${hs.length-2}`:hs.join(' · ')].filter(Boolean).join(' · ');
 }
 function threadRow(t){
-  const last=t.last;
-  const sub=[t.buyer_name,[t.city,t.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ');
-  return `<div class="trow ${t.unread?'unread':''} ${last?'':'quiet'}" onclick="openThread(${t.property_id})">
-    ${avatarHtml(t.property_id,t.buyer_name)}
+  const last=t.last, person=t.kind==='person';
+  const title=person?personName(t):(t.buyer_name||t.address);
+  const sub=person?personSub(t)
+    :[t.buyer_name?t.address:'',[t.city,t.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ');
+  const open=person?`openPerson('${t.person}')`:`openThread(${t.property_id})`;
+  return `<div class="trow ${t.unread?'unread':''} ${last?'':'quiet'}" onclick="${open}">
+    ${avatarHtml(personTint(t),person?t.name:t.buyer_name)}
     <div class="tmain">
-      <div class="tl1"><span class="taddr">${esc(t.address)}</span><span class="ttime">${last?esc(relTime(last.ts)):''}</span></div>
-      <div class="tl2">${esc(sub||'No buyer on this house')}</div>
+      <div class="tl1"><span class="taddr">${esc(title)}</span><span class="ttime">${last?esc(relTime(last.ts)):''}</span></div>
+      <div class="tl2">${esc(sub)}</div>
       <div class="tl3">${last?chanIcon(last.channel,last.preview&&/^Missed/.test(last.preview)?'missed':''):''}
         <span class="pv">${last?esc(previewOf(last)):'No messages yet'}</span>
         ${t.unread?`<span class="cnt">${t.unread>99?'99+':t.unread}</span>`:''}</div>
     </div>
   </div>`;
 }
+function commsRows(side){
+  if(!THREADS) return [];
+  // A house with no buyer has no buyer conversation to show.
+  const buyers=THREADS.threads.filter(t=>t.buyer_name||t.last);
+  const people=THREADS.people||[];
+  const rows=side==='buyers'?[...buyers,...people.filter(p=>p.side==='buyers')]
+    :side==='crew'?people.filter(p=>p.side==='crew')
+    :[...buyers,...people].filter(t=>t.unread);
+  return rows.sort((a,b)=>a.last&&b.last?String(b.last.ts).localeCompare(String(a.last.ts))
+    :a.last||b.last?(a.last?-1:1):String(a.buyer_name||a.name||a.address||'').localeCompare(String(b.buyer_name||b.name||b.address||'')));
+}
 function renderThreads(){
   if(!THREADS) return;
   const q=($('cm-q').value||'').trim().toLowerCase();
-  const nUnread=THREADS.threads.filter(t=>t.unread).length;
-  $('cf-unread').textContent=nUnread?`Unread (${nUnread})`:'Unread';
+  const cnt=(n,lbl)=>n?`${lbl} (${n>99?'99+':n})`:lbl;
+  $('cf-buyers').textContent=cnt(THREADS.unread_buyers,'Buyers');
+  $('cf-crew').innerHTML=esc(cnt(THREADS.unread_crew,'BOGs & crew'));
   // Numbers nobody recognises get one tidy row at the top instead of a card each.
   const un=THREADS.unknown||[];
   $('cm-unknown').innerHTML=un.length&&!q?`<button class="alertrow" onclick="go('unknown')">
@@ -778,75 +806,138 @@ function renderThreads(){
       ${THREADS.unknown_unread?`<span class="cnt" style="background:var(--amber)">${THREADS.unknown_unread}</span>`:''}
       ${ICON.chevR.replace('<svg','<svg class="chev"')}
     </button>`:'';
-  let rows=THREADS.threads;
-  if(q) rows=rows.filter(t=>[t.address,t.city,t.state,t.zip,t.buyer_name].join(' ').toLowerCase().includes(q));
-  if(TFILTER==='unread') rows=rows.filter(t=>t.unread);
+  let rows=commsRows(TFILTER);
+  if(q) rows=rows.filter(t=>[t.address,t.city,t.state,t.zip,t.buyer_name,t.name,t.phone,t.role,
+    ...(t.houses||[]).map(h=>h.address)].join(' ').toLowerCase().includes(q));
   const active=rows.filter(t=>t.last), quiet=rows.filter(t=>!t.last);
   if(!rows.length){
-    $('cm-list').innerHTML=`<div class="list"><div class="empty">${q?'No house matches that search.'
-      :TFILTER==='unread'?'You’re all caught up.':'No houses yet.'}</div></div>`;
+    $('cm-list').innerHTML=`<div class="list"><div class="empty">${q?'Nobody matches that search.'
+      :TFILTER==='unread'?'You’re all caught up.':TFILTER==='crew'?'No BOGs or crew attached to a house yet.':'No buyers yet.'}</div></div>`;
     return;
   }
   $('cm-list').innerHTML=(active.length?`<div class="list">${active.map(threadRow).join('')}</div>`:'')
     +(quiet.length?`<div class="sechead">No conversation yet</div><div class="list">${quiet.map(threadRow).join('')}</div>`:'');
 }
 
-// ---------- one house's conversation ----------
-let TH=null;   // { pid, prop, filter, mode, to, from, events }
+// ---------- one conversation: a house's buyer, or one person ----------
+// TH = { kind:'buyer'|'person', pid, prop, person, who, about, filter, mode, from, events }
+//   buyer   pid is the house; everything with its buyer, plus notices and payments
+//   person  who is the person; every house they work, each item tagged with its house.
+//           about is the house the next text is about.
+let TH=null;
 const MODE_OK={
   sms:p=>!!(p.loan_id&&p.buyer&&p.buyer.phone),
   app:p=>!!p.loan_id,
   email:p=>!!(p.loan_id&&p.buyer&&p.buyer.email),
 };
+function threadReset(){
+  if(T_ATT.length){ T_ATT=[]; renderStaffAtt(); }
+  go('thread');
+  document.querySelectorAll('#t-chips button').forEach(b=>b.classList.toggle('active',b.dataset.f===''));
+  $('t-body').innerHTML='<div class="empty">Loading…</div>';
+}
+function backLabel(from){ return from==='prop'?'House':from==='bog'?'BOG':'Comms'; }
 async function openThread(pid,opts={}){
   if(!OV||!OV.properties.find(p=>p.id===pid)) await refresh();
   const prop=OV&&OV.properties.find(p=>p.id===pid);
   if(!prop){ toast('That house is not on this account any more.'); return; }
   CUR=prop;
-  const people=(prop.people||[]).map((x,i)=>({...x,key:'p'+i})).filter(x=>x.phone);
-  const firstTo=prop.buyer&&prop.loan_id?'buyer':(people[0]?people[0].key:null);
   let mode=opts.mode&&MODE_OK[opts.mode](prop)?opts.mode:['sms','app','email'].find(m=>MODE_OK[m](prop))||'sms';
-  TH={pid,prop,people,filter:'',mode,to:opts.to||firstTo,from:opts.from||'comms',events:[]};
-  if(T_ATT.length){ T_ATT=[]; renderStaffAtt(); }
-  go('thread');
-  $('t-back').textContent=TH.from==='prop'?'House':'Comms';
+  TH={kind:'buyer',pid,prop,filter:'',mode,from:opts.from||'comms',events:[]};
+  threadReset();
+  $('t-back').textContent=backLabel(TH.from);
   $('t-av').outerHTML=avatarHtml(pid,prop.buyer&&prop.buyer.name,'').replace('class="avatar ','id="t-av" class="avatar ');
-  $('t-title').textContent=prop.address;
-  $('t-sub').textContent=[prop.buyer?prop.buyer.name:'No buyer',[prop.city,prop.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ');
-  $('t-call').disabled=!recipientPhone();
-  document.querySelectorAll('#t-chips button').forEach(b=>b.classList.toggle('active',b.dataset.f===''));
-  $('t-body').innerHTML='<div class="empty">Loading…</div>';
+  $('t-title').textContent=prop.buyer?prop.buyer.name:prop.address;
+  $('t-sub').textContent=prop.buyer?'Buyer · '+prop.address:[prop.city,prop.state].filter(Boolean).join(', ');
+  $('t-fnotice').classList.remove('hidden');
+  $('t-house').classList.remove('hidden');
   renderComposer();
   await loadThread(true);
 }
-function threadBack(){ stopAudio(); if(TH&&TH.from==='prop') openProp(TH.pid); else go('comms'); }
-function recipient(){
-  if(!TH||!TH.to) return null;
-  if(TH.to==='buyer') return TH.prop.buyer?{kind:'buyer',name:TH.prop.buyer.name,phone:TH.prop.buyer.phone}:null;
-  const x=TH.people.find(p=>p.key===TH.to);
-  return x?{kind:'person',name:x.name,phone:x.phone,person:x}:null;
+// key is 'c<contact id>' or 'n<ten digits>'. opts.pid is the house it was opened from.
+async function openPerson(key,opts={}){
+  if(!OV) await refresh();
+  TH={kind:'person',person:key,who:null,about:opts.pid||null,pid:opts.pid||null,filter:'',mode:'sms',
+    from:opts.from||'comms',events:[]};
+  // Draw the header from what the list already knows, then fill in from the server.
+  const known=(THREADS&&(THREADS.people||[]).find(p=>p.person===key))||null;
+  if(known) TH.who={...known};
+  threadReset();
+  $('t-back').textContent=backLabel(TH.from);
+  $('t-fnotice').classList.add('hidden');
+  drawPersonHead();
+  renderComposer();
+  await loadThread(true);
 }
-function recipientPhone(){ const r=recipient(); return r&&r.phone; }
+function drawPersonHead(){
+  const w=TH.who||{};
+  $('t-av').outerHTML=avatarHtml(1000+Number(w.contact_id||String(TH.person).slice(-4)),w.name,'').replace('class="avatar ','id="t-av" class="avatar ');
+  $('t-title').textContent=w.name||fmtPhone(w.phone||TH.person.slice(1));
+  $('t-sub').textContent=w.role?personSub(w):'';
+  $('t-house').classList.toggle('hidden',!(w.houses||[]).length);
+}
+function threadHouse(){
+  if(!TH) return;
+  const id=TH.kind==='buyer'?TH.pid:(TH.about||((TH.who&&TH.who.houses||[])[0]||{}).id);
+  if(id) openProp(id);
+}
+function threadBack(){
+  stopAudio();
+  if(TH&&TH.from==='prop'&&(TH.pid||CUR)) openProp(TH.pid||CUR.id);
+  else if(TH&&TH.from==='bog') go('bog');
+  else go('comms');
+}
+function recipient(){
+  if(!TH) return null;
+  if(TH.kind==='buyer') return TH.prop.buyer&&TH.prop.loan_id?{kind:'buyer',name:TH.prop.buyer.name,phone:TH.prop.buyer.phone}:null;
+  const w=TH.who; if(!w) return null;
+  return {kind:'person',name:w.name||fmtPhone(w.phone),phone:w.phone,contact_id:w.contact_id};
+}
 function threadCall(){ const r=recipient(); if(r&&r.phone) bridgeCall(r.phone,r.name); }
+function aboutHouse(){
+  const hs=(TH&&TH.who&&TH.who.houses)||[];
+  return hs.find(h=>h.id===TH.about)||null;
+}
 function renderComposer(){
   const r=recipient();
-  const has=!!r;
+  const person=TH&&TH.kind==='person';
+  // An unnamed number can be called, but texts go out from a contact card: name it first.
+  const unnamed=person&&r&&!r.contact_id;
+  const has=!!r&&!unnamed;
   $('t-tochip').classList.toggle('hidden',!has);
   $('t-cbox').classList.toggle('hidden',!has);
   $('t-cnote').classList.toggle('hidden',has);
-  if(!has){ $('t-modes').classList.add('hidden'); $('t-mfixed').classList.add('hidden');
-    $('t-cnote').textContent='Nobody with a phone or a buyer account on this house yet.'; return; }
-  $('t-to').textContent=r.name+(r.kind==='person'?` · ${roleLabel(r.person.role)}`:'');
-  const buyer=r.kind==='buyer';
-  $('t-modes').classList.toggle('hidden',!buyer);
-  $('t-mfixed').classList.toggle('hidden',buyer);
-  if(buyer) document.querySelectorAll('#t-modes button').forEach(b=>{
-    b.disabled=!MODE_OK[b.dataset.m](TH.prop); b.classList.toggle('active',b.dataset.m===TH.mode); });
+  $('t-call').disabled=!(r&&r.phone);
+  if(!has){
+    $('t-modes').classList.add('hidden'); $('t-mfixed').classList.add('hidden');
+    $('t-cnote').innerHTML=unnamed
+      ?`This number has no name yet. <button class="small" onclick="nameNumber()">Name them</button> to text them from here.`
+      :person?'Loading…':'No buyer account on this house yet.';
+    return;
+  }
   const first=String(r.name||'').split(/\s+/)[0];
-  $('t-input').placeholder=!buyer||TH.mode==='sms'?`Text ${first}`:TH.mode==='email'?`Email ${first}`:`Message ${first} in the app`;
-  $('t-call').disabled=!r.phone;
+  if(person){
+    // One person, so the chip says what the next text is about, not who it goes to.
+    const hs=(TH.who&&TH.who.houses)||[];
+    const h=aboutHouse();
+    $('t-tolbl').textContent='About';
+    $('t-to').textContent=h?h.address:'No particular house';
+    $('t-tochev').classList.toggle('hidden',hs.length<1);
+    $('t-tochip').disabled=hs.length<1;
+    $('t-modes').classList.add('hidden'); $('t-mfixed').classList.remove('hidden');
+    $('t-input').placeholder=`Text ${first}`;
+    return;
+  }
+  $('t-tolbl').textContent='To';
+  $('t-to').textContent=r.name;
+  $('t-tochev').classList.add('hidden');
+  $('t-tochip').disabled=true;
+  $('t-modes').classList.remove('hidden'); $('t-mfixed').classList.add('hidden');
+  document.querySelectorAll('#t-modes button').forEach(b=>{
+    b.disabled=!MODE_OK[b.dataset.m](TH.prop); b.classList.toggle('active',b.dataset.m===TH.mode); });
+  $('t-input').placeholder=TH.mode==='sms'?`Text ${first}`:TH.mode==='email'?`Email ${first}`:`Message ${first} in the app`;
 }
-function setMode(m){ if(!TH||!MODE_OK[m](TH.prop)) return; TH.mode=m; renderComposer(); $('t-input').focus(); }
+function setMode(m){ if(!TH||TH.kind!=='buyer'||!MODE_OK[m](TH.prop)) return; TH.mode=m; renderComposer(); $('t-input').focus(); }
 function threadFilter(f){
   if(!TH) return; TH.filter=f;
   document.querySelectorAll('#t-chips button').forEach(b=>b.classList.toggle('active',b.dataset.f===f));
@@ -872,16 +963,31 @@ function foldVoicemail(events){
 }
 async function loadThread(stick){
   if(!TH) return;
-  const pid=TH.pid;
+  const me=TH;
   const atBottom=stick||(window.innerHeight+window.scrollY>=(document.scrollingElement||document.documentElement).scrollHeight-120);
-  let d; try{ d=await api(`/api/admin/properties/${pid}/comms?limit=300`); }
-  catch(e){ $('t-body').innerHTML=`<div class="empty">${esc(e.message)}</div>`; return; }
-  if(!TH||TH.pid!==pid) return;
-  TH.events=foldVoicemail(d.events||[]).reverse();
+  let d;
+  try{
+    d=me.kind==='buyer'?await api(`/api/admin/properties/${me.pid}/comms?limit=300&who=b`)
+      :await api(`/api/admin/comms/person?who=${encodeURIComponent(me.person)}&limit=300`);
+  }catch(e){ $('t-body').innerHTML=`<div class="empty">${esc(e.message)}</div>`; return; }
+  if(TH!==me) return;
+  if(me.kind==='person'){
+    me.who={...(me.who||{}),...d.person};
+    const hs=me.who.houses||[];
+    // Opened from a house, texts are about that house. Otherwise the one they last
+    // talked about, or their only house.
+    if(!me.about||!hs.some(h=>h.id===me.about)){
+      const lastPid=(d.events.find(e=>e.property_id)||{}).property_id;
+      me.about=hs.some(h=>h.id===lastPid)?lastPid:(hs.length===1?hs[0].id:null);
+    }
+    drawPersonHead(); renderComposer();
+  }
+  me.events=foldVoicemail(d.events||[]).reverse();
   renderThread();
   if(atBottom) scrollBottom();
-  // Reading the conversation is what clears this house's badge — every part of it.
-  try{ await api('/api/admin/comms/seen',{method:'POST',body:JSON.stringify({property_id:pid})}); }catch{}
+  // Reading a conversation clears that person's badge, and only theirs.
+  const seen=me.kind==='buyer'?{property_id:me.pid,person:'b'}:{person:me.person};
+  try{ await api('/api/admin/comms/seen',{method:'POST',body:JSON.stringify(seen)}); }catch{}
   refresh(); loadThreadList();
 }
 const FILTERS={
@@ -891,41 +997,43 @@ const FILTERS={
   notice:e=>e.channel==='notice',
 };
 function isBubble(e){ return e.channel==='text'||e.channel==='message'; }
-function senderKey(e){ return e.direction+'|'+(e.party==='contact'?'c'+(e.contact_id||e.who):'b'); }
+function senderKey(e){ return e.direction+'|'+(e.property_id||''); }
 function renderThread(){
   const el=$('t-body'); if(!TH) return;
   const list=TH.filter?TH.events.filter(FILTERS[TH.filter]):TH.events;
+  const person=TH.kind==='person';
+  // Someone who works several houses: say which house each text was about.
+  const multi=person&&((TH.who&&TH.who.houses)||[]).length>1;
   if(!list.length){
-    el.innerHTML=`<div class="empty">${TH.filter?'Nothing of that kind on this house yet.'
-      :'No history on this house yet.<br>Anything you send from here files itself to it.'}</div>`;
+    el.innerHTML=`<div class="empty">${TH.filter?'Nothing of that kind yet.'
+      :person?'No history with this person yet.<br>Texts you send from here file to the house you pick.'
+      :'No history with this buyer yet.<br>Anything you send from here files itself to the house.'}</div>`;
     return;
   }
-  const buyerName=TH.prop.buyer&&TH.prop.buyer.name;
   let html='', lastDay='', lastT=0;
   list.forEach((e,i)=>{
     const d=tsDate(e.ts), dk=dayKey(d);
     // Like Messages: a time header on each new day, and again after an hour of quiet.
     if(dk!==lastDay||d-lastT>=60*60e3){ html+=`<div class="day"><b>${esc(dayLabel(d))}</b> ${esc(clock(e.ts))}</div>`; lastDay=dk; }
     lastT=d;
-    if(!isBubble(e)){ html+=eventCard(e); return; }
+    if(!isBubble(e)){ html+=eventCard(e,multi); return; }
     const prev=list[i-1], next=list[i+1];
     const near=(a,b)=>a&&b&&isBubble(a)&&isBubble(b)&&senderKey(a)===senderKey(b)
       &&dayKey(tsDate(a.ts))===dayKey(tsDate(b.ts))&&Math.abs(tsDate(b.ts)-tsDate(a.ts))<5*60e3;
     const cont=near(prev,e), contNext=near(e,next);
     const mine=e.direction!=='in';
-    const other=e.party==='contact';        // crew, co-buyer, lender — not the buyer
     const how=e.channel==='message'?'In-app':String(e.channels||'').includes('email')&&!String(e.channels||'').includes('sms')?'In-app + email':'Text';
-    const whoLbl=!mine&&other&&!cont?`<div class="b-who">${esc(e.who||'')}</div>`
-      :mine&&other&&!cont?`<div class="b-who">To ${esc(e.who||'')}</div>`:'';
+    const sender=person?e.sent_by:(e.who&&ME&&e.who!==ME.name?e.who:null);
     const meta=contNext?'':`<div class="b-meta">${esc(clock(e.ts))} · ${esc(how)}${
-      mine&&!other&&e.who&&ME&&e.who!==ME.name?' · '+esc(e.who):''}${
+      mine&&sender&&(!ME||sender!==ME.name)?' · '+esc(sender):''}${
+      multi&&e.address?' · '+esc(e.address):''}${
       e.status==='failed'?' · <b style="color:var(--red)">not delivered</b>':e.status==='not_sent'?' · not sent':''}</div>`;
     // Notices copied into the buyer's thread run to pages. Fold anything that long.
     const long=String(e.body||'').length>320;
     const subj=e.summary&&e.channel==='message'?`<span class="subj">${esc(e.summary)}</span>`:'';
     const sms=e.channel==='text';
     html+=`<div class="b-row ${mine?'me':'them'} ${cont?'cont':''} ${contNext?'':'tail'} ${sms?'sms':''} ${e.status==='failed'?'bad':''}">
-      ${whoLbl}${e.body||subj||!(e.attachments&&e.attachments.length)?`<div class="bubble ${long?'long':''}">${subj}${esc(e.body||'')}${long?`<button class="more-btn" onclick="this.parentNode.classList.remove('long');this.remove()">Show all</button>`:''}</div>`:''}${attBlock(e.attachments)}${meta}</div>`;
+      ${e.body||subj||!(e.attachments&&e.attachments.length)?`<div class="bubble ${long?'long':''}">${subj}${esc(e.body||'')}${long?`<button class="more-btn" onclick="this.parentNode.classList.remove('long');this.remove()">Show all</button>`:''}</div>`:''}${attBlock(e.attachments)}${meta}</div>`;
   });
   el.innerHTML=html;
   const ab=$('t-attach'); if(ab) ab.classList.toggle('hidden', isNativeApp());
@@ -949,7 +1057,8 @@ async function pickStaffFiles(input){
       const b64=await new Promise((ok,err)=>{ const r=new FileReader(); r.onload=()=>ok(String(r.result).split(',')[1]); r.onerror=err; r.readAsDataURL(f); });
       const d=await api('/api/admin/documents',{method:'POST',body:JSON.stringify({
         filename:f.name, mime:f.type, data_base64:b64, category:'correspondence',
-        title:'Sent in a message — '+f.name, visible_to_tenant:false, property_id:TH?TH.pid:null })});
+        title:'Sent in a message — '+f.name, visible_to_tenant:false,
+        property_id:TH?(TH.kind==='person'?TH.about:TH.pid):null })});
       T_ATT.push({id:d.id, filename:f.name, mime:f.type});
     }catch(e){ toast('Could not attach '+f.name+': '+e.message); }
     tmp.remove();
@@ -965,8 +1074,9 @@ async function dropStaffAtt(id){
   T_ATT=T_ATT.filter(a=>a.id!==id); renderStaffAtt();
   try{ await api('/api/admin/documents/'+id,{method:'DELETE'}); }catch{}
 }
-function eventCard(e){
-  const t=clock(e.ts);
+function eventCard(e,multi){
+  // In a conversation with someone who works several houses, say which house.
+  const t=clock(e.ts)+(multi&&e.address?' · '+e.address:'');
   if(e.channel==='call'||e.channel==='voicemail'){
     const vm=e.status==='voicemail'||e.channel==='voicemail';
     const missed=e.status==='missed';
@@ -1013,7 +1123,7 @@ function playRec(id,btn){
 async function threadSend(){
   const t=$('t-input'); const body=t.value.trim(); if((!body&&!T_ATT.length)||!TH) return;
   const attachment_ids=T_ATT.map(a=>a.id);
-  const r=recipient(); if(!r){ toast('Nobody to send to on this house yet.'); return; }
+  const r=recipient(); if(!r){ toast('Nobody to send to here yet.'); return; }
   const btn=$('t-send'); btn.disabled=true;
   try{
     if(r.kind==='buyer'){
@@ -1023,13 +1133,9 @@ async function threadSend(){
       toast(f.length?'Saved in the app, but '+f[0].replace(/^\w+: /,'').replace(/^./,c=>c.toLowerCase())
         :TH.mode==='sms'?'Text sent.':TH.mode==='email'?'Email sent.':'Sent to their app.');
     } else {
-      let cid=r.person.contact_id;
-      if(!cid&&r.person.pml_id){
-        const x=await api(`/api/admin/pml/${r.person.pml_id}/ensure-contact`,{method:'POST',body:'{}'});
-        cid=x.contact_id; r.person.contact_id=cid;
-      }
-      if(!cid) throw new Error('No contact card for this person yet.');
-      await api(`/api/admin/contacts/${cid}/messages`,{method:'POST',body:JSON.stringify({body,property_id:TH.pid,attachment_ids})});
+      if(!r.contact_id) throw new Error('Name this number first, then you can text it.');
+      await api(`/api/admin/contacts/${r.contact_id}/messages`,{method:'POST',
+        body:JSON.stringify({body,property_id:TH.about||undefined,attachment_ids})});
       toast('Text sent.');
     }
     t.value=''; growBox(t); T_ATT=[]; renderStaffAtt();
@@ -1056,17 +1162,43 @@ function dismissSheet(){
   setTimeout(()=>sh.classList.remove('nudge'),420);
   if(confirm('Close without saving? What you have entered here will be lost.')) closeSheet();
 }
-function openRecipients(){
-  if(!TH) return;
-  const p=TH.prop, opts=[];
-  if(p.buyer&&p.loan_id) opts.push({key:'buyer',name:p.buyer.name,sub:'Buyer · text, in-app or email'});
-  for(const x of TH.people) opts.push({key:x.key,name:x.name,sub:roleLabel(x.role)+' · '+fmtPhone(x.phone)});
-  openSheet(`<h3>Send to</h3><p class="note">Everything you send files under ${esc(p.address)}.</p>
-    ${opts.map(o=>`<button class="opt ${TH.to===o.key?'sel':''}" onclick="pickRecipient('${o.key}')">
-      ${avatarHtml(TH.pid,o.name)}<span class="ot"><b>${esc(o.name)}</b><span>${esc(o.sub)}</span></span>${ICON.check.replace('<svg','<svg class="ck"')}
-    </button>`).join('')||'<p class="note">Nobody attached to this house yet.</p>'}`);
+// Someone who works several houses: pick which one the next text is about. It files
+// there, and the house's address goes at the top of the text so they know too.
+function openAbout(){
+  if(!TH||TH.kind!=='person') return;
+  const hs=(TH.who&&TH.who.houses)||[];
+  if(!hs.length) return;
+  const name=String((TH.who&&TH.who.name)||'them').split(/\s+/)[0];
+  const opts=[...hs.map(h=>({id:h.id,name:h.address,sub:[h.city,h.state].filter(Boolean).join(', ')})),
+    {id:0,name:'No particular house',sub:'Just a text to '+name}];
+  openSheet(`<h3>What is this text about?</h3><p class="note">It files under the house you pick.</p>
+    ${opts.map(o=>`<button class="opt ${(TH.about||0)===o.id?'sel':''}" onclick="pickAbout(${o.id})">
+      ${avatarHtml(o.id,'')}<span class="ot"><b>${esc(o.name)}</b><span>${esc(o.sub||'')}</span></span>${ICON.check.replace('<svg','<svg class="ck"')}
+    </button>`).join('')}`);
 }
-function pickRecipient(k){ TH.to=k; closeSheet(); renderComposer(); }
+function pickAbout(id){ TH.about=id||null; closeSheet(); renderComposer(); }
+// A number filed to a house with no name: naming it makes a contact card, and every
+// call and text from that number becomes theirs.
+function nameNumber(){
+  if(!TH||!TH.who) return;
+  openSheet(`<h3>Who is ${esc(fmtPhone(TH.who.phone))}?</h3>
+    <input id="nn-name" placeholder="Name">
+    <select id="nn-role" style="margin-top:8px">
+      <option value="bog">BOG</option><option value="cobuyer">Co-buyer</option><option value="contractor">Contractor</option>
+      <option value="lender">Lender</option><option value="seller">Seller</option><option value="other" selected>Other</option>
+    </select>
+    <button class="primary wide" style="margin-top:12px" onclick="saveNameNumber()">Save</button>`);
+}
+async function saveNameNumber(){
+  const name=($('nn-name').value||'').trim(); if(!name){ toast('Add a name.'); return; }
+  try{
+    const c=await api('/api/admin/contacts',{method:'POST',body:JSON.stringify({name,role:$('nn-role').value,
+      phone:TH.who.phone,property_id:TH.about||((TH.who.houses||[])[0]||{}).id||undefined})});
+    closeSheet(); toast('Saved.');
+    await refresh(); await loadThreadList();
+    openPerson('c'+c.id,{pid:TH.about,from:TH.from});
+  }catch(e){ toast(e.message); }
+}
 
 // ---------- numbers that matched no house ----------
 function renderUnknown(){
@@ -1135,15 +1267,38 @@ async function fileGo(i){
   }catch(e){ toast(e.message); $('fs-go').disabled=false; }
 }
 
-// ---------- the house page's doorway into its conversation ----------
+// ---------- the house page: one row per person this house has a conversation with ----------
+function propConvoRows(){
+  if(!CUR) return [];
+  const rows=[];
+  const t=THREADS&&THREADS.threads.find(x=>x.property_id===CUR.id);
+  if(CUR.buyer||(t&&t.last)) rows.push(t||{kind:'buyer',property_id:CUR.id,buyer_name:CUR.buyer&&CUR.buyer.name,last:null,unread:0});
+  const ppl=((THREADS&&THREADS.people)||[]).filter(p=>(p.houses||[]).some(h=>h.id===CUR.id));
+  // Buyer side first, then crew, each newest first.
+  ppl.sort((a,b)=>(a.side===b.side?0:a.side==='buyers'?-1:1)||String((b.last||{}).ts||'').localeCompare(String((a.last||{}).ts||'')));
+  return rows.concat(ppl);
+}
 function renderPropConvo(){
   if(!CUR) return;
-  const t=THREADS&&THREADS.threads.find(x=>x.property_id===CUR.id);
-  const n=t?t.unread:(CUR.unread||0);
+  const rows=propConvoRows();
+  const n=rows.reduce((s,r)=>s+(r.unread||0),0);
   const b=$('p-unread'); b.classList.toggle('hidden',!n); b.textContent=n;
-  $('p-last').innerHTML=t&&t.last
-    ?`${chanIcon(t.last.channel)}<span class="pv">${esc(previewOf(t.last))}</span><span class="note">${esc(relTime(t.last.ts))}</span>`
-    :`<span class="note">${THREADS?'No messages on this house yet.':'Loading…'}</span>`;
+  $('p-convos').innerHTML=!THREADS?'<p class="note">Loading…</p>'
+    :rows.length?`<div class="list flat">${rows.map(r=>{
+      const person=r.kind==='person';
+      const title=person?personName(r):(r.buyer_name||'Buyer');
+      const role=person?(r.role==='unnamed'?'No name yet':roleLabel(r.role)):'Buyer';
+      const open=person?`openPerson('${r.person}',{pid:${CUR.id},from:'prop'})`:`openThread(${CUR.id},{from:'prop'})`;
+      return `<div class="trow ${r.unread?'unread':''} ${r.last?'':'quiet'}" onclick="${open}">
+        ${avatarHtml(personTint(r),person?r.name:r.buyer_name)}
+        <div class="tmain">
+          <div class="tl1"><span class="taddr">${esc(title)}</span><span class="ttime">${r.last?esc(relTime(r.last.ts)):''}</span></div>
+          <div class="tl2">${esc(role)}</div>
+          <div class="tl3">${r.last?chanIcon(r.last.channel):''}<span class="pv">${r.last?esc(previewOf(r.last)):'No messages yet'}</span>
+            ${r.unread?`<span class="cnt">${r.unread>99?'99+':r.unread}</span>`:''}</div>
+        </div></div>`;
+    }).join('')}</div>`
+    :'<p class="note">No buyer or crew on this house yet.</p>';
 }
 
 // ---------- overview: home, badges, money, bog ----------
@@ -1176,7 +1331,7 @@ async function refresh(){
 
   // bog list
   $('bog-list').innerHTML=OV.vendors.map(v=>`
-    <div class="card click" onclick="openVendor(${v.id},'${esc(v.name)}','${esc(v.phone||'')}')">
+    <div class="card click" onclick="openPerson('c${v.id}',{from:'bog'})">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <b>${esc(v.name)}</b>${v.unread?`<span class="badge">${v.unread}</span>`:''}
       </div>
@@ -1236,10 +1391,18 @@ function renderPeople(){
       </span>
     </div>`).join('');
 }
-function textPerson(i){
-  if(!CUR||!CUR.people[i]) return;
-  // Same key openThread gives this person: the index in the house's people list.
-  openThread(CUR.id,{to:'p'+i,from:'prop'});
+// Each person on the house has a conversation of their own. A PML lender with no
+// contact card yet gets one on the first tap, so their texts have somewhere to live.
+async function textPerson(i){
+  const x=CUR&&CUR.people[i]; if(!x) return;
+  let cid=x.contact_id;
+  if(!cid&&x.pml_id){
+    try{ cid=(await api(`/api/admin/pml/${x.pml_id}/ensure-contact`,{method:'POST',body:'{}'})).contact_id; x.contact_id=cid; }
+    catch(e){ toast(e.message); return; }
+    loadThreadList();
+  }
+  if(!cid){ toast('No contact card for this person yet.'); return; }
+  openPerson('c'+cid,{pid:CUR.id,from:'prop'});
 }
 async function loadPropPays(){
   if(!CUR.loan_id){ $('p-pays').innerHTML='<p class="note">No loan.</p>'; return; }
