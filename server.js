@@ -2979,6 +2979,39 @@ const CONTACT_ROLES = {
   other: { label: 'Other', icon: '📇' },
 };
 
+// A deal can carry the buyer plus up to three co-buyers. Each co-buyer is a contact
+// tagged 'cobuyer' against the house, which is what notices, envelopes and texting read.
+const MAX_COBUYERS = 3;
+const cobuyerCount = (propertyId) => get(`SELECT COUNT(*) AS n FROM property_contacts pc
+    JOIN contacts c ON c.id = pc.contact_id
+    WHERE pc.property_id = ? AND c.role = 'cobuyer' AND c.archived_at IS NULL`, propertyId).n;
+
+// Co-buyers take the same inputs as the buyer: full name, email, cell phone.
+// Returns { list } of cleaned rows, or { error }.
+function cleanCobuyers(input) {
+  const list = [];
+  for (const [i, raw] of (Array.isArray(input) ? input : []).entries()) {
+    const r = raw || {};
+    const name = String(r.name || '').trim();
+    const email = String(r.email || '').toLowerCase().trim();
+    const phone = String(r.phone || '').trim();
+    if (!name && !email && !phone) continue;   // an empty row the form left behind
+    if (!name) return { error: `Co-buyer ${i + 1} needs a name` };
+    if (!email) return { error: `Co-buyer ${i + 1} needs an email` };
+    list.push({ name, email, phone: addr.formatPhone(phone) || null });
+  }
+  if (list.length > MAX_COBUYERS) return { error: `A loan can have up to ${MAX_COBUYERS} co-buyers` };
+  return { list };
+}
+
+function addCobuyer(companyId, propertyId, cb) {
+  const r = run(`INSERT INTO contacts (company_id, name, role, phone, email) VALUES (?,?,'cobuyer',?,?)`,
+    companyId, cb.name, cb.phone, cb.email);
+  run('INSERT OR IGNORE INTO property_contacts (property_id, contact_id) VALUES (?,?)',
+    propertyId, r.lastInsertRowid);
+  return r.lastInsertRowid;
+}
+
 const contactRow = (c) => ({
   ...c,
   role_label: (CONTACT_ROLES[c.role] || CONTACT_ROLES.other).label,
@@ -3002,6 +3035,10 @@ app.post('/api/admin/contacts', adminOnly, (req, res) => {
   const b = req.body || {};
   const name = String(b.name || '').trim();
   if (!name) return res.status(400).json({ error: 'Give the contact a name' });
+  if (b.role === 'cobuyer' && b.property_id && ownedProperty(req, b.property_id) &&
+      cobuyerCount(b.property_id) >= MAX_COBUYERS) {
+    return res.status(400).json({ error: `This house already has ${MAX_COBUYERS} co-buyers` });
+  }
   if (!b.phone && !b.email) return res.status(400).json({ error: 'Add a phone number or an email' });
   const r = run(`INSERT INTO contacts (company_id, name, role, business_name, phone, email,
       address, city, state, zip, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
@@ -3009,8 +3046,10 @@ app.post('/api/admin/contacts', adminOnly, (req, res) => {
     addr.formatPhone(b.phone) || null, b.email ? String(b.email).trim() : null,
     b.address || null, b.city || null, b.state || null, b.zip || null, b.notes || null);
   const c = contactRow(get('SELECT * FROM contacts WHERE id=?', r.lastInsertRowid));
-  // Created from inside a property? Attach it there and then.
-  if (b.property_id && ownedProperty(req, b.property_id)) {
+  // Created from inside a property? Attach it there and then — unless it would be a
+  // fourth co-buyer on that house.
+  if (b.property_id && ownedProperty(req, b.property_id) &&
+      !(c.role === 'cobuyer' && cobuyerCount(b.property_id) >= MAX_COBUYERS)) {
     run('INSERT OR IGNORE INTO property_contacts (property_id, contact_id, role_note) VALUES (?,?,?)',
       b.property_id, c.id, b.role_note || null);
   }
@@ -3057,8 +3096,12 @@ app.get('/api/admin/properties/:id/contacts', adminOnly, (req, res) => {
 app.post('/api/admin/properties/:id/contacts', adminOnly, (req, res) => {
   const p = ownedProperty(req, req.params.id);
   if (!p) return res.status(404).json({ error: 'Not found' });
-  const c = get('SELECT id FROM contacts WHERE id=? AND company_id=?', req.body.contact_id, req.companyId);
+  const c = get('SELECT id, role FROM contacts WHERE id=? AND company_id=?', req.body.contact_id, req.companyId);
   if (!c) return res.status(404).json({ error: 'Contact not found' });
+  if (c.role === 'cobuyer' && cobuyerCount(p.id) >= MAX_COBUYERS &&
+      !get('SELECT id FROM property_contacts WHERE property_id=? AND contact_id=?', p.id, c.id)) {
+    return res.status(400).json({ error: `This house already has ${MAX_COBUYERS} co-buyers` });
+  }
   run('INSERT OR IGNORE INTO property_contacts (property_id, contact_id, role_note) VALUES (?,?,?)',
     p.id, c.id, req.body.role_note || null);
   res.json({ ok: true });
@@ -3069,6 +3112,30 @@ app.delete('/api/admin/properties/:pid/contacts/:cid', adminOnly, (req, res) => 
   if (!p) return res.status(404).json({ error: 'Not found' });
   run('DELETE FROM property_contacts WHERE property_id=? AND contact_id=?', p.id, req.params.cid);
   res.json({ ok: true });
+});
+
+// ---------- co-buyers on a house ----------
+app.post('/api/admin/properties/:id/cobuyers', adminOnly, (req, res) => {
+  const p = ownedProperty(req, req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  const { list, error } = cleanCobuyers([req.body || {}]);
+  if (error) return res.status(400).json({ error: error.replace('Co-buyer 1', 'The co-buyer') });
+  if (!list.length) return res.status(400).json({ error: 'The co-buyer needs a name' });
+  if (cobuyerCount(p.id) >= MAX_COBUYERS) {
+    return res.status(400).json({ error: `This house already has ${MAX_COBUYERS} co-buyers` });
+  }
+  const id = addCobuyer(req.companyId, p.id, list[0]);
+  res.json(contactRow(get('SELECT * FROM contacts WHERE id=?', id)));
+});
+
+app.put('/api/admin/cobuyers/:id', adminOnly, (req, res) => {
+  const c = get("SELECT * FROM contacts WHERE id=? AND company_id=? AND role='cobuyer'", req.params.id, req.companyId);
+  if (!c) return res.status(404).json({ error: 'Co-buyer not found' });
+  const { list, error } = cleanCobuyers([req.body || {}]);
+  if (error) return res.status(400).json({ error: error.replace('Co-buyer 1', 'The co-buyer') });
+  if (!list.length) return res.status(400).json({ error: 'The co-buyer needs a name' });
+  run('UPDATE contacts SET name=?, email=?, phone=? WHERE id=?', list[0].name, list[0].email, list[0].phone, c.id);
+  res.json(contactRow(get('SELECT * FROM contacts WHERE id=?', c.id)));
 });
 
 // ---------- texting a contact ----------
@@ -3548,6 +3615,11 @@ app.post('/api/admin/properties/:id/sell', adminOnly, async (req, res, next) => 
   if (get('SELECT id FROM users WHERE email=?', email)) {
     return res.status(400).json({ error: 'That buyer email already has an account' });
   }
+  const co_buyers = cleanCobuyers(b.co_buyers);
+  if (co_buyers.error) return res.status(400).json({ error: co_buyers.error });
+  if (cobuyerCount(prop.id) + co_buyers.list.length > MAX_COBUYERS) {
+    return res.status(400).json({ error: `This house can have up to ${MAX_COBUYERS} co-buyers — it already has ${cobuyerCount(prop.id)}` });
+  }
   try {
     const co = get('SELECT * FROM companies WHERE id=?', req.companyId);
     const temp = 'TB-' + crypto.randomInt(100000, 999999) + '!';
@@ -3596,6 +3668,7 @@ app.post('/api/admin/properties/:id/sell', adminOnly, async (req, res, next) => 
       }
     }
     run("UPDATE properties SET status='sold', phase='sold', phase_updated_at=datetime('now') WHERE id=?", prop.id);
+    for (const cb of co_buyers.list) addCobuyer(req.companyId, prop.id, cb);
 
     const phone = sms.normalizePhone(b.buyer_phone);
     const inv = run(`INSERT INTO invitations (company_id, loan_id, user_id, phone, temp_password, channel)

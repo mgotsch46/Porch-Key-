@@ -3503,6 +3503,41 @@ async function main() {
     ok(r.status === 404, 'an entry that is not yours cannot be touched');
   }
 
+  {
+    console.log('— up to three co-buyers on a sale');
+    const sale = (pid, extra) => req(`/api/admin/properties/${pid}/sell`, { method: 'POST', body: JSON.stringify({
+      buyer_name: 'Main Buyer', buyer_email: `main${pid}@test.com`, buyer_phone: '614-555-0001',
+      sale_price_cents: 9000000, down_payment_cents: 0, principal_cents: 9000000,
+      interest_rate_bps: 900, term_months: 360, first_payment_date: '2026-12-01', ...extra }) });
+    let pr = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({ address: '90 Cobuyer Ct', city: 'Flint', state: 'MI' }) });
+    const cp = pr.json.id;
+    let x = await sale(cp, { co_buyers: [1, 2, 3, 4].map(i => ({ name: 'CB ' + i, email: `cb${i}@test.com` })) });
+    ok(x.status === 400 && /up to 3/i.test(x.json.error), 'a fourth co-buyer is refused');
+    x = await sale(cp, { co_buyers: [{ name: 'No Email' }] });
+    ok(x.status === 400 && /email/i.test(x.json.error), 'a co-buyer needs an email like the buyer');
+    x = await sale(cp, { co_buyers: [
+      { name: 'Co One', email: 'co1@test.com', phone: '6145550002' },
+      { name: '', email: '', phone: '' },
+      { name: 'Co Two', email: 'co2@test.com' }] });
+    ok(x.status === 200, 'a sale with two co-buyers goes through, blank rows ignored');
+    x = await req(`/api/admin/properties/${cp}/contacts`);
+    const cbs = x.json.contacts.filter(c => c.role === 'cobuyer');
+    ok(cbs.length === 2 && cbs.some(c => c.name === 'Co One' && c.email === 'co1@test.com' && c.phone),
+      'co-buyers are saved with name, email and cell on the house');
+    x = await req(`/api/admin/properties/${cp}/cobuyers`, { method: 'POST', body: JSON.stringify({ name: 'Co Three', email: 'co3@test.com', phone: '6145550003' }) });
+    ok(x.status === 200 && x.json.role === 'cobuyer', 'a third co-buyer can be added later');
+    const third = x.json.id;
+    x = await req(`/api/admin/properties/${cp}/cobuyers`, { method: 'POST', body: JSON.stringify({ name: 'Co Four', email: 'co4@test.com' }) });
+    ok(x.status === 400, 'a fourth co-buyer cannot be added later');
+    x = await req(`/api/admin/contacts`, { method: 'POST', body: JSON.stringify({ name: 'Co Four', email: 'co4@test.com', role: 'cobuyer', property_id: cp }) });
+    ok(x.status === 400, 'nor through the contacts page');
+    x = await req(`/api/admin/cobuyers/${third}`, { method: 'PUT', body: JSON.stringify({ name: 'Co Three Renamed', email: 'co3b@test.com', phone: '' }) });
+    ok(x.status === 200 && x.json.name === 'Co Three Renamed' && x.json.email === 'co3b@test.com' && !x.json.phone, 'a co-buyer can be edited');
+    await req(`/api/admin/properties/${cp}/contacts/${third}`, { method: 'DELETE' });
+    x = await req(`/api/admin/properties/${cp}/cobuyers`, { method: 'POST', body: JSON.stringify({ name: 'Co Four', email: 'co4@test.com' }) });
+    ok(x.status === 200, 'removing one frees the slot');
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

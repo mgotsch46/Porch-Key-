@@ -2785,6 +2785,8 @@ function sellModal(pid){
         <option value="land_contract">Land Contract</option>
         <option value="land_trust_beneficial_interest">Beneficial Interest in a Land Trust</option></select></div>
     </div>
+    <div id="sl-cobuyers"></div>
+    <button type="button" class="small" id="sl-add-cb" onclick="slAddCobuyer()" style="margin:0 0 14px">➕ Add co-buyer</button>
     <div class="grid3">
       <div class="field"><label>Sale price ($)</label><input id="sl-price" type="number" step="0.01" oninput="slCalc()"></div>
       <div class="field"><label>Down payment ($)</label><input id="sl-down" type="number" step="0.01" oninput="slCalc()"></div>
@@ -2827,6 +2829,37 @@ function sellModal(pid){
     </div>
     <div id="sl-err" class="err hidden"></div>
     <button class="primary" onclick="doSell(${pid})">Complete sale &amp; create buyer login</button>`);
+}
+// Up to three co-buyers, each with the same inputs as the buyer: name, email, cell.
+const MAX_COBUYERS=3;
+function slAddCobuyer(){
+  const wrap=$('sl-cobuyers'); if(!wrap) return;
+  if(wrap.children.length>=MAX_COBUYERS) return;
+  const row=document.createElement('div');
+  row.className='sl-cb';
+  row.style.cssText='border-top:1px solid var(--line);padding-top:10px;margin-bottom:6px';
+  row.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <b class="sl-cb-title" style="font-size:13.5px"></b>
+      <button type="button" class="small warn" onclick="this.closest('.sl-cb').remove();slCobuyerLabels()">✕ Remove</button></div>
+    <div class="grid2">
+      <div class="field"><label>Co-buyer name</label><input class="cb-name"></div>
+      <div class="field"><label>Co-buyer email</label><input class="cb-email" type="email"></div>
+      <div class="field"><label>Co-buyer cell phone</label><input class="cb-phone" placeholder="(555) 555-5555"></div>
+    </div>`;
+  wrap.appendChild(row);
+  slCobuyerLabels();
+  row.querySelector('.cb-name').focus();
+}
+function slCobuyerLabels(){
+  const rows=[...document.querySelectorAll('#sl-cobuyers .sl-cb')];
+  rows.forEach((r,i)=>r.querySelector('.sl-cb-title').textContent='Co-buyer '+(i+1));
+  const b=$('sl-add-cb'); if(b) b.classList.toggle('hidden',rows.length>=MAX_COBUYERS);
+}
+function slCobuyers(){
+  return [...document.querySelectorAll('#sl-cobuyers .sl-cb')].map(r=>({
+    name:r.querySelector('.cb-name').value.trim(),
+    email:r.querySelector('.cb-email').value.trim(),
+    phone:r.querySelector('.cb-phone').value }));
 }
 function slCalc(){
   const price=parseFloat($('sl-price').value)||0, down=parseFloat($('sl-down').value)||0;
@@ -2889,7 +2922,7 @@ async function doSell(pid){
   try{
     const r=await api(`/api/admin/properties/${pid}/sell`,{method:'POST',body:JSON.stringify({
       buyer_name:$('sl-name').value.trim(), buyer_email:$('sl-email').value.trim(),
-      buyer_phone:$('sl-phone').value, loan_type:$('sl-type').value,
+      buyer_phone:$('sl-phone').value, co_buyers:slCobuyers(), loan_type:$('sl-type').value,
       sale_price_cents:Math.round(parseFloat($('sl-price').value)*100),
       down_payment_cents:Math.round((parseFloat($('sl-down').value)||0)*100),
       principal_cents:Math.round(parseFloat($('sl-fin').value)*100),
@@ -6283,10 +6316,10 @@ async function openLoan(id){
     <p class="note" style="margin-bottom:8px">Late and legal notices go out automatically when a payment is past grace and nothing has been confirmed received. ✓✓ = buyer opened it (read receipt).</p>
     <div id="notices-admin"></div>
   </div>
-  <div class="card"><h2>👥 People on this loan</h2>
-    <p class="note" style="margin-bottom:8px">Co-buyers, seller contacts, and lender contacts attached to this
-      house. Add more from the property page's contacts (roles: Co-buyer, Seller contact, Private money lender) —
-      they get call and text; the in-app thread stays the buyer's.</p>
+  <div class="card"><h2>👥 People on this loan
+      <button class="small" id="lp-add-cb" onclick="cobuyerModal(${f.property?f.property.id:0},0)">➕ Add co-buyer</button></h2>
+    <p class="note" style="margin-bottom:8px">Up to 3 co-buyers, plus seller and lender contacts attached to this
+      house. Co-buyers are named on every notice and get call and text; the in-app thread stays the buyer's.</p>
     <div id="loan-people"><p class="note">Loading…</p></div>
   </div>
   <div class="card"><h2>🗺️ Late-payment workflow${f.property&&f.property.state?` — ${esc(f.property.state)}`:''}</h2>
@@ -6378,17 +6411,51 @@ async function openLoan(id){
 async function loadLoanPeople(pid){
   const el=$('loan-people'); if(!el||!pid) return;
   let d; try{ d=await api(`/api/admin/properties/${pid}/contacts`); }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; return; }
-  const list=(d.contacts||[]).filter(c=>['cobuyer','seller','lender'].includes(c.role));
-  if(!list.length){ el.innerHTML='<p class="note">None yet — attach co-buyers, seller contacts, or lenders from the property page.</p>'; return; }
+  const list=(d.contacts||[]).filter(c=>['cobuyer','seller','lender'].includes(c.role))
+    .sort((a,b)=>(a.role==='cobuyer'?0:1)-(b.role==='cobuyer'?0:1));
+  LOAN_COBUYERS=list.filter(c=>c.role==='cobuyer');
+  const add=$('lp-add-cb');
+  if(add){ add.disabled=LOAN_COBUYERS.length>=MAX_COBUYERS; add.title=add.disabled?'This loan already has 3 co-buyers':''; }
+  if(!list.length){ el.innerHTML='<p class="note">None yet — add a co-buyer above, or attach seller contacts and lenders from the property page.</p>'; return; }
   el.innerHTML=list.map(c=>`
     <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:13.5px">
       <span><b>${esc(c.name)}</b> <span class="pill gray">${esc(c.role_label||c.role)}</span>
-        <span class="note"> ${esc(c.phone||'')}</span></span>
+        <span class="note"> ${esc(c.phone||'')}${c.role==='cobuyer'&&c.email?' · '+esc(c.email):''}</span></span>
       <span style="white-space:nowrap">
         <button class="small" ${c.phone?'':'disabled'} onclick="callNow('${esc(String(c.phone||''))}','${esc(c.name)}')">📞</button>
         <button class="small" ${c.phone?'':'disabled'} onclick="contactThread(${c.id},${pid})">💬</button>
+        ${c.role==='cobuyer'?`<button class="small" title="Edit co-buyer" onclick="cobuyerModal(${pid},${c.id})">✏️</button>
+        <button class="small warn" title="Remove from this loan" onclick="removeCobuyer(${pid},${c.id})">✕</button>`:''}
       </span>
     </div>`).join('');
+}
+
+// Add or edit a co-buyer — the same inputs as Edit buyer: name, email, cell phone.
+let LOAN_COBUYERS=[];
+function cobuyerModal(pid,id){
+  if(!pid) return;
+  const c=id?(LOAN_COBUYERS.find(x=>x.id===id)||{}):{};
+  if(!id && LOAN_COBUYERS.length>=MAX_COBUYERS){ alert('This loan already has 3 co-buyers.'); return; }
+  modal(`<h2>${id?'Edit co-buyer':'Add co-buyer'}</h2>
+    <div class="field"><label>Full name</label><input id="cb-name" value="${esc(c.name||'')}"></div>
+    <div class="field"><label>Email</label><input id="cb-email" type="email" value="${esc(c.email||'')}"></div>
+    <div class="field"><label>Cell phone</label><input id="cb-phone" value="${esc(c.phone||'')}" placeholder="555-555-5555"></div>
+    <div id="cb-err" class="err hidden"></div>
+    <div class="actions"><button class="primary" onclick="saveCobuyer(${pid},${id||0})">${id?'Save changes':'Add co-buyer'}</button></div>`);
+}
+async function saveCobuyer(pid,id){
+  try{
+    const body=JSON.stringify({ name:$('cb-name').value, email:$('cb-email').value, phone:$('cb-phone').value });
+    if(id) await api('/api/admin/cobuyers/'+id,{method:'PUT',body});
+    else await api(`/api/admin/properties/${pid}/cobuyers`,{method:'POST',body});
+    closeModal(); loadLoanPeople(pid);
+  }catch(e){ $('cb-err').textContent=e.message; $('cb-err').classList.remove('hidden'); }
+}
+async function removeCobuyer(pid,id){
+  const c=LOAN_COBUYERS.find(x=>x.id===id);
+  if(!confirm(`Remove ${c?c.name:'this co-buyer'} from this loan? Their text history is kept.`)) return;
+  try{ await api(`/api/admin/properties/${pid}/contacts/${id}`,{method:'DELETE'}); loadLoanPeople(pid); }
+  catch(e){ alert(e.message); }
 }
 
 // Payment history: the statement view. Each month that has come due, what it asked
