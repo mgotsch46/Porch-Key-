@@ -3022,6 +3022,8 @@ app.get('/api/admin/contacts', adminOnly, (req, res) => {
   const showArchived = req.query.archived === '1';
   const rows = all(`SELECT c.*,
       (SELECT COUNT(*) FROM property_contacts pc WHERE pc.contact_id=c.id) AS property_count,
+      (SELECT GROUP_CONCAT(p.address, ' · ') FROM property_contacts pc JOIN properties p ON p.id=pc.property_id
+         WHERE pc.contact_id=c.id) AS property_addresses,
       (SELECT COUNT(*) FROM contact_messages m WHERE m.contact_id=c.id) AS message_count,
       (SELECT COUNT(*) FROM contact_messages m WHERE m.contact_id=c.id
          AND m.direction='in' AND m.read_at IS NULL) AS unread_count
@@ -3035,9 +3037,17 @@ app.post('/api/admin/contacts', adminOnly, (req, res) => {
   const b = req.body || {};
   const name = String(b.name || '').trim();
   if (!name) return res.status(400).json({ error: 'Give the contact a name' });
-  if (b.role === 'cobuyer' && b.property_id && ownedProperty(req, b.property_id) &&
-      cobuyerCount(b.property_id) >= MAX_COBUYERS) {
-    return res.status(400).json({ error: `This house already has ${MAX_COBUYERS} co-buyers` });
+  // A co-buyer only counts — on notices, the loan's People card, texting and calling —
+  // once they are tied to the house. One saved without a house was invisible everywhere
+  // that mattered, so a house is required, and a full house is an error rather than a
+  // contact silently left unattached.
+  if (b.role === 'cobuyer') {
+    if (!b.property_id || !ownedProperty(req, b.property_id)) {
+      return res.status(400).json({ error: 'Pick the house this co-buyer is on' });
+    }
+    if (cobuyerCount(b.property_id) >= MAX_COBUYERS) {
+      return res.status(400).json({ error: `This house already has ${MAX_COBUYERS} co-buyers` });
+    }
   }
   if (!b.phone && !b.email) return res.status(400).json({ error: 'Add a phone number or an email' });
   const r = run(`INSERT INTO contacts (company_id, name, role, business_name, phone, email,
@@ -3060,6 +3070,21 @@ app.put('/api/admin/contacts/:id', adminOnly, (req, res) => {
   const c = get('SELECT * FROM contacts WHERE id=? AND company_id=?', req.params.id, req.companyId);
   if (!c) return res.status(404).json({ error: 'Contact not found' });
   const b = { ...c, ...req.body };
+  // Same rule as creating one: a co-buyer has to be on a house. Editing a contact can
+  // put them on one (this is how a co-buyer saved without a house gets fixed).
+  const target = b.property_id ? ownedProperty(req, b.property_id) : null;
+  if (b.property_id && !target) return res.status(404).json({ error: 'Property not found' });
+  const linkedTo = (pid) => get('SELECT id FROM property_contacts WHERE property_id=? AND contact_id=?', pid, c.id);
+  if (b.role === 'cobuyer') {
+    const anyLink = get('SELECT id FROM property_contacts WHERE contact_id=?', c.id);
+    if (!target && !anyLink) return res.status(400).json({ error: 'Pick the house this co-buyer is on' });
+    if (target && !linkedTo(target.id) && cobuyerCount(target.id) >= MAX_COBUYERS) {
+      return res.status(400).json({ error: `This house already has ${MAX_COBUYERS} co-buyers` });
+    }
+  }
+  if (target) {
+    run('INSERT OR IGNORE INTO property_contacts (property_id, contact_id) VALUES (?,?)', target.id, c.id);
+  }
   run(`UPDATE contacts SET name=?, role=?, business_name=?, phone=?, email=?,
        address=?, city=?, state=?, zip=?, notes=? WHERE id=?`,
     b.name, b.role, b.business_name, addr.formatPhone(b.phone) || null, b.email,
