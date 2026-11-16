@@ -728,13 +728,29 @@ async function main() {
     r = await req('/api/admin/properties', { method: 'POST', body: JSON.stringify({
       address: '77 People Pl', city: 'Flint', state: 'MI', zip: '48503' }) });
     const prop = { property_id: r.json.id };
+    // A co-buyer saved with no house was invisible on the loan, its notices, texting
+    // and calling — so a house is required.
     r = await req('/api/admin/contacts', { method: 'POST', body: JSON.stringify({
       name: 'Carl Cobuyer', role: 'cobuyer', phone: '555-444-3333' }) });
+    ok(r.status === 400 && /house/.test(r.json.error), 'a co-buyer with no house is refused');
+    r = await req('/api/admin/contacts', { method: 'POST', body: JSON.stringify({
+      name: 'Carl Cobuyer', role: 'cobuyer', phone: '555-444-3333', ...prop }) });
     ok(r.status === 200, 'a co-buyer contact is created');
     const cobuyerId = r.json.id;
-    r = await req(`/api/admin/properties/${prop.property_id}/contacts`, { method: 'POST',
-      body: JSON.stringify({ contact_id: cobuyerId }) });
-    ok(r.status === 200, 'and attached to the loan\'s house');
+    r = await req(`/api/admin/properties/${prop.property_id}/contacts`);
+    ok(r.json.contacts.some(c => c.id === cobuyerId), 'and attached to the loan\'s house');
+    // Changing an existing contact into a co-buyer puts them on the house named.
+    r = await req('/api/admin/contacts', { method: 'POST', body: JSON.stringify({
+      name: 'Pat Later', role: 'other', phone: '555-444-2222' }) });
+    const laterId = r.json.id;
+    r = await req(`/api/admin/contacts/${laterId}`, { method: 'PUT', body: JSON.stringify({ role: 'cobuyer' }) });
+    ok(r.status === 400, 'turning a contact into a co-buyer needs a house');
+    r = await req(`/api/admin/contacts/${laterId}`, { method: 'PUT',
+      body: JSON.stringify({ role: 'cobuyer', ...prop }) });
+    ok(r.status === 200, 'and naming one links them to it');
+    r = await req(`/api/admin/properties/${prop.property_id}/contacts`);
+    ok(r.json.contacts.some(c => c.id === laterId && c.role === 'cobuyer'), 'they now show on the house');
+    await req(`/api/admin/properties/${prop.property_id}/contacts/${laterId}`, { method: 'DELETE' });
 
     // The staff app's overview lists them under the property, and PML lenders appear
     // straight off their loans — no contact card required to see or call them.

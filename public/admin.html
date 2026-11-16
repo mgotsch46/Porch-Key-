@@ -4691,7 +4691,10 @@ async function loadContacts(){
           ${c.unread_count?`<span class="pill due">${c.unread_count} new</span>`:''}</div>
         <div class="ctmeta">${esc(c.role_label)}${c.business_name?' · '+esc(c.business_name):''}
           ${c.phone?' · '+esc(c.phone):''}${c.email?' · '+esc(c.email):''}</div>
-        <div class="ctmeta">${c.property_count} propert${c.property_count===1?'y':'ies'}
+        <div class="ctmeta">${c.role==='cobuyer'&&!c.property_count
+            ?`<span class="pill due" style="cursor:pointer" onclick="contactModal(${c.id})">⚠️ Not on any house — pick one</span>`
+            :c.role==='cobuyer'?esc(c.property_addresses||'')
+            :`${c.property_count} propert${c.property_count===1?'y':'ies'}`}
           · ${c.message_count} text${c.message_count===1?'':'s'}</div>
       </div>
       <div class="actions" style="margin:0;flex:0 0 auto">
@@ -4707,13 +4710,22 @@ async function loadContacts(){
 async function contactModal(id, presetPropId){
   if(!Object.keys(CONTACT_ROLES).length){ const r=await api('/api/admin/contacts'); CONTACT_ROLES=r.roles; }
   const c=id?(CONTACTS.find(x=>x.id===id)||{}):{role:'bog'};
+  // A co-buyer only shows on the loan, its notices, texting and calling once they are on
+  // a house — so the form asks which one, unless it was opened from that house already.
+  if(!presetPropId && !PROPS.length){ try{ PROPS=await api('/api/admin/properties'); }catch(e){} }
+  const needHouse=!presetPropId && !(id && c.property_count);
   modal(`<h2>${id?'Edit contact':'New contact'}</h2>
     <div class="grid2">
       <div class="field"><label>Name</label><input id="cm-name" value="${esc(c.name||'')}"></div>
-      <div class="field"><label>Role</label><select id="cm-role">
+      <div class="field"><label>Role</label><select id="cm-role" onchange="cmRoleChanged()">
         ${Object.entries(CONTACT_ROLES).map(([k,v])=>`<option value="${k}"${c.role===k?' selected':''}>${v.icon} ${esc(v.label)}</option>`).join('')}
       </select></div>
     </div>
+    ${needHouse?`<div class="field ${c.role==='cobuyer'?'':'hidden'}" id="cm-house-wrap">
+      <label>House this co-buyer is on</label><select id="cm-house">
+        <option value="">— Pick the house —</option>
+        ${PROPS.map(p=>`<option value="${p.id}">${esc(p.address)}${p.city?', '+esc(p.city):''}</option>`).join('')}
+      </select></div>`:''}
     <div class="field"><label>Business name <span class="note">— optional</span></label>
       <input id="cm-biz" value="${esc(c.business_name||'')}"></div>
     <div class="grid2">
@@ -4733,8 +4745,16 @@ async function contactModal(id, presetPropId){
   setTimeout(()=>attachAddressLookup('cm-addr',{city:'cm-city',state:'cm-state',zip:'cm-zip'}),60);
 }
 
+function cmRoleChanged(){
+  const w=$('cm-house-wrap'); if(w) w.classList.toggle('hidden',$('cm-role').value!=='cobuyer');
+}
 async function saveContact(id, propId){
   try{
+    const house=$('cm-house');
+    if(!propId && house && $('cm-role').value==='cobuyer'){
+      if(!house.value) throw new Error('Pick the house this co-buyer is on');
+      propId=Number(house.value);
+    }
     const body={name:$('cm-name').value, role:$('cm-role').value, business_name:$('cm-biz').value||null,
       phone:$('cm-phone').value||null, email:$('cm-email').value||null, address:$('cm-addr').value||null,
       city:$('cm-city').value||null, state:$('cm-state').value||null, zip:$('cm-zip').value||null,
@@ -6432,11 +6452,20 @@ async function loadLoanPeople(pid){
 
 // Add or edit a co-buyer — the same inputs as Edit buyer: name, email, cell phone.
 let LOAN_COBUYERS=[];
-function cobuyerModal(pid,id){
+async function cobuyerModal(pid,id){
   if(!pid) return;
   const c=id?(LOAN_COBUYERS.find(x=>x.id===id)||{}):{};
   if(!id && LOAN_COBUYERS.length>=MAX_COBUYERS){ alert('This loan already has 3 co-buyers.'); return; }
+  // Someone already saved as a co-buyer in Contacts but not on any house can be put on
+  // this one in a tap, instead of typing them in twice.
+  let loose=[];
+  if(!id){ try{ loose=(await api('/api/admin/contacts')).contacts.filter(x=>x.role==='cobuyer'&&!x.property_count); }catch(e){} }
   modal(`<h2>${id?'Edit co-buyer':'Add co-buyer'}</h2>
+    ${loose.length?`<div class="field"><label>Already in Contacts</label>
+      <div style="display:flex;gap:8px"><select id="cb-existing" style="flex:1">
+        ${loose.map(x=>`<option value="${x.id}">${esc(x.name)}${x.phone?' · '+esc(x.phone):''}</option>`).join('')}
+      </select><button class="small" onclick="attachExistingCobuyer(${pid})">Put on this loan</button></div>
+      <p class="note" style="margin-top:6px">Or enter a new co-buyer below.</p></div>`:''}
     <div class="field"><label>Full name</label><input id="cb-name" value="${esc(c.name||'')}"></div>
     <div class="field"><label>Email</label><input id="cb-email" type="email" value="${esc(c.email||'')}"></div>
     <div class="field"><label>Cell phone</label><input id="cb-phone" value="${esc(c.phone||'')}" placeholder="555-555-5555"></div>
@@ -6448,6 +6477,13 @@ async function saveCobuyer(pid,id){
     const body=JSON.stringify({ name:$('cb-name').value, email:$('cb-email').value, phone:$('cb-phone').value });
     if(id) await api('/api/admin/cobuyers/'+id,{method:'PUT',body});
     else await api(`/api/admin/properties/${pid}/cobuyers`,{method:'POST',body});
+    closeModal(); loadLoanPeople(pid);
+  }catch(e){ $('cb-err').textContent=e.message; $('cb-err').classList.remove('hidden'); }
+}
+async function attachExistingCobuyer(pid){
+  try{
+    await api(`/api/admin/properties/${pid}/contacts`,{method:'POST',
+      body:JSON.stringify({contact_id:Number($('cb-existing').value)})});
     closeModal(); loadLoanPeople(pid);
   }catch(e){ $('cb-err').textContent=e.message; $('cb-err').classList.remove('hidden'); }
 }
